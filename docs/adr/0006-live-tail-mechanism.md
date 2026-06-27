@@ -18,6 +18,10 @@ stream and sends filters at open time. Redis is already in the stack.
   `tail:{tenant_id}`. `query-service` holds one Redis subscription per channel (shared across that tenant's
   connections) and dispatches to matching SSE clients. Channel naming is the tenant-isolation layer for
   tail (ADR-0002): a connection can only subscribe to `tail:{tenant_id}` derived from its `TenantContext`.
+  > **Implementation note (slice, #8):** the initial query-service opens one Redis subscription **per
+  > connection** (KISS) rather than the shared-per-tenant fan-out described above. The `TailBus` port
+  > localizes the change, so shared fan-out can land later without touching callers. Tracked as a deferred
+  > optimization; isolation is unaffected (channel name is still context-derived).
 - **Browser transport:** **Server-Sent Events (SSE)** via `GET /v1/tail` (`text/event-stream`). Client
   uses native `EventSource` (auto-reconnect, `Last-Event-ID`). Heartbeat comment every 15s to keep
   intermediaries from closing idle connections.

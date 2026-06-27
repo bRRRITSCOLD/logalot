@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -67,6 +68,10 @@ func run(log *slog.Logger) error {
 		Addr:              cfg.Addr,
 		Handler:           router,
 		ReadHeaderTimeout: 10 * time.Second,
+		// Tie every request context to the lifecycle ctx so SIGTERM cancels
+		// in-flight SSE streams; handlers then return and Shutdown drains
+		// promptly instead of blocking the full grace on long-lived tails.
+		BaseContext: func(net.Listener) context.Context { return ctx },
 	}
 
 	errCh := make(chan error, 1)
