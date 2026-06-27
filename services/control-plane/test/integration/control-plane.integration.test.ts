@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { parseApiKey } from '../../src/domain/api-key';
 import { sha256 } from '../../src/domain/secret-hash';
-import { type ItEnv, armedQuery, seedPlatformOperator, setupEnv, teardownEnv } from './helpers';
+import { armedQuery, type ItEnv, seedPlatformOperator, setupEnv, teardownEnv } from './helpers';
 
 // Docker-backed end-to-end proof of the load-bearing security properties (issue
 // #11). Runs the REAL Fastify app over a REAL Postgres with migrations applied and
@@ -128,7 +128,10 @@ describe('control-plane integration', () => {
   it('scopes a tenant_admin to its own tenant for user listings', async () => {
     const res = await app.inject({ method: 'GET', url: '/v1/users', headers: auth(adminAToken) });
     expect(res.statusCode).toBe(200);
-    const emails = res.json().users.map((u: { email: string }) => u.email).sort();
+    const emails = res
+      .json()
+      .users.map((u: { email: string }) => u.email)
+      .sort();
     expect(emails).toEqual(['admin@a.co', 'member@a.co']);
   });
 

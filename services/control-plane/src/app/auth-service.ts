@@ -1,6 +1,6 @@
+import { UnauthorizedError } from '../domain/errors';
 import { assembleRefreshToken, parseRefreshToken } from '../domain/refresh-token';
 import { constantTimeEqual, sha256 } from '../domain/secret-hash';
-import { UnauthorizedError } from '../domain/errors';
 import type {
   Clock,
   IdGenerator,
@@ -155,7 +155,9 @@ export class AuthService {
     familyId: string,
   ): Promise<string> {
     const secret = this.deps.secrets.generate();
-    const expiresAt = new Date(this.deps.clock.now().getTime() + this.deps.refreshTtlSeconds * 1000);
+    const expiresAt = new Date(
+      this.deps.clock.now().getTime() + this.deps.refreshTtlSeconds * 1000,
+    );
     const { id } = await this.deps.refreshTokens.create(tenantId, {
       familyId,
       userId,

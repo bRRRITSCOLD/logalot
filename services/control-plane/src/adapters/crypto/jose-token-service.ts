@@ -1,6 +1,6 @@
-import { SignJWT, jwtVerify } from 'jose';
-import { isRole } from '../../domain/roles';
+import { jwtVerify, SignJWT } from 'jose';
 import type { SessionClaims, TokenService } from '../../app/ports';
+import { isRole } from '../../domain/roles';
 
 const ISSUER = 'logalot-control-plane';
 const AUDIENCE = 'logalot';

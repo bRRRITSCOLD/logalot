@@ -1,13 +1,13 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { AuthService, type AuthDeps } from '../../src/app/auth-service';
-import { UnauthorizedError } from '../../src/domain/errors';
+import { type AuthDeps, AuthService } from '../../src/app/auth-service';
 import type {
   AuthRecord,
   NewRefreshToken,
   RefreshTokenRow,
   SessionClaims,
-  Tenant,
 } from '../../src/app/ports';
+import type { Tenant } from '../../src/domain/entities';
+import { UnauthorizedError } from '../../src/domain/errors';
 
 const TENANT: Tenant = {
   id: '00000000-0000-0000-0000-0000000000a1',
@@ -168,7 +168,11 @@ describe('AuthService', () => {
   });
 
   it('rotates the refresh token and detects reuse of the old one (family revoke)', async () => {
-    const first = await service.login({ tenantSlug: 'acme', email: 'admin@acme.co', password: 'pw' });
+    const first = await service.login({
+      tenantSlug: 'acme',
+      email: 'admin@acme.co',
+      password: 'pw',
+    });
     const second = await service.refresh(first.refreshToken);
     expect(second.refreshToken).not.toBe(first.refreshToken);
 

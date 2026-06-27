@@ -5,14 +5,14 @@ import {
   loginRequestSchema,
 } from '@logalot/contracts';
 import { describe, expect, it } from 'vitest';
-import { ValidationError } from '../../src/domain/errors';
 import { parse } from '../../src/adapters/http/validation';
+import { ValidationError } from '../../src/domain/errors';
 
 describe('boundary validation (shared @logalot/contracts schemas)', () => {
   it('accepts a well-formed login and rejects a bad tenant slug', () => {
-    expect(parse(loginRequestSchema, { tenantSlug: 'acme', email: 'a@b.co', password: 'x' })).toEqual(
-      { tenantSlug: 'acme', email: 'a@b.co', password: 'x' },
-    );
+    expect(
+      parse(loginRequestSchema, { tenantSlug: 'acme', email: 'a@b.co', password: 'x' }),
+    ).toEqual({ tenantSlug: 'acme', email: 'a@b.co', password: 'x' });
     // Uppercase violates the slug regex (migration 000003).
     expect(() =>
       parse(loginRequestSchema, { tenantSlug: 'Acme', email: 'a@b.co', password: 'x' }),

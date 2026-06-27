@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID } from 'node:crypto';
-import { REFRESH_SECRET_BYTES } from '../../domain/refresh-token';
 import type { IdGenerator, SecretGenerator } from '../../app/ports';
+import { REFRESH_SECRET_BYTES } from '../../domain/refresh-token';
 
 // NodeSecretGenerator yields a high-entropy hex secret for refresh tokens, sized
 // to match REFRESH_SECRET_BYTES. Hex so it never contains the '_' separator.

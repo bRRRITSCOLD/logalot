@@ -1,5 +1,5 @@
-import type { ApiKeyRecord, RetentionPolicy, Tenant, TenantStatus, User } from '../domain/entities';
 import type { KeyMaterial } from '../domain/api-key';
+import type { ApiKeyRecord, RetentionPolicy, Tenant, TenantStatus, User } from '../domain/entities';
 import type { MembershipRole, Role } from '../domain/roles';
 
 // ── Driven ports (the application core depends on these; adapters implement them).

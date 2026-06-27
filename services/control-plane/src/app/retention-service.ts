@@ -1,5 +1,5 @@
-import { NotFoundError } from '../domain/errors';
 import type { RetentionPolicy } from '../domain/entities';
+import { NotFoundError } from '../domain/errors';
 import type { TenantContext } from '../domain/tenant-context';
 import { assertCan } from './authorize';
 import type { RetentionRepository } from './ports';

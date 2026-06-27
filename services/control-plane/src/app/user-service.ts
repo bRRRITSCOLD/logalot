@@ -1,5 +1,5 @@
-import { NotFoundError } from '../domain/errors';
 import type { User } from '../domain/entities';
+import { NotFoundError } from '../domain/errors';
 import type { MembershipRole } from '../domain/roles';
 import type { TenantContext } from '../domain/tenant-context';
 import { assertCan } from './authorize';

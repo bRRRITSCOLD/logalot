@@ -29,6 +29,12 @@ export interface ItEnv {
 // logalot_app role itself). This mirrors the Go integration suite's approach so
 // both stacks test against the identical schema.
 async function applyMigrations(adminPool: pg.Pool): Promise<void> {
+  // golang-migrate normally creates this bookkeeping table; migration 000011
+  // REVOKEs a grant on it. Applying the raw .up.sql files (no migrate runner)
+  // means we must create the stub first so that REVOKE succeeds.
+  await adminPool.query(
+    'CREATE TABLE IF NOT EXISTS schema_migrations (version bigint PRIMARY KEY, dirty boolean NOT NULL DEFAULT false)',
+  );
   const files = readdirSync(MIGRATIONS_DIR)
     .filter((f) => f.endsWith('.up.sql'))
     .sort();

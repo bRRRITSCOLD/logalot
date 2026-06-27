@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
-import { KEY_ID_BYTES, type KeyMaterial, SECRET_BYTES } from '../../domain/api-key';
 import type { KeyMaterialGenerator } from '../../app/ports';
+import { KEY_ID_BYTES, type KeyMaterial, SECRET_BYTES } from '../../domain/api-key';
 
 // NodeKeyMaterialGenerator produces the random keyId + secret for a new API key
 // using the CSPRNG, hex-encoded at the exact byte sizes the Go issuer uses

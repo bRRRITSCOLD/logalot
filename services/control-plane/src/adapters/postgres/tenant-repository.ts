@@ -1,7 +1,7 @@
 import type { Pool } from 'pg';
-import { ConflictError } from '../../domain/errors';
-import type { Tenant } from '../../domain/entities';
 import type { NewTenant, TenantPatch, TenantRepository } from '../../app/ports';
+import type { Tenant } from '../../domain/entities';
+import { ConflictError } from '../../domain/errors';
 import { isUniqueViolation } from './tenant-tx';
 
 interface TenantRow {

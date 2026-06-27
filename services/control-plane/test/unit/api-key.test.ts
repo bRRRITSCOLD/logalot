@@ -1,13 +1,13 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
+import { NodeKeyMaterialGenerator } from '../../src/adapters/crypto/node-key-material';
 import {
-  KEY_PREFIX,
   assemblePlaintext,
   hashSecret,
+  KEY_PREFIX,
   mintApiKey,
   parseApiKey,
 } from '../../src/domain/api-key';
-import { NodeKeyMaterialGenerator } from '../../src/adapters/crypto/node-key-material';
 
 // LOAD-BEARING: a key minted here must authenticate via the Go ingest
 // Authenticator. These tests pin the exact wire format and hash so the two sides

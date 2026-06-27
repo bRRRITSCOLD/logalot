@@ -12,7 +12,11 @@ const EnvSchema = z.object({
   // in any non-local environment.
   JWT_SECRET: z.string().min(16, 'JWT_SECRET must be at least 16 characters'),
   ACCESS_TOKEN_TTL_SECONDS: z.coerce.number().int().positive().default(900),
-  REFRESH_TOKEN_TTL_SECONDS: z.coerce.number().int().positive().default(60 * 60 * 24 * 7),
+  REFRESH_TOKEN_TTL_SECONDS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(60 * 60 * 24 * 7),
   BCRYPT_COST: z.coerce.number().int().min(4).max(15).default(10),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
 });

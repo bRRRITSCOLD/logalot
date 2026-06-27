@@ -1,6 +1,6 @@
 import type { Pool } from 'pg';
-import type { RetentionPolicy } from '../../domain/entities';
 import type { RetentionInput, RetentionRepository } from '../../app/ports';
+import type { RetentionPolicy } from '../../domain/entities';
 import { withTenantTx } from './tenant-tx';
 
 interface RetentionRow {

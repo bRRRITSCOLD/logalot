@@ -1,6 +1,6 @@
 import { mintApiKey } from '../domain/api-key';
-import { NotFoundError, ValidationError } from '../domain/errors';
 import type { ApiKeyRecord } from '../domain/entities';
+import { NotFoundError, ValidationError } from '../domain/errors';
 import type { TenantContext } from '../domain/tenant-context';
 import { assertCan } from './authorize';
 import type { ApiKeyRepository, Clock, KeyMaterialGenerator, TenantRepository } from './ports';

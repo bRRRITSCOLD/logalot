@@ -10,8 +10,8 @@ import {
 } from '@logalot/contracts';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import type { Services } from '../../container';
 import type { TokenService } from '../../app/ports';
+import type { Services } from '../../container';
 import { makeAuthenticate, requireTenantContext } from './auth-plugin';
 import { makeRequireOperation } from './rbac-guard';
 import { parse } from './validation';

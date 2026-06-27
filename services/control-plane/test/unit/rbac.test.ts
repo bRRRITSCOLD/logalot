@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { OPERATIONS, can } from '../../src/domain/rbac';
+import { can, OPERATIONS } from '../../src/domain/rbac';
 import { ROLES } from '../../src/domain/roles';
 
 // The RBAC matrix is load-bearing (issue #11 AC: a member cannot manage keys/

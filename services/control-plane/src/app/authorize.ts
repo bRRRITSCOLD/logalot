@@ -1,5 +1,5 @@
-import { can, type Operation } from '../domain/rbac';
 import { ForbiddenError } from '../domain/errors';
+import { can, type Operation } from '../domain/rbac';
 import type { TenantContext } from '../domain/tenant-context';
 
 // assertCan re-asserts RBAC inside the application core (ADR-0007: authorization

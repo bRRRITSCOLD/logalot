@@ -1,8 +1,8 @@
 import type { Pool } from 'pg';
-import { ConflictError } from '../../domain/errors';
-import type { User } from '../../domain/entities';
-import { isRole, type MembershipRole, type Role } from '../../domain/roles';
 import type { AuthRecord, NewUser, UserPatch, UserRepository } from '../../app/ports';
+import type { User } from '../../domain/entities';
+import { ConflictError } from '../../domain/errors';
+import { isRole, type MembershipRole, type Role } from '../../domain/roles';
 import { isUniqueViolation, withTenantTx } from './tenant-tx';
 
 interface UserRow {

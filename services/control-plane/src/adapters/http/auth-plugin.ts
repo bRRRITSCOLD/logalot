@@ -1,7 +1,7 @@
 import type { FastifyReply, FastifyRequest, preHandlerHookHandler } from 'fastify';
+import type { TokenService } from '../../app/ports';
 import { UnauthorizedError } from '../../domain/errors';
 import type { TenantContext } from '../../domain/tenant-context';
-import type { TokenService } from '../../app/ports';
 
 // Augment the Fastify request with the verified TenantContext. It is the single,
 // trusted place tenancy is established for a request (built from the access JWT,

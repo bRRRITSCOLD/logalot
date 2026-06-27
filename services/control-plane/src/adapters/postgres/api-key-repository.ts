@@ -1,6 +1,6 @@
 import type { Pool } from 'pg';
-import type { ApiKeyRecord } from '../../domain/entities';
 import type { ApiKeyRepository, NewApiKey } from '../../app/ports';
+import type { ApiKeyRecord } from '../../domain/entities';
 import { withTenantTx } from './tenant-tx';
 
 interface ApiKeyRow {
