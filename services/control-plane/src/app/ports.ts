@@ -1,0 +1,190 @@
+import type { KeyMaterial } from '../domain/api-key';
+import type { ApiKeyRecord, RetentionPolicy, Tenant, TenantStatus, User } from '../domain/entities';
+import type { MembershipRole, Role } from '../domain/roles';
+
+// ── Driven ports (the application core depends on these; adapters implement them).
+
+// PasswordHasher abstracts the password KDF. Implemented with bcrypt for v1
+// (argon2 is a drop-in alternative behind this port). Passwords are low-entropy
+// human secrets, so a slow KDF is correct here (contrast: API-key / refresh-token
+// secrets use fast SHA-256 because they are high-entropy — ADR-0007).
+export interface PasswordHasher {
+  hash(plaintext: string): Promise<string>;
+  verify(plaintext: string, hash: string): Promise<boolean>;
+}
+
+// SessionClaims are carried inside the access JWT. tenant + role come from the
+// verified credential, never the request — this is what feeds TenantContext at
+// the edge.
+export interface SessionClaims {
+  tenantId: string;
+  principalId: string;
+  role: Role;
+}
+
+// SessionTokens is the wire response of /login and /refresh — shape matches the
+// shared `tokenPairSchema` contract (@logalot/contracts).
+export interface SessionTokens {
+  accessToken: string;
+  refreshToken: string;
+  // Access-token lifetime in seconds (what the client uses to schedule refresh).
+  expiresIn: number;
+  tokenType: 'Bearer';
+  role: Role;
+  tenantId: string;
+  userId: string;
+}
+
+// TokenService issues and verifies the short-lived, STATELESS access JWT
+// (ADR-0007: signature-verified at every service edge). The stateful, rotating
+// refresh credential is handled separately (RefreshTokenRepository) so it can be
+// revoked — the access token's revocation story is its short TTL.
+export interface TokenService {
+  issueAccess(claims: SessionClaims): Promise<{ token: string; expiresInSeconds: number }>;
+  verifyAccess(token: string): Promise<SessionClaims>;
+}
+
+// KeyMaterialGenerator produces the random keyId + secret for a new API key.
+// Injected so minting is deterministic in tests; the production adapter uses the
+// CSPRNG with the exact byte sizes the Go side uses.
+export interface KeyMaterialGenerator {
+  generate(): KeyMaterial;
+}
+
+// SecretGenerator yields a high-entropy hex secret (refresh-token secrets).
+export interface SecretGenerator {
+  generate(): string;
+}
+
+// IdGenerator yields UUIDs (refresh-token family ids) without coupling the
+// application core to node:crypto.
+export interface IdGenerator {
+  uuid(): string;
+}
+
+export interface Clock {
+  now(): Date;
+}
+
+// AuthRecord is the ONLY projection that carries a password hash out of the
+// persistence layer, used exclusively by the authentication path. `role` folds in
+// the platform-operator rule: platform_operator when users.is_platform_operator,
+// else the membership role (or null when the user has neither — no access).
+export interface AuthRecord {
+  id: string;
+  passwordHash: string;
+  status: string;
+  role: Role | null;
+}
+
+// ── Repository ports. Tenant-owned repos take `tenantId` and run every statement
+// inside a transaction that arms RLS (`SET LOCAL app.tenant_id`). The `tenants`
+// registry repo is unscoped (no RLS — model.md §4.5); access is gated by role.
+
+export interface NewTenant {
+  publicId: string;
+  name: string;
+}
+
+export interface TenantPatch {
+  name?: string;
+  status?: TenantStatus;
+}
+
+export interface TenantRepository {
+  create(input: NewTenant): Promise<Tenant>;
+  list(): Promise<Tenant[]>;
+  findById(id: string): Promise<Tenant | null>;
+  findByPublicId(publicId: string): Promise<Tenant | null>;
+  update(id: string, patch: TenantPatch): Promise<Tenant | null>;
+  delete(id: string): Promise<boolean>;
+}
+
+export interface NewUser {
+  email: string;
+  passwordHash: string;
+  displayName?: string | null;
+  role: MembershipRole;
+}
+
+export interface UserPatch {
+  displayName?: string | null;
+  status?: string;
+  role?: MembershipRole;
+  passwordHash?: string;
+}
+
+export interface UserRepository {
+  create(tenantId: string, input: NewUser): Promise<User>;
+  list(tenantId: string): Promise<User[]>;
+  findById(tenantId: string, id: string): Promise<User | null>;
+  update(tenantId: string, id: string, patch: UserPatch): Promise<User | null>;
+  delete(tenantId: string, id: string): Promise<boolean>;
+  // Authentication projections (carry the password hash + effective role).
+  findCredentialsByEmail(tenantId: string, email: string): Promise<AuthRecord | null>;
+  findCredentialsById(tenantId: string, id: string): Promise<AuthRecord | null>;
+}
+
+export interface NewApiKey {
+  keyId: string;
+  name: string;
+  keyHash: Buffer;
+  scopes: string[];
+  createdBy: string | null;
+  expiresAt: Date | null;
+}
+
+export interface ApiKeyRepository {
+  create(tenantId: string, input: NewApiKey): Promise<ApiKeyRecord>;
+  list(tenantId: string): Promise<ApiKeyRecord[]>;
+  revoke(tenantId: string, keyId: string, now: Date): Promise<boolean>;
+}
+
+export interface RetentionInput {
+  hotDays: number;
+  coldDays: number;
+  updatedBy: string | null;
+}
+
+export interface RetentionRepository {
+  get(tenantId: string): Promise<RetentionPolicy | null>;
+  upsert(tenantId: string, input: RetentionInput): Promise<RetentionPolicy>;
+}
+
+// Refresh-token persistence (migration 000012). Stored hashed; rotation + family
+// reuse-detection logic lives in AuthService, this port is pure storage.
+export interface NewRefreshToken {
+  familyId: string;
+  userId: string;
+  tokenHash: Buffer;
+  expiresAt: Date;
+}
+
+export interface RefreshTokenRow {
+  id: string;
+  userId: string;
+  familyId: string;
+  tokenHash: Buffer;
+  expiresAt: Date;
+  rotatedAt: Date | null;
+  revokedAt: Date | null;
+}
+
+export interface RefreshTokenRepository {
+  // Inserts a token row, returning its DB-generated id (embedded in the plaintext).
+  create(tenantId: string, input: NewRefreshToken): Promise<{ id: string }>;
+  findById(tenantId: string, id: string): Promise<RefreshTokenRow | null>;
+  // Atomically consumes the presented token and mints its successor in ONE tx.
+  // The consume is a conditional UPDATE (only when the token is still un-rotated
+  // and un-revoked); it is the concurrency guard against two racing presentations
+  // of the same token. Returns the successor's id, or null when the token could
+  // not be consumed (already rotated/revoked) — which the caller treats as reuse.
+  rotate(
+    tenantId: string,
+    presentedId: string,
+    now: Date,
+    successor: NewRefreshToken,
+  ): Promise<{ id: string } | null>;
+  // Revokes every still-live token in a family (reuse detection / logout).
+  revokeFamily(tenantId: string, familyId: string, now: Date): Promise<void>;
+}
