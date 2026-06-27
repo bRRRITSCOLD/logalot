@@ -2,11 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import type { NewSavedQuery, SavedQueryPatch, SavedQueryRepository } from '../../src/app/ports';
 import { SavedQueryService } from '../../src/app/saved-query-service';
 import type { SavedQuery } from '../../src/domain/entities';
-import {
-  ConflictError,
-  ForbiddenError,
-  NotFoundError,
-} from '../../src/domain/errors';
+import { ConflictError, ForbiddenError, NotFoundError } from '../../src/domain/errors';
 import type { TenantContext } from '../../src/domain/tenant-context';
 
 const TENANT = '00000000-0000-0000-0000-00000000000a';
@@ -122,9 +118,9 @@ describe('SavedQueryService', () => {
 
   it('SavedQueryService_MemberUpdate_ForbiddenByRbac', async () => {
     const created = await svc.create(ctx('tenant_admin'), baseCreate);
-    await expect(
-      svc.update(ctx('member'), created.id, { name: 'hack' }),
-    ).rejects.toBeInstanceOf(ForbiddenError);
+    await expect(svc.update(ctx('member'), created.id, { name: 'hack' })).rejects.toBeInstanceOf(
+      ForbiddenError,
+    );
   });
 
   it('SavedQueryService_DeleteThenGet_NotFound', async () => {

@@ -27,9 +27,9 @@ type Bucket struct {
 // PanelData is the response payload for a panel's data request: a total match
 // count, a time-series of bucketed counts, and a sample of recent matching events.
 type PanelData struct {
-	TotalCount int64              `json:"totalCount"`
-	Buckets    []Bucket           `json:"buckets"`
-	RecentLogs []kernel.LogEvent  `json:"recentLogs"`
+	TotalCount int64             `json:"totalCount"`
+	Buckets    []Bucket          `json:"buckets"`
+	RecentLogs []kernel.LogEvent `json:"recentLogs"`
 }
 
 // PanelStore is the driven port for panel-data resolution. Its adapter connects
@@ -71,11 +71,11 @@ func NewPanelService(store PanelStore) *PanelService { return &PanelService{stor
 
 // PanelQuery is the input to a panel-data request.
 type PanelQuery struct {
-	SavedQueryID  string
-	From          time.Time
-	To            time.Time
-	Buckets       int
-	RecentLimit   int
+	SavedQueryID string
+	From         time.Time
+	To           time.Time
+	Buckets      int
+	RecentLimit  int
 }
 
 // Data resolves the saved query and runs the three aggregations for a panel.

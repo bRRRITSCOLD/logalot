@@ -16,10 +16,10 @@ const (
 
 // fakePanelStore is an in-memory PanelStore for unit tests.
 type fakePanelStore struct {
-	defs     map[string]*SavedQueryDef // id → def (nil = not found)
-	count    int64
-	buckets  []Bucket
-	recent   []kernel.LogEvent
+	defs    map[string]*SavedQueryDef // id → def (nil = not found)
+	count   int64
+	buckets []Bucket
+	recent  []kernel.LogEvent
 }
 
 func (f *fakePanelStore) Resolve(ctx context.Context, tc kernel.TenantContext, id string) (*SavedQueryDef, error) {
@@ -117,7 +117,7 @@ func TestPanelService_Data_ClampsRecentLimit(t *testing.T) {
 func TestPanelService_Data_DefaultsBuckets(t *testing.T) {
 	called := false
 	store := &captureStore{
-		def:     &SavedQueryDef{QueryText: "error"},
+		def: &SavedQueryDef{QueryText: "error"},
 		onTS: func(n int) {
 			if n != DefaultPanelBuckets {
 				t.Errorf("buckets passed to TimeSeries = %d, want %d", n, DefaultPanelBuckets)

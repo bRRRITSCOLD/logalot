@@ -1,12 +1,8 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import type { DashboardPatch, DashboardRepository, NewDashboard } from '../../src/app/ports';
 import { DashboardService } from '../../src/app/dashboard-service';
+import type { DashboardPatch, DashboardRepository, NewDashboard } from '../../src/app/ports';
 import type { Dashboard } from '../../src/domain/entities';
-import {
-  ConflictError,
-  ForbiddenError,
-  NotFoundError,
-} from '../../src/domain/errors';
+import { ConflictError, ForbiddenError, NotFoundError } from '../../src/domain/errors';
 import type { TenantContext } from '../../src/domain/tenant-context';
 
 const TENANT = '00000000-0000-0000-0000-00000000000a';
@@ -131,9 +127,9 @@ describe('DashboardService', () => {
 
   it('DashboardService_MemberUpdate_ForbiddenByRbac', async () => {
     const created = await svc.create(ctx('tenant_admin'), baseCreate);
-    await expect(
-      svc.update(ctx('member'), created.id, { name: 'hack' }),
-    ).rejects.toBeInstanceOf(ForbiddenError);
+    await expect(svc.update(ctx('member'), created.id, { name: 'hack' })).rejects.toBeInstanceOf(
+      ForbiddenError,
+    );
   });
 
   it('DashboardService_DeleteThenGet_NotFound', async () => {

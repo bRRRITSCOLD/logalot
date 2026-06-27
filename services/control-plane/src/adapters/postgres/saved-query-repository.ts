@@ -94,7 +94,8 @@ export class PgSavedQueryRepository implements SavedQueryRepository {
     if (patch.description !== undefined) add('description', patch.description);
     if (patch.queryText !== undefined) add('query_text', patch.queryText);
     if (patch.filters !== undefined) add('filters', JSON.stringify(patch.filters), '::jsonb');
-    if (patch.timeRange !== undefined) add('time_range', JSON.stringify(patch.timeRange), '::jsonb');
+    if (patch.timeRange !== undefined)
+      add('time_range', JSON.stringify(patch.timeRange), '::jsonb');
 
     if (sets.length === 0) {
       return this.findById(tenantId, id);

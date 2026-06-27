@@ -99,8 +99,16 @@ describe('dashboard CRUD + isolation (integration)', () => {
     await provisionAdmin(tenantAId, 'admin@dash-a.co');
     await provisionAdmin(tenantBId, 'admin@dash-b.co');
 
-    adminAToken = await login(app, { tenantSlug: 'dash-a', email: 'admin@dash-a.co', password: 'admin-pass-xyz' });
-    adminBToken = await login(app, { tenantSlug: 'dash-b', email: 'admin@dash-b.co', password: 'admin-pass-xyz' });
+    adminAToken = await login(app, {
+      tenantSlug: 'dash-a',
+      email: 'admin@dash-a.co',
+      password: 'admin-pass-xyz',
+    });
+    adminBToken = await login(app, {
+      tenantSlug: 'dash-b',
+      email: 'admin@dash-b.co',
+      password: 'admin-pass-xyz',
+    });
 
     const createMember = await app.inject({
       method: 'POST',
@@ -109,7 +117,11 @@ describe('dashboard CRUD + isolation (integration)', () => {
       payload: { email: 'member@dash-a.co', password: 'member-pass-xyz', role: 'member' },
     });
     expect(createMember.statusCode).toBe(201);
-    memberToken = await login(app, { tenantSlug: 'dash-a', email: 'member@dash-a.co', password: 'member-pass-xyz' });
+    memberToken = await login(app, {
+      tenantSlug: 'dash-a',
+      email: 'member@dash-a.co',
+      password: 'member-pass-xyz',
+    });
   }, 180_000);
 
   afterAll(async () => {

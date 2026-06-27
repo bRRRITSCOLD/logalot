@@ -86,8 +86,16 @@ describe('saved-query CRUD + isolation (integration)', () => {
     await provisionAdmin(tenantAId, 'admin@sq-a.co');
     await provisionAdmin(tenantBId, 'admin@sq-b.co');
 
-    adminAToken = await login(app, { tenantSlug: 'sq-a', email: 'admin@sq-a.co', password: 'admin-pass-xyz' });
-    adminBToken = await login(app, { tenantSlug: 'sq-b', email: 'admin@sq-b.co', password: 'admin-pass-xyz' });
+    adminAToken = await login(app, {
+      tenantSlug: 'sq-a',
+      email: 'admin@sq-a.co',
+      password: 'admin-pass-xyz',
+    });
+    adminBToken = await login(app, {
+      tenantSlug: 'sq-b',
+      email: 'admin@sq-b.co',
+      password: 'admin-pass-xyz',
+    });
 
     const createMember = await app.inject({
       method: 'POST',
@@ -96,7 +104,11 @@ describe('saved-query CRUD + isolation (integration)', () => {
       payload: { email: 'member@sq-a.co', password: 'member-pass-xyz', role: 'member' },
     });
     expect(createMember.statusCode).toBe(201);
-    memberToken = await login(app, { tenantSlug: 'sq-a', email: 'member@sq-a.co', password: 'member-pass-xyz' });
+    memberToken = await login(app, {
+      tenantSlug: 'sq-a',
+      email: 'member@sq-a.co',
+      password: 'member-pass-xyz',
+    });
   }, 180_000);
 
   afterAll(async () => {

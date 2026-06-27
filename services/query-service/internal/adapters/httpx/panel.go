@@ -23,11 +23,11 @@ var _ Paneler = (*app.PanelService)(nil)
 
 // PanelData handles GET /v1/panel-data.
 //
-//   ?savedQueryId=<uuid>  – required
-//   ?from=<RFC3339>       – optional; default: now - 1h
-//   ?to=<RFC3339>         – optional; default: now
-//   ?buckets=<int>        – optional; default 30, max 100
-//   ?recentLimit=<int>    – optional; default 20, max 100
+//	?savedQueryId=<uuid>  – required
+//	?from=<RFC3339>       – optional; default: now - 1h
+//	?to=<RFC3339>         – optional; default: now
+//	?buckets=<int>        – optional; default 30, max 100
+//	?recentLimit=<int>    – optional; default 20, max 100
 //
 // Tenant isolation flows from the verified JWT → TenantContext → PanelStore,
 // which arms SET LOCAL app.tenant_id before every DB access. A savedQueryId
