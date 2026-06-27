@@ -15,7 +15,7 @@ Multi-tenant logging platform: high-volume ingest, live tail, full-text + struct
 
 ## Tonight's realistic target
 - [x] Architecture + ADRs decided (docs/architecture/, docs/adr/0001-0007)
-- [ ] Data model + multi-tenant boundaries designed
+- [x] Data model + multi-tenant boundaries designed (docs/data/, migrations/)
 - [ ] Issues decomposed / sequenced / tracked (GitHub)
 - [ ] Docker infra scaffolded
 - [ ] Design system + tokens in Figma
@@ -30,7 +30,7 @@ Multi-tenant logging platform: high-volume ingest, live tail, full-text + struct
 - [ ] Phase 0: Frame (spec) — IN PROGRESS
 - [ ] Phase 1: Plan & track (issues + roadmap)
 - [x] Phase 2: Architecture (C4, ADRs, NFRs)
-- [ ] Phase 3: Data (stores, schema, retention, MT boundaries)
+- [x] Phase 3: Data (stores, schema, retention, MT boundaries)
 - [ ] Phase 4: Build loop (per-issue dispatch → review → merge)
 - [ ] Phase 5: Finish (cleanup, handoff)
 
@@ -64,6 +64,52 @@ Full detail in `docs/architecture/overview.md`, `docs/architecture/nfr.md`, `doc
 - **ADR-0007 Authn/authz** — ingest = opaque **hashed API keys** (`lgk_<tenant>_<secret>`,
   SHA-256, Redis-cached 60s); UI = **short-lived JWT + refresh**; RBAC (tenant_admin/member/
   platform_operator); `Authenticator` port leaves room for OIDC later.
+
+### Data model (Phase 3 — 2026-06-26)
+Full detail in `docs/data/model.md`, `docs/data/cold-tier.md`, `docs/data/migration-plan.md`;
+runnable DDL in `migrations/` (applied + rolled back + RLS/partition-tested vs Postgres 16).
+
+- **Stores (polyglot, each justified).** Postgres = control plane + hot log store (ADR-0003).
+  Redis = key cache / rate limit / `tail:{tenant_id}` pub/sub. RabbitMQ = ingest pipeline. floci
+  S3+Glue+Athena = cold Parquet tier. **MongoDB = reserved/unused (YAGNI)** — Postgres JSONB
+  already covers dashboards/saved-queries/labels with transactions + RLS; not forced in.
+- **Aggregate→table.** Tenant→`tenants` (registry, no RLS), User→`users`+`memberships` (RBAC),
+  ApiKey→`api_keys`, RetentionPolicy→`retention_policies`, SavedQuery→`saved_queries`,
+  Dashboard→`dashboards` (panels inline JSONB), AlertRule→`alert_rules` (state embedded),
+  LogEvent hot→`log_events` (partitioned), LogEvent cold→S3 Parquet. Cross-aggregate refs by
+  identity (no hard FK across roots); FKs only within an aggregate.
+- **Tenant isolation = one convention.** Backend sets `SET LOCAL app.tenant_id = '<uuid>'` per
+  request (GUC name authoritative, matches ADR-0002/overview). Every tenant-owned table has
+  `ENABLE + FORCE ROW LEVEL SECURITY` and policy `USING/WITH CHECK (tenant_id =
+  app.current_tenant_id())`. `app.current_tenant_id()` reads the GUC with `current_setting(...,
+  true)` → NULL when unset → **fail-closed (zero rows)**. App role must be NOSUPERUSER +
+  no BYPASSRLS. Verified: unset⇒0 rows, foreign-tenant INSERT rejected, cross-tenant SELECT⇒0.
+- **Hot `log_events`.** PK `(tenant_id, ts, id)`; RANGE-partitioned daily on `ts` (+ DEFAULT
+  partition); cols ts/tenant_id/service/level(enum)/message/labels(jsonb)/trace/span/raw +
+  GENERATED STORED `search` tsvector. Indexes: BRIN(ts), GIN(search), GIN(labels jsonb_path_ops),
+  btree (tenant_id,service,ts) & (tenant_id,level,ts); keyset via PK backward scan. RLS on parent
+  governs all partitions; pruning confirmed (1 partition for tenant+1h). No FK to tenants (hot
+  write cost; validity from auth).
+- **Partition lifecycle.** `app.ensure_log_events_partitions(7)` (create-ahead, daily, idempotent,
+  bootstrapped in migration), `app.drop_log_events_partitions_older_than(30)` (O(1) retention,
+  never drops default). Pooled time-only partitions ⇒ shared hot horizon; per-tenant shorter hot =
+  optional scoped DELETE; true per-tenant retention = cold S3 prefix delete.
+- **Cold tier.** `s3://logalot-cold/logs/tenant_id=<uuid>/dt=YYYY-MM-DD/hour=HH/*.parquet`; Glue
+  external table partitioned (tenant_id,dt,hour) with **partition projection** —
+  `tenant_id` as `injected` so Athena REFUSES a query without the tenant predicate (engine-enforced
+  isolation). Tee from day 0 (best-effort, retried). Cold search feature-flagged until floci
+  Firehose/Glue/Athena fidelity validated (tracked gap).
+- **Migrations.** golang-migrate `000001..000010` (.up/.down), validated up→down→up on PG16. Dev
+  seed `migrations/seeds/dev_tenant.sql` (not auto-applied): dev tenant + tenant_admin +
+  API key `lgk_dev_devkey001_devsecret0123456789` (hash via pgcrypto digest) + retention.
+
+### Data-model decisions made (call-outs)
+- GUC standardized on `app.tenant_id` (not `app.current_tenant`) to match the normative ADRs.
+- `tenants` has no RLS (registry; provisioning predates tenant context); ingest key lookup is made
+  RLS-scoped by parsing the tenant slug from the key first; alert-evaluator scheduler uses a
+  BYPASSRLS role for rule *metadata* only, then re-enters per-tenant context for log reads.
+- Hot retention is honestly uniform at the global partition-drop horizon; per-tenant retention is a
+  cold-tier responsibility — documented, not hidden.
 
 ### floci gaps to track as GitHub issues
 - floci **OpenSearch** = control-plane CRUD/stubs only (no search data plane). No dependency

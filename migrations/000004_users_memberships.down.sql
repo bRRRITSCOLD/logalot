@@ -1,0 +1,3 @@
+-- 000004 down
+DROP TABLE IF EXISTS memberships;
+DROP TABLE IF EXISTS users;

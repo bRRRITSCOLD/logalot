@@ -1,0 +1,2 @@
+-- 000003 down
+DROP TABLE IF EXISTS tenants;
