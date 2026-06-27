@@ -16,7 +16,7 @@ Multi-tenant logging platform: high-volume ingest, live tail, full-text + struct
 ## Tonight's realistic target
 - [x] Architecture + ADRs decided (docs/architecture/, docs/adr/0001-0007)
 - [x] Data model + multi-tenant boundaries designed (docs/data/, migrations/)
-- [ ] Issues decomposed / sequenced / tracked (GitHub)
+- [x] Issues decomposed / sequenced / tracked (GitHub #1-#25; roadmap docs/roadmap.md)
 - [ ] Docker infra scaffolded
 - [ ] Design system + tokens in Figma
 - [ ] First vertical slice built+reviewed+merged: ingest → store → live tail
@@ -27,8 +27,8 @@ Multi-tenant logging platform: high-volume ingest, live tail, full-text + struct
 
 ## Phase status
 - [x] Phase -1: Recon (env, auth, dirs)
-- [ ] Phase 0: Frame (spec) — IN PROGRESS
-- [ ] Phase 1: Plan & track (issues + roadmap)
+- [x] Phase 0: Frame (spec) — docs/superpowers/specs/logging-platform.md
+- [x] Phase 1: Plan & track (issues + roadmap) — DONE (GitHub #1-#25, docs/roadmap.md)
 - [x] Phase 2: Architecture (C4, ADRs, NFRs)
 - [x] Phase 3: Data (stores, schema, retention, MT boundaries)
 - [ ] Phase 4: Build loop (per-issue dispatch → review → merge)
@@ -121,6 +121,35 @@ runnable DDL in `migrations/` (applied + rolled back + RLS/partition-tested vs P
   Parquet behind `ColdArchive` port.
 - floci **Athena** query-shape coverage unverified — validate cold query templates early; cold
   search feature-flagged until verified.
+
+## Issue plan & wave roadmap (Phase 1 — 2026-06-26)
+
+Full table + critical path in `docs/roadmap.md`. Epic master tracker: **#25**. Milestone:
+"MVP — vertical slice + platform foundation". Labels created: `wave-0`..`wave-4`, `backend`,
+`frontend`, `ux`, `infra`, `data`, `auth`, `multi-tenancy`, `vertical-slice`, `floci-risk`, `epic`.
+
+25 issues created (#1-#24 tasks + #25 epic). All build issues: TDD + multi-tenant isolation
+acceptance criteria + one revertible PR each.
+
+- **Wave 0 — foundation (parallelizable):** #1 docker-compose stack (backend-engineer) ·
+  #2 monorepo scaffold + CI (backend-engineer) · #3 migrate runner + NOSUPERUSER logalot_app
+  + seed (backend-engineer, ⟵#1) · #4 shared Go kernel TenantContext + ports (backend-engineer, ⟵#2).
+- **Wave 1 — VERTICAL SLICE:** #5 API-key auth (⟵#3,#4) · #6 ingest-service POST /v1/ingest
+  (⟵#4,#5,#1) · #7 processor → log_events(RLS) → tail (⟵#3,#4) · #8 query-service live tail SSE
+  (⟵#4,#5) · #9 slice e2e wiring + isolation test + demo (⟵#6,#7,#8). All backend-engineer.
+- **Wave 2:** #10 search/query API (⟵#8) · #11 control-plane CRUD+RBAC+JWT (⟵#3,#4) ·
+  #12 per-tenant rate limiting (⟵#6). All backend-engineer.
+- **Wave 3:** #13 floci Firehose/Glue validate (⟵#1) · #14 floci Athena/projection validate
+  (⟵#1,#13) · #15 floci Kinesis/Glacier confirm (⟵#1) · #16 alerting (⟵#10,#11) ·
+  #17 cold tier, flagged (⟵#7,#13,#14) · #18 dashboards/saved-queries (⟵#10,#11). All backend-engineer.
+- **Wave 4 — frontend & design:** #19 design system + tokens (ux-designer) · #20 TanStack Start
+  scaffold + component lib (frontend-engineer, ⟵#19,#11) · #21 log explorer + live tail
+  (frontend-engineer, ⟵#20,#8) · #22 search page (frontend-engineer, ⟵#20,#10) · #23 alert + admin
+  pages (frontend-engineer, ⟵#20,#11,#16) · #24 Code Connect (ux-designer, ⟵#19,#20).
+
+**Critical path (MVP):** #1 → #3 → #5 → #8 → #10 → #16 → #20 → #23.
+**Slice critical path:** #1 → #3 → #5 → {#6,#7,#8} → #9.
+**Ready to dispatch now (no blockers):** #1, #2, #19.
 
 ## Open / blocked
 - Validate floci Athena/Firehose/Glue fidelity against our actual cold query templates before
