@@ -14,7 +14,7 @@ Multi-tenant logging platform: high-volume ingest, live tail, full-text + struct
 - Discipline: TDD, DDD, pragmatic SOLID, DRY/KISS/YAGNI. Small revertible PRs, Conventional Commits, squash-merge.
 
 ## Tonight's realistic target
-- [ ] Architecture + ADRs decided
+- [x] Architecture + ADRs decided (docs/architecture/, docs/adr/0001-0007)
 - [ ] Data model + multi-tenant boundaries designed
 - [ ] Issues decomposed / sequenced / tracked (GitHub)
 - [ ] Docker infra scaffolded
@@ -29,16 +29,56 @@ Multi-tenant logging platform: high-volume ingest, live tail, full-text + struct
 - [x] Phase -1: Recon (env, auth, dirs)
 - [ ] Phase 0: Frame (spec) — IN PROGRESS
 - [ ] Phase 1: Plan & track (issues + roadmap)
-- [ ] Phase 2: Architecture (C4, ADRs, NFRs)
+- [x] Phase 2: Architecture (C4, ADRs, NFRs)
 - [ ] Phase 3: Data (stores, schema, retention, MT boundaries)
 - [ ] Phase 4: Build loop (per-issue dispatch → review → merge)
 - [ ] Phase 5: Finish (cleanup, handoff)
 
 ## Decisions log
-- (pending)
+
+### Architecture (Phase 2 — 2026-06-26)
+Full detail in `docs/architecture/overview.md`, `docs/architecture/nfr.md`, `docs/adr/`.
+
+- **ADR-0001 Service decomposition** — context-aligned services: `ingest-service` (Go+Gin),
+  `processor` (Go worker), `query-service` (Go/Fastify, search+SSE tail), `control-plane`
+  (Node+Fastify: tenants/users/keys/RBAC/dashboards/alert-rules/retention), `alert-evaluator`
+  (worker), `web` (TanStack Start). Storage&Retention is a shared kernel. Hexagonal throughout.
+- **ADR-0002 Multi-tenancy** — **pooled + hard multi-layer enforcement + bridge escape hatch**.
+  `TenantContext` mandatory on every port method; tenant from credential, never body. Four
+  fail-closed layers: auth → app ports → hot store (partition key + Postgres RLS) → cold store
+  (S3 prefix) + tail channel naming.
+- **ADR-0003 Hot store (the big one)** — **PostgreSQL**, partitioned by time + `tenant_id` PK
+  prefix, BRIN on ts, GIN on tsvector (FTS) + JSONB (structured), RLS backstop, keyset pagination.
+  Zero new infra; partition-pruned tenant+time queries meet p95<2s. **Escape hatch: ClickHouse**
+  behind the `LogStore` port if search p95>2s / GIN write saturation / footprint pain.
+  OpenSearch-via-floci rejected (floci OpenSearch is control-plane stubs only).
+- **ADR-0004 Ingest + queue** — **Go+Gin → RabbitMQ** (durable queue, publisher confirms,
+  202-after-durable-enqueue, DLX/DLQ, per-tenant Redis rate limit). Kafka is the hard-reason-only
+  escape hatch.
+- **ADR-0005 Cold tier + retention** — **tee from day 0**: processor → Firehose → S3 **Parquet**,
+  keyed `tenant_id=<id>/dt=.../`, Glue-partitioned, Athena query with bound tenant predicate.
+  Retention = drop hot time-partitions at 30d; per-tenant cold retention via prefix delete.
+  Fallback: direct-write Parquet if Firehose flaky.
+- **ADR-0006 Live tail** — **Redis pub/sub (`tail:{tenant_id}`) + SSE**. Slow-consumer drop+gap.
+  WebSocket/Redis-Streams are escape hatches.
+- **ADR-0007 Authn/authz** — ingest = opaque **hashed API keys** (`lgk_<tenant>_<secret>`,
+  SHA-256, Redis-cached 60s); UI = **short-lived JWT + refresh**; RBAC (tenant_admin/member/
+  platform_operator); `Authenticator` port leaves room for OIDC later.
+
+### floci gaps to track as GitHub issues
+- floci **OpenSearch** = control-plane CRUD/stubs only (no search data plane). No dependency
+  (drove ADR-0003 to Postgres). [informational]
+- floci **Kinesis Data Streams** unverified — **not used** (broker=RabbitMQ, cold=Firehose).
+- floci **Glacier / S3 lifecycle-to-archive** unverified — cold tier stays S3 standard; archive
+  tiering deferred behind a trigger. Do NOT substitute localstack.
+- floci **Firehose→Parquet + Glue** fidelity unverified — fallback is processor direct-write
+  Parquet behind `ColdArchive` port.
+- floci **Athena** query-shape coverage unverified — validate cold query templates early; cold
+  search feature-flagged until verified.
 
 ## Open / blocked
-- (none yet)
+- Validate floci Athena/Firehose/Glue fidelity against our actual cold query templates before
+  relying on cold search (tracked above; cold search feature-flagged until then).
 
 ## Morning status
 - (pending)
