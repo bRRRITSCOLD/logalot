@@ -246,14 +246,22 @@ GitHub issues + this ledger are the durable state. Critical path next: #11 (cont
 ### Wave 2 (this session)
 - **#10 search API** — PR #46 ✅ staff-APPROVE (reviewer ran tests: cross-tenant isolation, FTS safety, keyset all proven) → **MERGED to main**.
 - **#12 rate limiting** — PR #45 ✅ staff-APPROVE (per-tenant isolation, atomic no-over-admit, 429 proven) → **MERGED to main**. Minor follow-up #47.
-- **#11 control-plane** — ⚠️ **DRAFT PR #48, UNVERIFIED.** The agent hit the session limit mid-run before committing/reporting; I salvaged its uncommitted worktree (full Node+Fastify hexagonal service: domain/app/postgres-adapters, migration 000012_refresh_tokens, packages/contracts, full test suite) and pushed it. **NOT built/tested/reviewed.** PR #48 body lists the required pre-merge checklist (build+test, API-key-hash compat vs pkg/auth+000005, RLS cross-tenant denial, migration 000012 up/down + grants, CI green, staff review). **DO THIS FIRST next session.**
+- **#11 control-plane** — PR #48 ✅ **MERGED** (squash 0c14f90), #11 closed. Node+Fastify hexagonal: tenant/user/api-key CRUD, RBAC, JWT access + refresh-token sessions, migration 000012_refresh_tokens, packages/contracts. Staff-APPROVE; 5 load-bearing proofs verified (api-key hash byte-compat w/ Go pkg/auth+000005; RLS cross-tenant denial as NOSUPERUSER logalot_app; atomic refresh rotation + reuse→family-revoke; RBAC deny; migration 000012 grants+RLS). Fix-pass landed 2 Important findings (atomic-rotation TOCTOU, tenant-suspension-on-refresh) + dummy-hash cost. Unit 31 + integration 13 green.
 
-### Open follow-ups (non-blocking): #33 #35 #37 #39 #41 #42 #47
+**WAVE 2 COMPLETE** — #10, #11, #12 all merged + closed. `main` @ 0c14f90.
 
-### NEXT SESSION resume (fresh session recommended — context was large)
-1. **Finish #11**: verify+fix PR #48 per its checklist → staff review → merge. (Critical-path: unlocks #16/#20/#23.)
-2. Wave 3: #16 alerting, #17 cold tier (floci-flagged), #18 dashboards; floci spikes #13/#14/#15.
-3. Wave 4 frontend (design system is READY): #20 TanStack Start scaffold + component library (shadcn/Base-UI,
-   build from Figma `9N3v2ZGGo3McfSxOLfBPnC` + tokens), #21 log explorer+tail, #22 search page, #23 alerts+admin, #24 Code Connect.
-4. Worktree cleanup: several `.claude/worktrees/agent-*` + stale local `feat/*` branches remain; `git worktree prune` + delete merged branches.
-5. Build component library to the shadcn/ui-on-Base-UI pattern (`@base-ui-components/react`); route ALL Figma work through ux-designer; never create new Figma files. See [[figma-workflow-rules]].
+### ⚠️ ORCHESTRATION LESSON (cost the user real $$ this session)
+The #11 agent was wiped TWICE by my `git worktree remove --force` + `git branch -D` while it was **still alive** → it restarted and re-wrote its code, burning tokens. Rules going forward:
+1. **NEVER** run `git worktree remove/prune` or `git branch -D` while a background agent may be live. Verify with `git worktree list` + task status FIRST.
+2. For resume-from-branch / fix-pass work, run the agent **FOREGROUND in the main tree** (no worktree). Only use isolated worktrees for genuinely parallel NEW work, and clean them only after all agents are confirmed done.
+3. Parallel worktree agents also caused a branch tangle (ledger commit landed on a feature branch). If parallelizing, keep meta/ledger commits on `main` only.
+
+### Open follow-ups (non-blocking, backend hardening): #33 #35 #37 #39 #41 #42 #47
+
+### NEXT SESSION resume — START SMALL (one scoped chunk per fresh session)
+Pick up at **Wave 3, scoped tight** (see handoff prompt). Recommended order:
+1. **#16 alerting** (rule CRUD + evaluator + notification dispatch) — pure backend, unlocks frontend #23. Good first chunk.
+2. Then #18 dashboards/saved-queries backend (unlocks #20/#21 data needs).
+3. #17 cold tier + floci spikes #13/#14/#15 — these are floci-fidelity-gated; keep the feature flag; spike first.
+4. Wave 4 frontend (design system READY, file `9N3v2ZGGo3McfSxOLfBPnC`): #20 scaffold + component library FIRST (shadcn/ui-on-Base-UI `@base-ui-components/react`, build from Figma + tokens), then #21/#22/#23 pages, #24 Code Connect.
+DISCIPLINE: one issue per fresh session where possible; staff-review gate before every merge; route ALL Figma work through ux-designer; never create new Figma files. See [[figma-workflow-rules]].
