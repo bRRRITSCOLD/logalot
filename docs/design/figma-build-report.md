@@ -71,17 +71,20 @@ SearchBar, TimeRangePicker, FacetFilter, TenantSwitcher, AlertRuleForm, Dashboar
 
 ---
 
-## 4. App screens (App Screens file) — 9 frames (3 screens × desktop/tablet/mobile)
+## 4. App screens (App Screens file) — 9 frames (3 screens × desktop/tablet/mobile) + States
 
 All frames bind to the **local** copies of the DS variable collections (Primitives/Semantic/Aliases
-exist in this file), so screens are token-driven (no ad-hoc hex). Laid out as a 3×3 matrix on
-`Page 1`.
+exist in this file), so screens are token-driven (no ad-hoc hex). Consolidated onto a single page
+**`App Screens — Desktop · Tablet · Mobile`** as a 3×3 matrix (rows = screen, columns = breakpoint).
+A tenth frame **`States — Empty & Loading`** (`18:180`) — EmptyState card + loading skeleton log
+list — completes the empty/loading-state pass.
 
 | Screen | Desktop 1440 | Tablet 834 | Mobile 390 |
 |---|---|---|---|
 | **Explore · Live Tail** | `8:2` — 3-pane: facet rail │ live-tail panel (severity rows + dropped-events marker) │ log-detail | `15:2` — icon-rail sidebar, facet toggle, full-width tail | `15:81` — hamburger, condensed level-dot rows, follow FAB |
 | **Search** | `12:161` — full SearchBar + time range + active-filter chips + Results/Aggregations tabs + results table + keyset pagination | `16:193` — icon rail, Filters·3 toggle, condensed table, Load older | `16:278` — stacked SearchBar + filter button row + condensed rows |
 | **Alerts · Admin** | `13:2` — rules table (name/query/severity/enabled switch/last-fired) + tabs + AlertRuleForm drawer | `17:2` — icon rail, dropped low-priority columns | `17:95` — segmented tabs + stacked rule cards |
+| **States** | `18:180` — EmptyState ("No logs match your filters" + Clear filters) and loading skeleton list | — | — |
 
 Responsive rules followed: sidebar 240px → 64px icon-rail → hamburger; rails collapse to
 toggles/drawers first; tables → stacked cards on mobile; log text never below `logLine` (12px);
