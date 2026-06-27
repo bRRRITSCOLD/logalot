@@ -1,0 +1,17 @@
+{
+  "name": "@logalot/design-tokens",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Logalot design tokens (W3C DTCG): single source of truth for color, type, spacing, severity palette, motion. Consumed by apps/web (Tailwind + cva).",
+  "type": "module",
+  "main": "tokens.json",
+  "files": [
+    "tokens.json",
+    "README.md"
+  ],
+  "scripts": {
+    "validate": "node validate.mjs",
+    "test": "node validate.mjs",
+    "lint": "biome check ."
+  }
+}
