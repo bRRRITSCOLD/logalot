@@ -6,7 +6,7 @@ import (
 )
 
 // tenantContextType is resolved once for the reflective fitness check.
-var tenantContextType = reflect.TypeOf(TenantContext{})
+var tenantContextType = reflect.TypeFor[TenantContext]()
 
 // AssertTenantScoped is the contract/fitness function that enforces the
 // no-un-scoped-access rule (ADR-0002, overview.md §6): every method of a port
@@ -14,8 +14,8 @@ var tenantContextType = reflect.TypeOf(TenantContext{})
 // human-readable violations; an empty slice means the port is correctly scoped.
 //
 // iface must be the reflect.Type of an interface, obtained via
-// reflect.TypeOf((*LogStore)(nil)).Elem(). allow lists method names that are
-// sanctioned exceptions (the chicken-and-egg boundaries from model.md §4.5, e.g.
+// reflect.TypeFor[LogStore](). allow lists method names that are sanctioned
+// exceptions (the chicken-and-egg boundaries from model.md §4.5, e.g.
 // "Authenticate"); listing a name skips the first-parameter check for it.
 //
 // Services compose this into their own contract tests so the invariant is a

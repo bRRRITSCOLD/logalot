@@ -24,6 +24,12 @@ const TenantGUC = "app.tenant_id"
 // equivalent is set_config(name, value, is_local=true): is_local=true makes it
 // transaction-scoped exactly like SET LOCAL, and the bind keeps it injection-safe
 // (model.md §4.1). The $1 value is the TenantContext's tenant uuid.
+//
+// MUST run inside a transaction. is_local=true scopes the setting to the current
+// transaction; OUTSIDE a transaction it is a silent no-op (the setting is
+// discarded immediately), which leaves RLS unarmed → zero rows on the next
+// statement. That is fail-closed (no leak), but it is a bug: callers MUST issue
+// this on the same *sql.Tx / pgx.Tx that runs the tenant-scoped work.
 const SetLocalTenantStmt = `SELECT set_config('app.tenant_id', $1, true)`
 
 // ExecFunc is the minimal, driver-agnostic statement executor the convention
@@ -33,6 +39,10 @@ type ExecFunc func(ctx context.Context, sql string, args ...any) error
 // ArmTenant arms RLS for the current transaction from tc. It validates the
 // tenant first and refuses to execute anything for a blank/invalid tenant
 // (returns ErrNoTenantContext / ErrInvalidTenantID) — fail closed.
+//
+// exec MUST be bound to an open transaction (see SetLocalTenantStmt): is_local
+// scoping is a no-op outside a tx, so arming on a bare connection silently
+// leaves RLS unset. Prefer WithTenantScope, which runs the work on the same tx.
 func ArmTenant(tc TenantContext, ctx context.Context, exec ExecFunc) error {
 	if err := tc.Valid(); err != nil {
 		return err

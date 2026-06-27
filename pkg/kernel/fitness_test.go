@@ -8,28 +8,41 @@ import (
 
 // TestAllPortsAreTenantScoped is the fitness function for the load-bearing
 // invariant (ADR-0002, overview.md §6): no port exposes an un-scoped method.
-// Every tenant-scoped port method must take TenantContext as its first argument.
+// It iterates the AllPorts registry (single source of truth) so a newly declared
+// port is covered automatically once registered — and slips through if it is
+// not, which is why registration is mandated at the port declarations.
 func TestAllPortsAreTenantScoped(t *testing.T) {
-	cases := []struct {
-		iface reflect.Type
-		allow []string
-	}{
-		{reflect.TypeOf((*LogStore)(nil)).Elem(), nil},
-		{reflect.TypeOf((*Broker)(nil)).Elem(), nil},
-		{reflect.TypeOf((*TailBus)(nil)).Elem(), nil},
-		{reflect.TypeOf((*ColdArchive)(nil)).Elem(), nil},
-		{reflect.TypeOf((*KeyStore)(nil)).Elem(), nil},
-		{reflect.TypeOf((*TenantStore)(nil)).Elem(), nil},
-		// Authenticate is the sanctioned chicken-and-egg exception: it produces
-		// the TenantContext, so it cannot require one (model.md §4.5).
-		{reflect.TypeOf((*Authenticator)(nil)).Elem(), []string{"Authenticate"}},
+	if len(AllPorts) == 0 {
+		t.Fatal("AllPorts is empty: ports must be registered")
 	}
-	for _, c := range cases {
-		t.Run(c.iface.Name(), func(t *testing.T) {
-			if v := AssertTenantScoped(c.iface, c.allow...); len(v) != 0 {
+	for _, p := range AllPorts {
+		t.Run(p.Name(), func(t *testing.T) {
+			if v := AssertTenantScoped(p, PortException[p.Name()]...); len(v) != 0 {
 				t.Fatalf("un-scoped port method(s): %v", v)
 			}
 		})
+	}
+}
+
+// TestPortExceptionsAreReal guards against a stale allow-list: every method named
+// in PortException must reference a registered port and an actual method on it. A
+// typo would silently weaken the fitness check.
+func TestPortExceptionsAreReal(t *testing.T) {
+	byName := make(map[string]reflect.Type, len(AllPorts))
+	for _, p := range AllPorts {
+		byName[p.Name()] = p
+	}
+	for portName, methods := range PortException {
+		iface, ok := byName[portName]
+		if !ok {
+			t.Errorf("PortException references unregistered port %q", portName)
+			continue
+		}
+		for _, m := range methods {
+			if _, ok := iface.MethodByName(m); !ok {
+				t.Errorf("PortException[%q] names non-existent method %q", portName, m)
+			}
+		}
 	}
 }
 
@@ -39,7 +52,7 @@ func TestAssertTenantScopedCatchesViolation(t *testing.T) {
 	type Leaky interface {
 		ReadAll(ctx context.Context) ([]LogEvent, error) // missing TenantContext
 	}
-	v := AssertTenantScoped(reflect.TypeOf((*Leaky)(nil)).Elem())
+	v := AssertTenantScoped(reflect.TypeFor[Leaky]())
 	if len(v) != 1 {
 		t.Fatalf("expected exactly 1 violation, got %v", v)
 	}
@@ -47,16 +60,16 @@ func TestAssertTenantScopedCatchesViolation(t *testing.T) {
 
 // TestAssertTenantScopedHonoursAllowList confirms named exceptions are skipped.
 func TestAssertTenantScopedHonoursAllowList(t *testing.T) {
-	if v := AssertTenantScoped(reflect.TypeOf((*Authenticator)(nil)).Elem()); len(v) == 0 {
+	if v := AssertTenantScoped(reflect.TypeFor[Authenticator]()); len(v) == 0 {
 		t.Fatal("Authenticate should be a violation without the allow list")
 	}
-	if v := AssertTenantScoped(reflect.TypeOf((*Authenticator)(nil)).Elem(), "Authenticate"); len(v) != 0 {
+	if v := AssertTenantScoped(reflect.TypeFor[Authenticator](), "Authenticate"); len(v) != 0 {
 		t.Fatalf("allow list ignored: %v", v)
 	}
 }
 
 func TestAssertTenantScopedRejectsNonInterface(t *testing.T) {
-	if v := AssertTenantScoped(reflect.TypeOf(LogEvent{})); len(v) != 1 {
+	if v := AssertTenantScoped(reflect.TypeFor[LogEvent]()); len(v) != 1 {
 		t.Fatalf("expected non-interface to report a violation, got %v", v)
 	}
 }

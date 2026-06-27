@@ -100,3 +100,15 @@ func TestRoleValid(t *testing.T) {
 		t.Error("Role(root).Valid() = true, want false")
 	}
 }
+
+func TestTenantStatusValid(t *testing.T) {
+	// Mirrors the Postgres tenant_status enum (migrations/000002_enums.up.sql).
+	for _, s := range []TenantStatus{TenantActive, TenantSuspended, TenantDeleted} {
+		if !s.Valid() {
+			t.Errorf("TenantStatus(%q).Valid() = false, want true", s)
+		}
+	}
+	if TenantStatus("archived").Valid() {
+		t.Error("TenantStatus(archived).Valid() = true, want false")
+	}
+}

@@ -3,6 +3,7 @@ package kernel
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 )
 
@@ -85,12 +86,7 @@ func (tc TenantContext) Valid() error {
 
 // HasScope reports whether the principal was granted s.
 func (tc TenantContext) HasScope(s Scope) bool {
-	for _, got := range tc.Scopes {
-		if got == s {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(tc.Scopes, s)
 }
 
 // HasRole reports whether the principal holds role r.
@@ -103,6 +99,11 @@ type tenantContextKey struct{}
 // WithTenant returns a child context carrying tc. Edge middleware calls this once
 // per request so the scope propagates explicitly down the call stack — no
 // globals, no ambient request-locals (overview.md §6 propagation contract).
+//
+// WithTenant does NOT validate tc: validation is deferred to the use-sites that
+// actually scope an operation (TenantContext.Valid via ArmTenant / TailChannel /
+// ColdPrefix), which all fail closed. Carrying is cheap; the boundary that uses
+// the tenant is where a missing/invalid tenant is rejected.
 func WithTenant(ctx context.Context, tc TenantContext) context.Context {
 	return context.WithValue(ctx, tenantContextKey{}, tc)
 }

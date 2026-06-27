@@ -2,6 +2,7 @@ package kernel
 
 import (
 	"context"
+	"reflect"
 	"time"
 )
 
@@ -24,12 +25,44 @@ import (
 //   - Broker.Consume — the processor pulls a single multi-tenant queue; the
 //     authoritative tenant rides in each Envelope and is re-asserted per message
 //     before any tenant-scoped call (see EnvelopeHandler).
+//
+// EVERY new port MUST be registered in AllPorts below. The contract test
+// (fitness_test.go) iterates AllPorts and runs AssertTenantScoped against each,
+// so registration is what makes the no-un-scoped-access invariant enforced — an
+// unregistered port silently escapes the check.
+
+// AllPorts is the authoritative registry of cross-service ports. It is the
+// single source the fitness/contract test iterates to prove every port is
+// tenant-scoped (DRY: no hand-maintained duplicate list in _test.go). Append
+// each new port type here when you declare it.
+var AllPorts = []reflect.Type{
+	reflect.TypeFor[LogStore](),
+	reflect.TypeFor[Broker](),
+	reflect.TypeFor[TailBus](),
+	reflect.TypeFor[ColdArchive](),
+	reflect.TypeFor[KeyStore](),
+	reflect.TypeFor[Authenticator](),
+	reflect.TypeFor[TenantStore](),
+}
+
+// PortException maps a port type to the method names that are sanctioned
+// chicken-and-egg exceptions to the tenant-first rule (model.md §4.5). Keyed by
+// the interface's name so the contract test stays declarative.
+var PortException = map[string][]string{
+	// Authenticate PRODUCES the TenantContext, so it cannot require one.
+	"Authenticator": {"Authenticate"},
+}
 
 // LogStore is the hot-tier (Postgres) port: append normalized events, run hot
 // searches, and read the tail-relevant recent window. Implemented by an adapter
 // that arms RLS via WithTenantScope before every statement (ADR-0003, §4).
 type LogStore interface {
 	// Append persists events to the tenant's partitions of the hot store.
+	//
+	// The adapter MUST stamp each row's tenant_id from tc and MUST NOT trust any
+	// TenantID carried on the supplied LogEvents — a caller cannot assert a tenant
+	// (ADR-0002). The RLS `WITH CHECK (tenant_id = app.current_tenant_id())`
+	// policy is the storage-layer backstop that rejects a foreign-tenant row.
 	Append(tc TenantContext, ctx context.Context, events ...LogEvent) error
 	// Search runs a tenant-scoped, keyset-paginated hot query.
 	Search(tc TenantContext, ctx context.Context, q SearchQuery) (SearchPage, error)
@@ -121,13 +154,25 @@ type APIKey struct {
 	RevokedAt *time.Time `json:"revoked_at,omitempty"`
 }
 
-// TenantStatus is the tenant lifecycle state.
+// TenantStatus is the tenant lifecycle state. The set mirrors the Postgres
+// `tenant_status` enum exactly (migrations/000002_enums.up.sql).
 type TenantStatus string
 
 const (
 	TenantActive    TenantStatus = "active"
 	TenantSuspended TenantStatus = "suspended"
+	TenantDeleted   TenantStatus = "deleted"
 )
+
+// Valid reports whether s is one of the known tenant statuses.
+func (s TenantStatus) Valid() bool {
+	switch s {
+	case TenantActive, TenantSuspended, TenantDeleted:
+		return true
+	default:
+		return false
+	}
+}
 
 // Tenant is the registry record for a tenant.
 type Tenant struct {

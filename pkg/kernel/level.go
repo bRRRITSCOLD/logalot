@@ -3,6 +3,7 @@ package kernel
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 )
 
 // Level is a log severity. The set and ordering mirror the Postgres `log_level`
@@ -28,23 +29,13 @@ var orderedLevels = []Level{LevelTrace, LevelDebug, LevelInfo, LevelWarn, LevelE
 
 // Valid reports whether l is one of the known levels.
 func (l Level) Valid() bool {
-	for _, k := range orderedLevels {
-		if l == k {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(orderedLevels, l)
 }
 
 // Rank returns the severity rank (trace=0 … fatal=5), or -1 if invalid. Use it
 // for severity comparisons; the wire/DB form remains the string.
 func (l Level) Rank() int {
-	for i, k := range orderedLevels {
-		if l == k {
-			return i
-		}
-	}
-	return -1
+	return slices.Index(orderedLevels, l)
 }
 
 // String returns the canonical text form.

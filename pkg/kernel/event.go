@@ -26,7 +26,18 @@ type LogEvent struct {
 	Level Level `json:"level"`
 	// Message is the primary full-text-searched text.
 	Message string `json:"message"`
-	// Labels are structured fields (jsonb labels with @> containment search).
+	// Labels are structured fields persisted to the `labels` jsonb column and
+	// searched via GIN jsonb_path_ops `@>` containment (model.md §5.1).
+	//
+	// CONTRACT — DECISION: labels are string→string. The jsonb column can
+	// physically hold nested/non-string values, but the kernel deliberately
+	// narrows the published language to map[string]string because (a) our label
+	// search model is flat `key=value` containment, which keeps `@>` queries
+	// simple and the GIN index small, and (b) a single scalar value type removes
+	// per-value type ambiguity from the wire contract. The PROCESSOR is
+	// responsible for normalizing any non-string label value (numbers, bools,
+	// nested objects) to its string form BEFORE persistence; richer structure
+	// belongs in Raw, not Labels.
 	Labels map[string]string `json:"labels"`
 	// TraceID / SpanID are optional trace correlation ids.
 	TraceID string `json:"trace_id,omitempty"`
