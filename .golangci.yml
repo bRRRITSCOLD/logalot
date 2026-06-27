@@ -1,0 +1,16 @@
+# golangci-lint config (v2 schema). Applies to every module in the Go
+# workspace; run from each module dir (see `make go-lint`).
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  # The `standard` set: errcheck, govet, ineffassign, staticcheck, unused.
+  # Kept lean on purpose — tighten per-service as real code lands.
+  default: standard
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

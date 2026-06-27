@@ -1,0 +1,32 @@
+go 1.26
+
+// Logalot Go workspace.
+//
+// Each Go service is its own module under services/<name>/ and shares the
+// kernel module at pkg/kernel/. As services land (waves 1+), add their module
+// directory to the `use` block below:
+//
+//   use (
+//       ./pkg/kernel
+//       ./services/ingest-service   // issue #6
+//       ./services/processor        // issue #7
+//       ./services/query-service    // issue #8
+//   )
+//
+// Shared modules land as waves progress:
+//   - pkg/kernel   — TenantContext + ports (#4)
+//   - pkg/platform — pgx pool + redis client constructors (#5)
+//   - pkg/auth     — ingest API-key Authenticator/KeyStore (#5)
+//   - pkg/broker   — shared RabbitMQ kernel.Broker (publish+consume+DLX/DLQ) (#6)
+use (
+	./pkg/auth
+	./pkg/broker
+	./pkg/kernel
+	./pkg/logstore
+	./pkg/platform
+	./pkg/tailbus
+	./services/ingest-service
+	./services/processor
+	./services/query-service
+	./tests/e2e
+)
