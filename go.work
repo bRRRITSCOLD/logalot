@@ -22,6 +22,9 @@ use (
 	./pkg/auth
 	./pkg/broker
 	./pkg/kernel
+	./pkg/logstore
 	./pkg/platform
+	./pkg/tailbus
 	./services/ingest-service
+	./services/processor
 )

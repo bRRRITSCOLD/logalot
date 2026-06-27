@@ -172,6 +172,17 @@ reviewed + composed + verified end-to-end on the integration branch.
   dead-letters to DLX `logalot.ingest.dlx` → DLQ `logalot.ingest.events.dlq`.
   202-only-after-confirm + tenant-from-key (not body) proven by unit + testcontainers
   integration tests. PR base feat/logging-platform.
+- #7 processor — branch `feat/7-processor`. New shared `pkg/logstore` (Postgres
+  kernel.LogStore: RLS-armed `SET LOCAL app.tenant_id` tx + batched multi-row
+  INSERT into parent `log_events`; Tail read real, Search deferred to #10) + new
+  shared `pkg/tailbus` (Redis kernel.TailBus: PUBLISH/SUBSCRIBE `tail:{tenant_id}`,
+  channel from ctx only) + `services/processor` (Go worker, hexagonal). Reuses
+  `pkg/broker.Consume` (prefetch + manual ack); handler does normalize → persist
+  (bounded retry, transient→retry→ack / poison→immediate DLQ) → best-effort tail
+  publish. Tenant from envelope/ctx, never body. Proven by unit + testcontainers
+  integration: persist+RLS-invisible-to-B + tail receipt + poison→DLQ. `go work
+  sync` aligned testcontainers-go to v0.43.0 + pgx to v5.9.2 across modules. PR
+  base feat/logging-platform.
 
 ## Open / blocked
 - Merge-to-main gated on user (guard cap above).
