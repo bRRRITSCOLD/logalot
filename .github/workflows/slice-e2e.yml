@@ -1,0 +1,46 @@
+name: slice-isolation-e2e
+
+on:
+  pull_request:
+    branches: [main]
+  schedule:
+    # Nightly at 02:00 UTC — catches regressions in RLS policy, logalot_app
+    # role attributes, or kernel.TailChannel that would otherwise pass the
+    # unit-only `go test ./...` in ci.yml.
+    - cron: "0 2 * * *"
+
+# Cancel superseded runs on the same ref to save CI minutes (PR pushes only;
+# scheduled runs use a distinct group so they never cancel each other).
+concurrency:
+  group: slice-e2e-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.26"
+
+jobs:
+  slice-isolation-e2e:
+    name: slice isolation e2e (testcontainers)
+    runs-on: ubuntu-latest
+    # Ubuntu-latest GH runners ship Docker Engine — no extra setup needed.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: go.work
+
+      - name: go work sync
+        run: make go-sync
+
+      - name: slice isolation e2e
+        # Runs tests/e2e with -tags=e2e via the Makefile target (testcontainers
+        # spins up Postgres + RabbitMQ + Redis from Docker images; timeout 300s).
+        # A failure here means a regression in: RLS policy, logalot_app role
+        # attributes, partition routing, or kernel.TailChannel delivery order.
+        run: make slice-test
