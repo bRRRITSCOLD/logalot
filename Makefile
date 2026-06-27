@@ -3,6 +3,18 @@
 
 COMPOSE := docker compose --env-file .env
 
+# Slice overlay (issue #9): infra stack + the three slice services. Used by the
+# `slice-*` targets only; the bare `up`/`down` targets stay infra-only.
+COMPOSE_SLICE := docker compose --env-file .env -f docker-compose.yml -f docker-compose.slice.yml
+
+# The slice services that COMPOSE_SLICE adds on top of the infra stack.
+SLICE_SERVICES := ingest-service processor query-service
+
+# Host-published ports for the slice services (mirror .env.example defaults so the
+# help text/echo is correct even before these are added to .env).
+INGEST_PORT ?= 8080
+QUERY_PORT  ?= 8081
+
 # Load .env (when present) so the migrate runner can build DATABASE_URL from the
 # same Postgres creds compose uses. `-include` is silent before the first `make up`
 # creates .env from the template.
@@ -26,6 +38,7 @@ MIGRATE_RUN          := docker run --rm --network logalot -v $(CURDIR)/migration
 .DEFAULT_GOAL := help
 .PHONY: help up down logs ps reset seed \
 	migrate-up migrate-down migrate-version migrate-create \
+	slice-up slice-down slice-logs slice-demo slice-test \
 	go-sync go-build go-test go-fmt go-lint \
 	node-install node-test node-lint \
 	test lint
@@ -84,6 +97,43 @@ seed:
 	docker exec -i logalot-postgres \
 		psql "postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@localhost:5432/$(POSTGRES_DB)?sslmode=disable" \
 		-v ON_ERROR_STOP=1 -f - < migrations/seeds/dev_tenant.sql
+
+# ----------------------------------------------------------------------------
+# Vertical slice (issue #9): the running ingest -> store -> live tail demo.
+# slice-up reuses the existing migrate-up + seed targets (DRY) and brings up the
+# three services from docker-compose.slice.yml on top of the infra stack.
+#
+# NOTE: only postgres/redis/rabbitmq are started (the slice does not need
+# mongodb/floci), and `--wait` blocks until their healthchecks pass so migrate
+# and the services never race a cold dependency. If host ports 5672/6379/27017
+# are taken (e.g. a `burrow` stack), override *_PORT in .env — see docs/demo.md.
+# ----------------------------------------------------------------------------
+
+## slice-up: bring up the full slice (infra + migrate + seed + the 3 services)
+slice-up: .env
+	$(COMPOSE) up -d --wait postgres redis rabbitmq
+	$(MAKE) migrate-up
+	$(MAKE) seed
+	$(COMPOSE_SLICE) up -d --build $(SLICE_SERVICES)
+	@echo ""
+	@echo "slice up. ingest -> http://localhost:$(INGEST_PORT) | query -> http://localhost:$(QUERY_PORT)"
+	@echo "dev API key: lgk_dev_devkey001_devsecret0123456789  (see docs/demo.md)"
+
+## slice-down: stop the slice services AND the infra (keeps volumes)
+slice-down:
+	$(COMPOSE_SLICE) down
+
+## slice-logs: follow logs from the three slice services
+slice-logs:
+	$(COMPOSE_SLICE) logs -f $(SLICE_SERVICES)
+
+## slice-demo: POST a log with the dev key, then live-tail it (proves <2s)
+slice-demo:
+	@bash scripts/slice-demo.sh
+
+## slice-test: run the hermetic e2e isolation test (testcontainers; needs Docker)
+slice-test:
+	cd tests/e2e && go test -tags=e2e -run TestSliceE2E -v -timeout 300s ./...
 
 # ----------------------------------------------------------------------------
 # Monorepo CI helpers. CI (.github/workflows/ci.yml) calls these same targets,
