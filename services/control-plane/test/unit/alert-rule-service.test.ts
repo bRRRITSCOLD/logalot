@@ -2,7 +2,12 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { AlertRuleService } from '../../src/app/alert-rule-service';
 import type { AlertRulePatch, AlertRuleRepository, NewAlertRule } from '../../src/app/ports';
 import type { AlertRule } from '../../src/domain/entities';
-import { ConflictError, ForbiddenError, NotFoundError } from '../../src/domain/errors';
+import {
+  ConflictError,
+  ForbiddenError,
+  NotFoundError,
+  ValidationError,
+} from '../../src/domain/errors';
 import type { TenantContext } from '../../src/domain/tenant-context';
 
 const TENANT = '00000000-0000-0000-0000-00000000000a';
@@ -100,6 +105,39 @@ describe('AlertRuleService', () => {
 
   it('AlertRuleService_MemberCreate_ForbiddenByRbac', async () => {
     await expect(svc.create(ctx('member'), baseCreate)).rejects.toBeInstanceOf(ForbiddenError);
+  });
+
+  it('AlertRuleService_CreateEmptyQueryNoSavedQuery_ValidationError', async () => {
+    // Empty inline query + no savedQueryId would count ALL logs and fire (I2).
+    await expect(
+      svc.create(ctx('tenant_admin'), { ...baseCreate, query: {}, savedQueryId: null }),
+    ).rejects.toBeInstanceOf(ValidationError);
+  });
+
+  it('AlertRuleService_CreateBothQueryAndSavedQuery_ValidationError', async () => {
+    // XOR: exactly one query source.
+    await expect(
+      svc.create(ctx('tenant_admin'), {
+        ...baseCreate,
+        savedQueryId: '00000000-0000-0000-0000-0000000000aa',
+      }),
+    ).rejects.toBeInstanceOf(ValidationError);
+  });
+
+  it('AlertRuleService_CreateSavedQueryOnly_Allowed', async () => {
+    const rule = await svc.create(ctx('tenant_admin'), {
+      ...baseCreate,
+      query: {},
+      savedQueryId: '00000000-0000-0000-0000-0000000000aa',
+    });
+    expect(rule.savedQueryId).toBe('00000000-0000-0000-0000-0000000000aa');
+  });
+
+  it('AlertRuleService_UpdateBlanksQuery_ValidationError', async () => {
+    const created = await svc.create(ctx('tenant_admin'), baseCreate);
+    await expect(svc.update(ctx('tenant_admin'), created.id, { query: {} })).rejects.toBeInstanceOf(
+      ValidationError,
+    );
   });
 
   it('AlertRuleService_DuplicateName_Conflict', async () => {

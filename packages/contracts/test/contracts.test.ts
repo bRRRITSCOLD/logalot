@@ -74,8 +74,12 @@ describe('createApiKeyRequest', () => {
 });
 
 describe('createAlertRuleRequest', () => {
-  it('applies sensible defaults', () => {
-    const r = createAlertRuleRequestSchema.parse({ name: 'errors', threshold: 5 });
+  it('applies sensible defaults (with a non-empty query source)', () => {
+    const r = createAlertRuleRequestSchema.parse({
+      name: 'errors',
+      threshold: 5,
+      query: { level: 'error' },
+    });
     expect(r.comparator).toBe('gt');
     expect(r.windowSeconds).toBe(300);
     expect(r.severity).toBe('warning');
@@ -94,22 +98,56 @@ describe('createAlertRuleRequest', () => {
     expect(r.notifyChannels[0]).toMatchObject({ type: 'webhook' });
   });
 
+  it('accepts a savedQueryId-only rule (no inline query)', () => {
+    const r = createAlertRuleRequestSchema.parse({
+      name: 'from saved query',
+      threshold: 5,
+      savedQueryId: '00000000-0000-0000-0000-0000000000aa',
+    });
+    expect(r.savedQueryId).toBe('00000000-0000-0000-0000-0000000000aa');
+  });
+
   it.each([
-    ['negative threshold', { name: 'x', threshold: -1 }],
-    ['window below 30s', { name: 'x', threshold: 1, windowSeconds: 10 }],
-    ['window above 1d', { name: 'x', threshold: 1, windowSeconds: 999999 }],
-    ['unknown comparator', { name: 'x', threshold: 1, comparator: 'between' }],
+    ['empty query AND no savedQueryId (would fire on all logs)', { name: 'x', threshold: 1 }],
+    ['empty inline query object', { name: 'x', threshold: 1, query: {} }],
+    [
+      'BOTH savedQueryId and a non-empty query (ambiguous XOR)',
+      {
+        name: 'x',
+        threshold: 1,
+        savedQueryId: '00000000-0000-0000-0000-0000000000aa',
+        query: { level: 'error' },
+      },
+    ],
+    ['negative threshold', { name: 'x', threshold: -1, query: { level: 'error' } }],
+    ['window below 30s', { name: 'x', threshold: 1, windowSeconds: 10, query: { level: 'error' } }],
+    [
+      'window above 1d',
+      { name: 'x', threshold: 1, windowSeconds: 999999, query: { level: 'error' } },
+    ],
+    [
+      'unknown comparator',
+      { name: 'x', threshold: 1, comparator: 'between', query: { level: 'error' } },
+    ],
     ['bad level', { name: 'x', threshold: 1, query: { level: 'verbose' } }],
-    ['email channel without to', { name: 'x', threshold: 1, notifyChannels: [{ type: 'email' }] }],
-    ['unknown key (strict)', { name: 'x', threshold: 1, extra: true }],
-    ['empty name', { name: '', threshold: 1 }],
+    [
+      'email channel without to',
+      { name: 'x', threshold: 1, query: { level: 'error' }, notifyChannels: [{ type: 'email' }] },
+    ],
+    ['unknown key (strict)', { name: 'x', threshold: 1, query: { level: 'error' }, extra: true }],
+    ['empty name', { name: '', threshold: 1, query: { level: 'error' } }],
   ])('rejects %s', (_label, input) => {
     expect(createAlertRuleRequestSchema.safeParse(input).success).toBe(false);
   });
 
   it('does not allow setting state (evaluator-owned)', () => {
     expect(
-      createAlertRuleRequestSchema.safeParse({ name: 'x', threshold: 1, state: 'firing' }).success,
+      createAlertRuleRequestSchema.safeParse({
+        name: 'x',
+        threshold: 1,
+        query: { level: 'error' },
+        state: 'firing',
+      }).success,
     ).toBe(false);
   });
 });
@@ -121,6 +159,16 @@ describe('updateAlertRuleRequest', () => {
 
   it('rejects an empty patch', () => {
     expect(updateAlertRuleRequestSchema.safeParse({}).success).toBe(false);
+  });
+
+  it('rejects blanking the query to empty', () => {
+    expect(updateAlertRuleRequestSchema.safeParse({ query: {} }).success).toBe(false);
+  });
+
+  it('accepts a non-empty query update', () => {
+    expect(updateAlertRuleRequestSchema.safeParse({ query: { service: 'billing' } }).success).toBe(
+      true,
+    );
   });
 });
 

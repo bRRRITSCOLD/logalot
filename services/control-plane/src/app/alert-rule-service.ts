@@ -27,6 +27,10 @@ export class AlertRuleService {
   async create(ctx: TenantContext, cmd: CreateAlertRuleCommand): Promise<AlertRule> {
     assertCan(ctx, 'alert:create');
     this.assertChannels(cmd.notifyChannels);
+    // Defense-in-depth (independent of the boundary schema): a rule MUST have a
+    // usable query source — exactly one of savedQueryId / non-empty inline query.
+    // An empty inline query would make the evaluator count every log and fire (I2).
+    this.assertQuerySource(cmd.savedQueryId ?? null, cmd.query);
     try {
       return await this.rules.create(ctx.tenantId, {
         name: cmd.name,
@@ -70,6 +74,13 @@ export class AlertRuleService {
     if (patch.notifyChannels) {
       this.assertChannels(patch.notifyChannels);
     }
+    // If the inline query is being changed, it cannot be blanked to empty unless a
+    // savedQueryId is supplied in the same patch (I2).
+    if (patch.query !== undefined && !hasInlineQuery(patch.query) && patch.savedQueryId == null) {
+      throw new ValidationError(
+        'query cannot be emptied; set a savedQueryId to switch query source',
+      );
+    }
     let updated: AlertRule | null;
     try {
       updated = await this.rules.update(ctx.tenantId, id, patch);
@@ -105,6 +116,29 @@ export class AlertRuleService {
       }
     }
   }
+
+  // A rule's query source must be EXACTLY ONE of: a saved query reference, or a
+  // non-empty inline query. Both-empty would fire on all logs; both-set is
+  // ambiguous (and the evaluator only runs the inline query today).
+  private assertQuerySource(savedQueryId: string | null, query: RuleQuery): void {
+    const hasSaved = savedQueryId != null;
+    const hasQuery = hasInlineQuery(query);
+    if (hasSaved === hasQuery) {
+      throw new ValidationError('provide exactly one of: savedQueryId, or a non-empty query');
+    }
+  }
+}
+
+// hasInlineQuery reports whether an inline query carries at least one filter. An
+// empty query would count every event in the window (no predicate) and spuriously
+// fire — mirrors the Go evaluator's RuleQuery.IsEmpty and the contract helper.
+function hasInlineQuery(query: RuleQuery): boolean {
+  return Boolean(
+    query.text?.trim() ||
+      query.service?.trim() ||
+      query.level ||
+      (query.labels && Object.keys(query.labels).length > 0),
+  );
 }
 
 function isUniqueName(err: unknown): boolean {

@@ -40,6 +40,22 @@ export const ruleQuerySchema = z
   .strict();
 export type RuleQuery = z.infer<typeof ruleQuerySchema>;
 
+/**
+ * Whether an inline query carries at least one filter. An EMPTY inline query
+ * would make the evaluator count every event in the window (no predicate) and
+ * spuriously fire, so an empty query is never a valid rule source. Mirrors the
+ * Go evaluator's RuleQuery.IsEmpty.
+ */
+export function hasInlineQuery(query: RuleQuery | undefined): boolean {
+  if (!query) return false;
+  return Boolean(
+    query.text?.trim() ||
+      query.service?.trim() ||
+      query.level ||
+      (query.labels && Object.keys(query.labels).length > 0),
+  );
+}
+
 /** A notification target. v1: webhook | email (email is a stub in floci). */
 export const notifyChannelSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('webhook'), url: z.string().url().max(2000) }).strict(),
@@ -50,9 +66,9 @@ export type NotifyChannel = z.infer<typeof notifyChannelSchema>;
 export const createAlertRuleRequestSchema = z
   .object({
     name: z.string().trim().min(1).max(200),
-    // Either reference a saved query by id OR carry an inline query (or both — the
-    // evaluator currently evaluates the inline query; saved-query resolution is a
-    // documented follow-up).
+    // A rule's query source is EXACTLY ONE of: a saved query reference, OR a
+    // non-empty inline query (XOR below). An empty query would count all logs and
+    // spuriously fire (review I2); saved-query resolution is a documented follow-up.
     savedQueryId: uuidSchema.optional(),
     query: ruleQuerySchema.default({}),
     comparator: alertComparatorSchema.default('gt'),
@@ -63,7 +79,11 @@ export const createAlertRuleRequestSchema = z
     enabled: z.boolean().default(true),
     notifyChannels: z.array(notifyChannelSchema).max(20).default([]),
   })
-  .strict();
+  .strict()
+  .refine((v) => (v.savedQueryId !== undefined) !== hasInlineQuery(v.query), {
+    message: 'provide exactly one of: savedQueryId, or a non-empty query',
+    path: ['query'],
+  });
 export type CreateAlertRuleRequest = z.infer<typeof createAlertRuleRequestSchema>;
 
 /** Partial update. State/evaluation fields are evaluator-owned and not updatable. */
@@ -80,7 +100,14 @@ export const updateAlertRuleRequestSchema = z
     notifyChannels: z.array(notifyChannelSchema).max(20).optional(),
   })
   .strict()
-  .refine((v) => Object.keys(v).length > 0, { message: 'at least one field must be provided' });
+  .refine((v) => Object.keys(v).length > 0, { message: 'at least one field must be provided' })
+  // If the inline query is being changed, it cannot be blanked to empty (that
+  // would make the rule match all logs). To switch to a saved query, set
+  // savedQueryId in the same patch.
+  .refine((v) => v.query === undefined || hasInlineQuery(v.query) || v.savedQueryId !== undefined, {
+    message: 'query cannot be emptied; set a savedQueryId to switch query source',
+    path: ['query'],
+  });
 export type UpdateAlertRuleRequest = z.infer<typeof updateAlertRuleRequestSchema>;
 
 export const alertRuleResponseSchema = z.object({
