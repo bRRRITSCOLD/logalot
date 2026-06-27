@@ -24,6 +24,16 @@ export const OPERATIONS = [
   'alert:list',
   'alert:update',
   'alert:delete',
+  'savedquery:create',
+  'savedquery:read',
+  'savedquery:list',
+  'savedquery:update',
+  'savedquery:delete',
+  'dashboard:create',
+  'dashboard:read',
+  'dashboard:list',
+  'dashboard:update',
+  'dashboard:delete',
 ] as const;
 
 export type Operation = (typeof OPERATIONS)[number];
@@ -64,11 +74,29 @@ const MATRIX: Record<Role, ReadonlySet<Operation>> = {
     'alert:list',
     'alert:update',
     'alert:delete',
+    'savedquery:create',
+    'savedquery:read',
+    'savedquery:list',
+    'savedquery:update',
+    'savedquery:delete',
+    'dashboard:create',
+    'dashboard:read',
+    'dashboard:list',
+    'dashboard:update',
+    'dashboard:delete',
   ]),
-  // member is read-mostly within its tenant: it can SEE alert rules (and
-  // retention) but writing rule config is a tenant_admin verb, consistent with
-  // how retention/keys are gated.
-  member: new Set<Operation>(['tenant:read', 'retention:read', 'alert:read', 'alert:list']),
+  // member is read-mostly within its tenant: it can SEE alert rules, saved
+  // queries, and dashboards — but writing config is a tenant_admin verb.
+  member: new Set<Operation>([
+    'tenant:read',
+    'retention:read',
+    'alert:read',
+    'alert:list',
+    'savedquery:read',
+    'savedquery:list',
+    'dashboard:read',
+    'dashboard:list',
+  ]),
 };
 
 // can reports whether `role` is permitted to perform `operation`. Pure and total:
