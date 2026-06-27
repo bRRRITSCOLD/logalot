@@ -27,4 +27,5 @@ use (
 	./pkg/tailbus
 	./services/ingest-service
 	./services/processor
+	./services/query-service
 )
