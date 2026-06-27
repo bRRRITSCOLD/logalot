@@ -1,3 +1,4 @@
+import { isUniqueViolation } from '../adapters/postgres/tenant-tx';
 import type { SavedQuery, SavedQueryFilters } from '../domain/entities';
 import { ConflictError, NotFoundError } from '../domain/errors';
 import type { TenantContext } from '../domain/tenant-context';
@@ -79,13 +80,4 @@ export class SavedQueryService {
       throw new NotFoundError('saved query not found');
     }
   }
-}
-
-function isUniqueViolation(err: unknown): boolean {
-  return (
-    typeof err === 'object' &&
-    err !== null &&
-    'code' in err &&
-    (err as { code?: unknown }).code === '23505'
-  );
 }

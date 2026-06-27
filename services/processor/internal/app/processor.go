@@ -8,6 +8,12 @@
 // Tenancy is load-bearing: the TenantContext is the one rebuilt by the broker
 // from the envelope's authoritative tenant_id, and it is the sole source of the
 // persisted tenant_id and the tail channel — never the event body (ADR-0002).
+//
+// Graceful-shutdown drain (issue #37): persist uses context.WithoutCancel so a
+// SIGTERM that cancels the lifecycle context does not abort an in-flight DB write.
+// Without this, the single in-flight message would hit ctx.Err() inside persist,
+// return context.Canceled, and be nacked to the DLQ — misclassifying a clean
+// shutdown as a poison message.
 package app
 
 import (
@@ -120,9 +126,23 @@ func (s *Service) Handle(tc kernel.TenantContext, ctx context.Context, env kerne
 	return nil
 }
 
-// persist appends the event with a bounded retry on transient failure, honoring
-// context cancellation between attempts.
+// persist appends the event with a bounded retry on transient failure.
+//
+// Drain contract (issue #37): the store.Append call uses a drainCtx derived
+// from context.WithoutCancel(ctx), so a lifecycle cancellation (SIGTERM) does
+// NOT abort an in-flight DB write. This prevents a graceful-shutdown signal from
+// being misclassified as a poison persist and routing the message to the DLQ.
+//
+// ctx (the lifecycle context) is still used for the retry sleep so that a
+// cancellation wakes up the sleep immediately, and ctx.Err() is checked between
+// retry attempts to stop retrying once the process is shutting down. This means:
+//   - Attempt 0 always runs to completion (drain).
+//   - Subsequent retry attempts are skipped after a shutdown signal.
 func (s *Service) persist(tc kernel.TenantContext, ctx context.Context, ev kernel.LogEvent) error {
+	// drainCtx inherits all values from ctx (trace IDs etc.) but is never
+	// cancelled, so the DB write completes regardless of lifecycle cancellation.
+	drainCtx := context.WithoutCancel(ctx)
+
 	attempts := s.maxRetries + 1
 	if attempts < 1 {
 		attempts = 1
@@ -130,14 +150,19 @@ func (s *Service) persist(tc kernel.TenantContext, ctx context.Context, ev kerne
 	var lastErr error
 	for attempt := 0; attempt < attempts; attempt++ {
 		if attempt > 0 {
+			// Between retries: stop if the lifecycle context was cancelled (shutdown).
+			// ctx.Err() is intentionally checked only AFTER the first attempt so the
+			// initial persist always runs — that is the drain guarantee.
+			if err := ctx.Err(); err != nil {
+				// Return the last actual persist error so the caller has a meaningful
+				// error (not context.Canceled) if it decides to surface it.
+				return lastErr
+			}
 			s.log.WarnContext(ctx, "processor: retrying persist",
 				"tenant_id", tc.TenantID, "attempt", attempt, "err", lastErr)
 			s.sleep(ctx, s.retryDelay*time.Duration(attempt))
 		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if err := s.store.Append(tc, ctx, ev); err != nil {
+		if err := s.store.Append(tc, drainCtx, ev); err != nil {
 			lastErr = err
 			continue
 		}

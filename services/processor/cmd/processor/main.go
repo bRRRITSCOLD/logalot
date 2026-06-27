@@ -37,9 +37,12 @@ func run(log *slog.Logger) error {
 		return err
 	}
 
-	// One lifecycle context cancelled on SIGINT/SIGTERM. Consume blocks on it and
-	// returns when it is cancelled, draining in-flight deliveries cleanly (each
-	// in-flight handler finishes its persist+ack/nack before Consume returns).
+	// One lifecycle context cancelled on SIGINT/SIGTERM. The broker's Consume loop
+	// exits when ctx is cancelled; the single in-flight handleDelivery call (if
+	// any) runs to completion before Consume returns, because handleDelivery is
+	// synchronous inside the select. The processor persist uses context.WithoutCancel
+	// so the in-flight DB write is not aborted by the cancellation signal — a
+	// shutdown is never misrouted to the DLQ as a poison message (issue #37).
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
