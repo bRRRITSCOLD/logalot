@@ -69,7 +69,7 @@ func tailServer(t *testing.T, rc *redis.Client, tenant kernel.TenantID) *httptes
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	bus := tailbus.New(rc)
 	svc := app.New(bus, app.WithLogger(log))
-	h := NewHandler(svc, nil, nil, log)
+	h := NewHandler(svc, nil, nil, nil, log)
 	srv := httptest.NewServer(NewRouter(h, stubAuth{tc: kernel.TenantContext{TenantID: tenant, Role: kernel.RoleMember}}, log))
 	t.Cleanup(srv.Close)
 	return srv

@@ -20,6 +20,7 @@ import (
 	"github.com/bRRRITSCOLD/logalot/pkg/platform"
 	"github.com/bRRRITSCOLD/logalot/pkg/tailbus"
 	"github.com/bRRRITSCOLD/logalot/services/query-service/internal/adapters/httpx"
+	pgadapter "github.com/bRRRITSCOLD/logalot/services/query-service/internal/adapters/postgres"
 	"github.com/bRRRITSCOLD/logalot/services/query-service/internal/app"
 	"github.com/bRRRITSCOLD/logalot/services/query-service/internal/config"
 	"github.com/redis/go-redis/v9"
@@ -65,7 +66,10 @@ func run(log *slog.Logger) error {
 	// Hot search runs over the RLS-governed logalot_app pool (the LogStore adapter
 	// arms SET LOCAL app.tenant_id per query); search shares the same pool.
 	searcher := app.NewSearcher(logstore.New(pool))
-	handler := httpx.NewHandler(svc, searcher, readiness(rc), log)
+	// Panel-data: saved_query resolution + log aggregation, same RLS-governed pool.
+	panelStore := pgadapter.NewPanelStore(pool)
+	panelSvc := app.NewPanelService(panelStore)
+	handler := httpx.NewHandler(svc, searcher, panelSvc, readiness(rc), log)
 	router := httpx.NewRouter(handler, authr, log)
 
 	srv := &http.Server{

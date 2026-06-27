@@ -34,7 +34,7 @@ func (f *fakeSearcher) Search(tc kernel.TenantContext, _ context.Context, q kern
 func newSearchServer(t *testing.T, authr kernel.Authenticator, search Searcher) *httptest.Server {
 	t.Helper()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	h := NewHandler(nil, search, nil, log)
+	h := NewHandler(nil, search, nil, nil, log)
 	srv := httptest.NewServer(NewRouter(h, authr, log))
 	t.Cleanup(srv.Close)
 	return srv

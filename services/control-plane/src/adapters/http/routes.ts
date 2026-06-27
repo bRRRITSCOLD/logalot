@@ -1,12 +1,16 @@
 import {
   createAlertRuleRequestSchema,
   createApiKeyRequestSchema,
+  createDashboardRequestSchema,
+  createSavedQueryRequestSchema,
   createTenantRequestSchema,
   createUserRequestSchema,
   loginRequestSchema,
   logoutRequestSchema,
   refreshRequestSchema,
   updateAlertRuleRequestSchema,
+  updateDashboardRequestSchema,
+  updateSavedQueryRequestSchema,
   updateTenantRequestSchema,
   updateUserRequestSchema,
 } from '@logalot/contracts';
@@ -289,6 +293,118 @@ export function registerRoutes(app: FastifyInstance, deps: RouteDeps): void {
     async (req, reply) => {
       const { id } = parse(uuidParamSchema, req.params);
       await services.alerts.remove(requireTenantContext(req), id);
+      return reply.code(204).send();
+    },
+  );
+
+  // ── Saved queries (read/list: member; write: tenant_admin) ───────────────────
+  app.post(
+    '/v1/saved-queries',
+    { preHandler: [authenticate, makeRequireOperation('savedquery:create')] },
+    async (req, reply) => {
+      const body = parse(createSavedQueryRequestSchema, req.body);
+      const sq = await services.savedQueries.create(requireTenantContext(req), {
+        name: body.name,
+        description: body.description ?? null,
+        queryText: body.queryText,
+        filters: body.filters,
+        timeRange: body.timeRange as Record<string, unknown>,
+      });
+      return reply.code(201).send(sq);
+    },
+  );
+
+  app.get(
+    '/v1/saved-queries',
+    { preHandler: [authenticate, makeRequireOperation('savedquery:list')] },
+    async (req) => ({ savedQueries: await services.savedQueries.list(requireTenantContext(req)) }),
+  );
+
+  app.get(
+    '/v1/saved-queries/:id',
+    { preHandler: [authenticate, makeRequireOperation('savedquery:read')] },
+    async (req) => {
+      const { id } = parse(uuidParamSchema, req.params);
+      return services.savedQueries.get(requireTenantContext(req), id);
+    },
+  );
+
+  app.patch(
+    '/v1/saved-queries/:id',
+    { preHandler: [authenticate, makeRequireOperation('savedquery:update')] },
+    async (req) => {
+      const { id } = parse(uuidParamSchema, req.params);
+      const body = parse(updateSavedQueryRequestSchema, req.body);
+      return services.savedQueries.update(requireTenantContext(req), id, {
+        name: body.name,
+        description: body.description,
+        queryText: body.queryText,
+        filters: body.filters,
+        timeRange: body.timeRange as Record<string, unknown> | undefined,
+      });
+    },
+  );
+
+  app.delete(
+    '/v1/saved-queries/:id',
+    { preHandler: [authenticate, makeRequireOperation('savedquery:delete')] },
+    async (req, reply) => {
+      const { id } = parse(uuidParamSchema, req.params);
+      await services.savedQueries.remove(requireTenantContext(req), id);
+      return reply.code(204).send();
+    },
+  );
+
+  // ── Dashboards (read/list: member; write: tenant_admin) ─────────────────────
+  app.post(
+    '/v1/dashboards',
+    { preHandler: [authenticate, makeRequireOperation('dashboard:create')] },
+    async (req, reply) => {
+      const body = parse(createDashboardRequestSchema, req.body);
+      const dash = await services.dashboards.create(requireTenantContext(req), {
+        name: body.name,
+        description: body.description ?? null,
+        layout: body.layout,
+      });
+      return reply.code(201).send(dash);
+    },
+  );
+
+  app.get(
+    '/v1/dashboards',
+    { preHandler: [authenticate, makeRequireOperation('dashboard:list')] },
+    async (req) => ({ dashboards: await services.dashboards.list(requireTenantContext(req)) }),
+  );
+
+  app.get(
+    '/v1/dashboards/:id',
+    { preHandler: [authenticate, makeRequireOperation('dashboard:read')] },
+    async (req) => {
+      const { id } = parse(uuidParamSchema, req.params);
+      return services.dashboards.get(requireTenantContext(req), id);
+    },
+  );
+
+  app.patch(
+    '/v1/dashboards/:id',
+    { preHandler: [authenticate, makeRequireOperation('dashboard:update')] },
+    async (req) => {
+      const { id } = parse(uuidParamSchema, req.params);
+      const body = parse(updateDashboardRequestSchema, req.body);
+      return services.dashboards.update(requireTenantContext(req), id, {
+        name: body.name,
+        description: body.description,
+        layout: body.layout,
+      });
+    },
+  );
+
+  app.delete(
+    '/v1/dashboards/:id',
+    { preHandler: [authenticate, makeRequireOperation('dashboard:delete')] },
+    async (req, reply) => {
+      const { id } = parse(uuidParamSchema, req.params);
+      await services.dashboards.remove(requireTenantContext(req), id);
       return reply.code(204).send();
     },
   );

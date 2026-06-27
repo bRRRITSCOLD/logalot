@@ -81,7 +81,7 @@ func newTestServer(t *testing.T, authr kernel.Authenticator, bus kernel.TailBus,
 	t.Helper()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	svc := app.New(bus)
-	h := NewHandler(svc, nil, ready, log)
+	h := NewHandler(svc, nil, nil, ready, log)
 	srv := httptest.NewServer(NewRouter(h, authr, log))
 	t.Cleanup(srv.Close)
 	return srv

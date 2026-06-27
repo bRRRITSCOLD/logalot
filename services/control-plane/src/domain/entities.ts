@@ -64,6 +64,58 @@ export interface RuleQuery {
 
 export type NotifyChannel = { type: 'webhook'; url: string } | { type: 'email'; to: string };
 
+// SavedQuery is the public projection of a saved_queries row (migration 000007).
+// Referenced by identity (id) from dashboards and alert_rules — no FK. All fields
+// are mutable by the owner tenant; the query definition (queryText + filters) is
+// what panels and alert rules resolve when the savedQueryId matches.
+export interface SavedQueryFilters {
+  service?: string;
+  level?: string;
+  labels?: Record<string, string>;
+}
+
+export interface SavedQuery {
+  id: string;
+  tenantId: string;
+  name: string;
+  description: string | null;
+  queryText: string;
+  filters: SavedQueryFilters;
+  timeRange: Record<string, unknown>;
+  createdBy: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+// Panel is the inline panel definition stored in dashboards.layout.
+export interface Panel {
+  id: string;
+  type: 'timeseries' | 'stat' | 'logs';
+  title: string;
+  savedQueryId: string;
+  viz: Record<string, unknown>;
+  grid: { x: number; y: number; w: number; h: number };
+}
+
+// DashboardLayout is the inline layout JSONB stored in dashboards.layout.
+export interface DashboardLayout {
+  panels: Panel[];
+}
+
+// Dashboard is the public projection of a dashboards row (migration 000008).
+// Panels are owned inline (aggregate boundary); panel savedQueryId references
+// saved_queries by identity only.
+export interface Dashboard {
+  id: string;
+  tenantId: string;
+  name: string;
+  description: string | null;
+  layout: DashboardLayout;
+  createdBy: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 // AlertRule is the public projection of an alert_rules row. The state +
 // last_evaluated_at/last_triggered_at fields are owned by the alert-evaluator
 // worker and are read-only here (the control-plane never writes them).

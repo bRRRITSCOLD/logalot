@@ -3,9 +3,13 @@ import type {
   AlertComparator,
   AlertRule,
   ApiKeyRecord,
+  Dashboard,
+  DashboardLayout,
   NotifyChannel,
   RetentionPolicy,
   RuleQuery,
+  SavedQuery,
+  SavedQueryFilters,
   Tenant,
   TenantStatus,
   User,
@@ -194,6 +198,59 @@ export interface AlertRuleRepository {
   list(tenantId: string): Promise<AlertRule[]>;
   findById(tenantId: string, id: string): Promise<AlertRule | null>;
   update(tenantId: string, id: string, patch: AlertRulePatch): Promise<AlertRule | null>;
+  delete(tenantId: string, id: string): Promise<boolean>;
+}
+
+// ── Saved-query repository (migration 000007) ─────────────────────────────────
+// The control-plane owns SavedQuery CRUD. Alert-evaluator and panel-data read
+// saved queries by identity — never through this port (the evaluator uses the
+// logalot_evaluator role directly; panel-data uses the query-service LogStore).
+
+export interface NewSavedQuery {
+  name: string;
+  description?: string | null;
+  queryText: string;
+  filters: SavedQueryFilters;
+  timeRange: Record<string, unknown>;
+  createdBy: string | null;
+}
+
+export interface SavedQueryPatch {
+  name?: string;
+  description?: string | null;
+  queryText?: string;
+  filters?: SavedQueryFilters;
+  timeRange?: Record<string, unknown>;
+}
+
+export interface SavedQueryRepository {
+  create(tenantId: string, input: NewSavedQuery): Promise<SavedQuery>;
+  list(tenantId: string): Promise<SavedQuery[]>;
+  findById(tenantId: string, id: string): Promise<SavedQuery | null>;
+  update(tenantId: string, id: string, patch: SavedQueryPatch): Promise<SavedQuery | null>;
+  delete(tenantId: string, id: string): Promise<boolean>;
+}
+
+// ── Dashboard repository (migration 000008) ────────────────────────────────────
+
+export interface NewDashboard {
+  name: string;
+  description?: string | null;
+  layout: DashboardLayout;
+  createdBy: string | null;
+}
+
+export interface DashboardPatch {
+  name?: string;
+  description?: string | null;
+  layout?: DashboardLayout;
+}
+
+export interface DashboardRepository {
+  create(tenantId: string, input: NewDashboard): Promise<Dashboard>;
+  list(tenantId: string): Promise<Dashboard[]>;
+  findById(tenantId: string, id: string): Promise<Dashboard | null>;
+  update(tenantId: string, id: string, patch: DashboardPatch): Promise<Dashboard | null>;
   delete(tenantId: string, id: string): Promise<boolean>;
 }
 

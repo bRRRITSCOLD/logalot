@@ -559,3 +559,136 @@ func contains(s, sub string) bool {
 	}
 	return false
 }
+
+// ── AC5 (#18): saved_query_id-only alert rules are resolvable ─────────────────
+//
+// Before issue #18 the evaluator SKIPPED rules whose inline query was empty even
+// when a saved_query_id was set, because no resolution existed. This test proves
+// that the RuleStore adapter now resolves the saved_query into the Rule's Query
+// field so the evaluator can fire the rule.
+//
+// It also tests the fallback: if the saved_query is deleted, the rule stays
+// inert (skipped but not failed) — the evaluator's IsEmpty guard still fires.
+
+const (
+	savedQueryID = "ffffffff-ffff-ffff-ffff-ffffffffffff"
+	ruleSQID     = "22222222-2222-2222-2222-22222222222a"
+)
+
+// seedSavedQuery inserts a saved_queries row via the superuser pool (bypasses RLS —
+// the control-plane would use logalot_app under RLS; tests need to bypass).
+func (e *itEnv) seedSavedQuery(t *testing.T, id, tenantID, name string, filters map[string]interface{}) {
+	t.Helper()
+	filtersJSON, _ := json.Marshal(filters)
+	_, err := e.adminPool.Exec(context.Background(),
+		`INSERT INTO saved_queries (id, tenant_id, name, query_text, filters, time_range)
+		 VALUES ($1,$2,$3,'',$4::jsonb,'{}'::jsonb)`,
+		id, tenantID, name, string(filtersJSON))
+	if err != nil {
+		t.Fatalf("seed saved_query %s: %v", name, err)
+	}
+}
+
+// seedRuleWithSavedQuery inserts an alert rule whose inline query is empty and
+// saved_query_id is set — the pre-fix evaluator would have skipped it.
+func (e *itEnv) seedRuleWithSavedQuery(t *testing.T, ruleID, tenantID, name string, savedQID string, threshold float64, windowSeconds int) {
+	t.Helper()
+	_, err := e.adminPool.Exec(context.Background(),
+		`INSERT INTO alert_rules (id, tenant_id, name, query, saved_query_id, comparator, threshold, window_seconds, severity, enabled, state)
+		 VALUES ($1,$2,$3,'{}'::jsonb,$4,'gt',$5,$6,'critical',true,'ok')`,
+		ruleID, tenantID, name, savedQID, threshold, windowSeconds)
+	if err != nil {
+		t.Fatalf("seed rule-with-saved-query %s: %v", name, err)
+	}
+}
+
+func TestIntegration_SavedQueryIDRule_ResolvesAndFires(t *testing.T) {
+	e := setup(t)
+	e.seedTenant(t, tenantA, "tenant-a")
+
+	// Create a saved query: count errors from "billing" service.
+	e.seedSavedQuery(t, savedQueryID, tenantA, "billing errors", map[string]interface{}{
+		"service": "billing",
+		"level":   "error",
+	})
+
+	// Create a rule referencing the saved query; inline query is empty.
+	// Migration 000014: saved_query_id IS NOT NULL satisfies the CHECK constraint.
+	e.seedRuleWithSavedQuery(t, ruleSQID, tenantA, "billing-errors rule", savedQueryID, 3, 300)
+
+	base := time.Now().UTC()
+	// 5 billing errors (> threshold 3).
+	for i := 0; i < 5; i++ {
+		e.insertLog(t, tenantA, base.Add(-time.Duration(i)*time.Second), kernel.LevelError, "payment failed")
+	}
+
+	clock := &settableClock{}
+	clock.set(base.Add(time.Minute)) // window covers all 5 logs
+	sink := notify.NewLogSink(nil)
+	ev := app.New(
+		pgadapter.NewRuleStore(e.metaPool),
+		pgadapter.NewLogCounter(e.appPool),
+		sink,
+		app.WithClock(clock.now),
+		app.WithInterval(10*time.Second),
+	)
+	ctx := context.Background()
+
+	if _, err := ev.EvaluateDue(ctx); err != nil {
+		t.Fatalf("EvaluateDue: %v", err)
+	}
+
+	// The rule must have fired: saved_query resolved → filter applied → 5 billing errors
+	// > threshold 3 → transition to firing.
+	if sink.CountTo(app.StateFiring) != 1 {
+		t.Fatalf("AC5 PROOF FAILED: firing notifications = %d, want 1 (saved_query_id rule must resolve and fire)", sink.CountTo(app.StateFiring))
+	}
+	if got := e.countNotifications(t, tenantA, ruleSQID); got != 1 {
+		t.Fatalf("AC5: outbox rows = %d, want 1", got)
+	}
+	t.Logf("AC5 PROOF: saved_query_id-only rule resolved billing/error filter → 5 matches > threshold 3 → fired once")
+}
+
+// TestIntegration_SavedQueryIDRule_MissingSavedQuery_SkippedNotFailed proves that
+// if a saved query is deleted, the rule is skipped (MarkEvaluated) but not failed
+// — the evaluator stays healthy and continues the batch.
+func TestIntegration_SavedQueryIDRule_MissingSavedQuery_SkippedNotFailed(t *testing.T) {
+	e := setup(t)
+	e.seedTenant(t, tenantA, "tenant-a")
+
+	const missingQID = "dddddddd-dddd-dddd-dddd-dddddddddddd"
+	const ruleDelID = "33333333-3333-3333-3333-33333333333a"
+
+	// Rule references a saved_query that does NOT exist in the DB.
+	e.seedRuleWithSavedQuery(t, ruleDelID, tenantA, "orphaned rule", missingQID, 1, 300)
+
+	base := time.Now().UTC()
+	e.insertLog(t, tenantA, base, kernel.LevelError, "some error")
+
+	clock := &settableClock{}
+	clock.set(base.Add(time.Minute))
+	sink := notify.NewLogSink(nil)
+	ev := app.New(
+		pgadapter.NewRuleStore(e.metaPool),
+		pgadapter.NewLogCounter(e.appPool),
+		sink,
+		app.WithClock(clock.now),
+		app.WithInterval(10*time.Second),
+	)
+	ctx := context.Background()
+
+	// Must not error — the batch continues past a rule with an orphaned saved_query.
+	n, err := ev.EvaluateDue(ctx)
+	if err != nil {
+		t.Fatalf("EvaluateDue failed (orphaned saved_query must be skipped, not fatal): %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("EvaluateDue evaluated %d rules, want 1 (the orphaned rule should appear in due list)", n)
+	}
+
+	// No notification must be emitted — the rule was skipped.
+	if sink.CountTo(app.StateFiring) != 0 {
+		t.Fatalf("orphaned saved_query rule must NOT fire (got %d firing notifications)", sink.CountTo(app.StateFiring))
+	}
+	t.Logf("AC5 (fallback) PROOF: orphaned saved_query_id rule skipped gracefully — batch healthy, 0 spurious notifications")
+}

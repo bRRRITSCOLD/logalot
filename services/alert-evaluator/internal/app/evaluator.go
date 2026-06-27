@@ -159,14 +159,16 @@ func (e *Evaluator) dispatchPending(ctx context.Context) {
 func (e *Evaluator) evaluateRule(ctx context.Context, r Rule) error {
 	now := e.now()
 
-	// Refuse to evaluate a rule with no inline filter: an empty query would count
-	// EVERY event in the window and spuriously fire. Saved-query resolution is
-	// deferred, so a saved-query-only rule is skipped (not failed) until then. The
-	// control-plane already rejects empty-query rules at create/update; this is the
-	// evaluator-side backstop for any rule that predates that guard.
+	// Refuse to evaluate a rule with no effective query: an empty query would count
+	// EVERY event in the window and spuriously fire. The RuleStore adapter resolves
+	// saved_query_id into Query before returning; if the query is still empty after
+	// that (saved query deleted, invisible, or rule has neither source), skip the
+	// rule rather than fail it — it will stay pending evaluation and the operator can
+	// fix it. The control-plane rejects empty-query rules at create/update; this is
+	// the evaluator-side backstop.
 	if r.Query.IsEmpty() {
-		e.log.WarnContext(ctx, "alert-evaluator: skipping rule with empty inline query (saved-query resolution deferred)",
-			"rule_id", r.ID, "tenant_id", r.TenantID)
+		e.log.WarnContext(ctx, "alert-evaluator: skipping rule with empty effective query (no inline query and no resolvable saved query)",
+			"rule_id", r.ID, "tenant_id", r.TenantID, "saved_query_id", r.SavedQueryID)
 		return e.rules.MarkEvaluated(ctx, r.ID, now)
 	}
 

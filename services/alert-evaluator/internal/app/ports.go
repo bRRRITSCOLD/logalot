@@ -79,8 +79,13 @@ type Rule struct {
 	Severity      string
 	State         State
 	TransitionSeq int64
-	Query         RuleQuery
-	Channels      []Channel
+	// SavedQueryID is non-empty when the rule references a saved_query instead of
+	// (or in addition to) an inline query. The RuleStore adapter MUST resolve it
+	// into Query when Query.IsEmpty() so the evaluator always receives a populated
+	// Query (or skips the rule if the saved query was deleted or is invisible).
+	SavedQueryID string
+	Query        RuleQuery
+	Channels     []Channel
 }
 
 // Window returns the rule's evaluation window duration.
