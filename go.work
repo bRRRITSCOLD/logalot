@@ -28,4 +28,5 @@ use (
 	./services/ingest-service
 	./services/processor
 	./services/query-service
+	./tests/e2e
 )

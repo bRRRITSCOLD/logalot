@@ -1,0 +1,114 @@
+# Vertical-slice services overlay (issue #9): ingest -> store -> live tail.
+#
+# Layered ON TOP of docker-compose.yml (the infra stack) — never run alone:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.slice.yml up -d
+#
+# (the Makefile `slice-*` targets wrap this). The three Go services join the same
+# `logalot` network and reach the infra by SERVICE HOSTNAME (postgres/redis/
+# rabbitmq), so the host-published ports in .env are irrelevant to inter-service
+# traffic — which is why overriding them to dodge a host port clash (e.g. the
+# burrow stack on 5672/6379) does not affect the slice. See docs/demo.md.
+#
+# Every service connects to Postgres as the NOSUPERUSER logalot_app role (so RLS
+# governs it) and waits for the infra healthchecks before starting.
+
+name: logalot
+
+services:
+  ingest-service:
+    image: logalot/ingest-service:dev
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: ingest-service
+    container_name: logalot-ingest-service
+    restart: unless-stopped
+    environment:
+      # In-network DSN: the logalot_app role over the `postgres` service host.
+      LOGALOT_APP_DATABASE_URL: postgres://logalot_app:logalot_app@postgres:5432/${POSTGRES_DB}?sslmode=disable
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: "5672"
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      INGEST_HTTP_ADDR: ":8080"
+    ports:
+      - "${INGEST_PORT:-8080}:8080"
+    networks:
+      - logalot
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  processor:
+    image: logalot/processor:dev
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: processor
+    container_name: logalot-processor
+    restart: unless-stopped
+    environment:
+      LOGALOT_APP_DATABASE_URL: postgres://logalot_app:logalot_app@postgres:5432/${POSTGRES_DB}?sslmode=disable
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: "5672"
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    networks:
+      - logalot
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  query-service:
+    image: logalot/query-service:dev
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: query-service
+    container_name: logalot-query-service
+    restart: unless-stopped
+    environment:
+      LOGALOT_APP_DATABASE_URL: postgres://logalot_app:logalot_app@postgres:5432/${POSTGRES_DB}?sslmode=disable
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      QUERY_HTTP_ADDR: ":8081"
+    ports:
+      - "${QUERY_PORT:-8081}:8081"
+    networks:
+      - logalot
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8081/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
