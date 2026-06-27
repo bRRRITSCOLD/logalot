@@ -55,9 +55,33 @@ export class PgRefreshTokenRepository implements RefreshTokenRepository {
     });
   }
 
-  async markRotated(tenantId: string, id: string, now: Date): Promise<void> {
-    await withTenantTx(this.pool, tenantId, async (client) => {
-      await client.query('UPDATE refresh_tokens SET rotated_at = $2 WHERE id = $1', [id, now]);
+  async rotate(
+    tenantId: string,
+    presentedId: string,
+    now: Date,
+    successor: NewRefreshToken,
+  ): Promise<{ id: string } | null> {
+    return withTenantTx(this.pool, tenantId, async (client) => {
+      // Conditional consume: only the FIRST presentation of a live token matches,
+      // so two concurrent refreshes can never both rotate it (TOCTOU guard). The
+      // 0-rows case means another tx already consumed (or revoked) it -> reuse.
+      const consumed = await client.query(
+        `UPDATE refresh_tokens SET rotated_at = $2
+           WHERE id = $1 AND rotated_at IS NULL AND revoked_at IS NULL
+         RETURNING family_id`,
+        [presentedId, now],
+      );
+      if (consumed.rowCount === 0) {
+        return null;
+      }
+      // Mint the successor in the SAME tx, so consume+mint are all-or-nothing.
+      const inserted = await client.query<{ id: string }>(
+        `INSERT INTO refresh_tokens (tenant_id, user_id, family_id, token_hash, expires_at)
+         VALUES ($1, $2, $3, $4, $5)
+         RETURNING id`,
+        [tenantId, successor.userId, successor.familyId, successor.tokenHash, successor.expiresAt],
+      );
+      return { id: (inserted.rows[0] as { id: string }).id };
     });
   }
 

@@ -1,5 +1,7 @@
+import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { PgRefreshTokenRepository } from '../../src/adapters/postgres/refresh-token-repository';
 import { parseApiKey } from '../../src/domain/api-key';
 import { sha256 } from '../../src/domain/secret-hash';
 import { armedQuery, type ItEnv, seedPlatformOperator, setupEnv, teardownEnv } from './helpers';
@@ -251,6 +253,83 @@ describe('control-plane integration', () => {
       method: 'POST',
       url: '/v1/auth/login',
       payload: { tenantSlug: 'tenant-a', email: 'admin@a.co', password: 'wrong' },
+    });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it('rotate() is atomic: two concurrent rotations of one token yield exactly one successor', async () => {
+    // The load-bearing TOCTOU proof, at the repository level against the REAL DB so
+    // the conditional UPDATE genuinely serializes (the HTTP path's findById +
+    // early-reuse check can mask the race depending on timing; this cannot).
+    const repo = new PgRefreshTokenRepository(env.appPool);
+    const [u] = await armedQuery<{ id: string }>(
+      env.appPool,
+      tenantAId,
+      'SELECT id FROM users WHERE email = $1',
+      ['admin@a.co'],
+    );
+    const userId = (u as { id: string }).id;
+    const familyId = randomUUID();
+    const expiresAt = new Date(Date.now() + 3_600_000);
+    const created = await repo.create(tenantAId, {
+      familyId,
+      userId,
+      tokenHash: sha256('seed-secret'),
+      expiresAt,
+    });
+    const now = new Date();
+    const successor = (h: string) => ({ familyId, userId, tokenHash: sha256(h), expiresAt });
+    const [r1, r2] = await Promise.all([
+      repo.rotate(tenantAId, created.id, now, successor('s1')),
+      repo.rotate(tenantAId, created.id, now, successor('s2')),
+    ]);
+    // Exactly one rotation consumes the token; the loser gets null (0 rows).
+    const winners = [r1, r2].filter((r) => r !== null);
+    expect(winners).toHaveLength(1);
+  });
+
+  it('concurrent refresh of the same token never mints two live sessions (E2E)', async () => {
+    const session = await login(app, {
+      tenantSlug: 'tenant-a',
+      email: 'admin@a.co',
+      password: 'admin-pass-a',
+    });
+    const [a, b] = await Promise.all([
+      app.inject({
+        method: 'POST',
+        url: '/v1/auth/refresh',
+        payload: { refreshToken: session.refreshToken },
+      }),
+      app.inject({
+        method: 'POST',
+        url: '/v1/auth/refresh',
+        payload: { refreshToken: session.refreshToken },
+      }),
+    ]);
+    // At most one 200; the original token is consumed exactly once.
+    const successes = [a, b].filter((r) => r.statusCode === 200);
+    expect(successes.length).toBeLessThanOrEqual(1);
+    // Reusing the original token again is always rejected (it is now consumed).
+    const reuse = await app.inject({
+      method: 'POST',
+      url: '/v1/auth/refresh',
+      payload: { refreshToken: session.refreshToken },
+    });
+    expect(reuse.statusCode).toBe(401);
+  });
+
+  it('a suspended tenant can no longer refresh (401)', async () => {
+    // tenant-b is otherwise unused by later tests, so suspending it is isolated.
+    const session = await login(app, {
+      tenantSlug: 'tenant-b',
+      email: 'admin@b.co',
+      password: 'admin-pass-b',
+    });
+    await env.adminPool.query(`UPDATE tenants SET status = 'suspended' WHERE id = $1`, [tenantBId]);
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/auth/refresh',
+      payload: { refreshToken: session.refreshToken },
     });
     expect(res.statusCode).toBe(401);
   });

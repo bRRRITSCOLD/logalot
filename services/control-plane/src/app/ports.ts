@@ -174,7 +174,17 @@ export interface RefreshTokenRepository {
   // Inserts a token row, returning its DB-generated id (embedded in the plaintext).
   create(tenantId: string, input: NewRefreshToken): Promise<{ id: string }>;
   findById(tenantId: string, id: string): Promise<RefreshTokenRow | null>;
-  markRotated(tenantId: string, id: string, now: Date): Promise<void>;
+  // Atomically consumes the presented token and mints its successor in ONE tx.
+  // The consume is a conditional UPDATE (only when the token is still un-rotated
+  // and un-revoked); it is the concurrency guard against two racing presentations
+  // of the same token. Returns the successor's id, or null when the token could
+  // not be consumed (already rotated/revoked) — which the caller treats as reuse.
+  rotate(
+    tenantId: string,
+    presentedId: string,
+    now: Date,
+    successor: NewRefreshToken,
+  ): Promise<{ id: string } | null>;
   // Revokes every still-live token in a family (reuse detection / logout).
   revokeFamily(tenantId: string, familyId: string, now: Date): Promise<void>;
 }

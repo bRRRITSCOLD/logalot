@@ -35,9 +35,11 @@ export interface AuthDeps {
   refreshTtlSeconds: number;
 }
 
-// A bcrypt hash of a throwaway value, used to keep login timing roughly constant
-// whether or not the user exists (mitigates user-enumeration via timing).
-const DUMMY_HASH = '$2b$10$CwTycUXWue0Thq9StjUM0uJ8DvWq2Q1bU8m2nq8Yx9Qm3aBcDeFg';
+// A throwaway value hashed (via the injected hasher, at its configured cost) to
+// keep login timing roughly constant whether or not the user exists — mitigating
+// user-enumeration via timing. Derived at the configured BCRYPT_COST rather than a
+// hardcoded-cost literal, so the dummy verify takes the SAME time as a real one.
+const DUMMY_SECRET = 'logalot-nonexistent-user-timing-equalizer';
 
 // AuthService owns UI session establishment (ADR-0007): password login → a
 // short-lived stateless access JWT + a stateful ROTATING refresh token, refresh
@@ -46,6 +48,15 @@ const DUMMY_HASH = '$2b$10$CwTycUXWue0Thq9StjUM0uJ8DvWq2Q1bU8m2nq8Yx9Qm3aBcDeFg'
 // leaks no information about which factor failed.
 export class AuthService {
   constructor(private readonly deps: AuthDeps) {}
+
+  // Memoized dummy hash, computed once via the injected hasher so its bcrypt cost
+  // matches real password hashes (configured BCRYPT_COST). Lazy + cached: the cost
+  // is paid once, then reused for every nonexistent-user login.
+  private dummyHashPromise: Promise<string> | undefined;
+  private dummyHash(): Promise<string> {
+    this.dummyHashPromise ??= this.deps.hasher.hash(DUMMY_SECRET);
+    return this.dummyHashPromise;
+  }
 
   async login(cmd: LoginCommand): Promise<SessionTokens> {
     const tenant = await this.deps.tenants.findByPublicId(cmd.tenantSlug);
@@ -57,7 +68,8 @@ export class AuthService {
         ? await this.deps.users.findCredentialsByEmail(tenant.id, cmd.email)
         : null;
 
-    const ok = await this.deps.hasher.verify(cmd.password, record?.passwordHash ?? DUMMY_HASH);
+    const passwordHash = record?.passwordHash ?? (await this.dummyHash());
+    const ok = await this.deps.hasher.verify(cmd.password, passwordHash);
     if (!tenant || !record || !ok) {
       throw new UnauthorizedError();
     }
@@ -88,10 +100,16 @@ export class AuthService {
   //     family is revoked and the request is rejected (a legitimate client only
   //     ever holds the newest token).
   //   * an expired token is rejected.
+  //   * a SUSPENDED/DELETED tenant cannot refresh; its family is revoked (login
+  //     enforces tenant.status === 'active', so refresh must too, else a suspended
+  //     tenant could refresh forever).
   //   * a deactivated user (or one stripped of its role) cannot refresh; its
   //     family is revoked.
-  // On success it marks the presented token rotated, mints a successor in the SAME
-  // family, and issues a fresh access JWT.
+  // On success it ATOMICALLY consumes the presented token and mints a successor in
+  // the SAME family (one tx — see RefreshTokenRepository.rotate), and issues a
+  // fresh access JWT. The atomic consume is the TOCTOU guard: of two concurrent
+  // presentations of the same token, exactly one wins; the loser is treated as
+  // reuse and the family is revoked.
   async refresh(rawToken: string): Promise<SessionTokens> {
     const parsed = this.safeParse(rawToken);
     const row = await this.deps.refreshTokens.findById(parsed.tenantId, parsed.tokenId);
@@ -109,14 +127,33 @@ export class AuthService {
       throw new UnauthorizedError('invalid refresh token');
     }
 
+    const tenant = await this.deps.tenants.findById(parsed.tenantId);
+    if (!tenant || tenant.status !== 'active') {
+      await this.deps.refreshTokens.revokeFamily(parsed.tenantId, row.familyId, now);
+      throw new UnauthorizedError('invalid refresh token');
+    }
+
     const record = await this.deps.users.findCredentialsById(parsed.tenantId, row.userId);
     if (record?.status !== 'active' || record.role === null) {
       await this.deps.refreshTokens.revokeFamily(parsed.tenantId, row.familyId, now);
       throw new UnauthorizedError('invalid refresh token');
     }
 
-    await this.deps.refreshTokens.markRotated(parsed.tenantId, row.id, now);
-    const refreshToken = await this.mintRefreshToken(parsed.tenantId, row.userId, row.familyId);
+    // Atomically consume the presented token and mint its successor (one tx).
+    const secret = this.deps.secrets.generate();
+    const expiresAt = new Date(now.getTime() + this.deps.refreshTtlSeconds * 1000);
+    const successor = await this.deps.refreshTokens.rotate(parsed.tenantId, row.id, now, {
+      familyId: row.familyId,
+      userId: row.userId,
+      tokenHash: sha256(secret),
+      expiresAt,
+    });
+    if (!successor) {
+      // Lost the rotation race (or a concurrent reuse): treat as theft signal.
+      await this.deps.refreshTokens.revokeFamily(parsed.tenantId, row.familyId, now);
+      throw new UnauthorizedError('invalid refresh token');
+    }
+
     const access = await this.deps.tokens.issueAccess({
       tenantId: parsed.tenantId,
       principalId: record.id,
@@ -124,7 +161,7 @@ export class AuthService {
     });
     return {
       accessToken: access.token,
-      refreshToken,
+      refreshToken: assembleRefreshToken(parsed.tenantId, successor.id, secret),
       expiresIn: access.expiresInSeconds,
       tokenType: 'Bearer',
       role: record.role,

@@ -26,6 +26,9 @@ class FakeTenantRepo {
   async findByPublicId(slug: string): Promise<Tenant | null> {
     return this.tenants.find((t) => t.publicId === slug) ?? null;
   }
+  async findById(id: string): Promise<Tenant | null> {
+    return this.tenants.find((t) => t.id === id) ?? null;
+  }
 }
 
 class FakeUserRepo {
@@ -62,11 +65,21 @@ class FakeRefreshRepo {
   async findById(_tenantId: string, id: string): Promise<RefreshTokenRow | null> {
     return this.rows.get(id) ?? null;
   }
-  async markRotated(_tenantId: string, id: string, now: Date): Promise<void> {
-    const row = this.rows.get(id);
-    if (row) {
-      row.rotatedAt = now;
+  async rotate(
+    _tenantId: string,
+    presentedId: string,
+    now: Date,
+    successor: NewRefreshToken,
+  ): Promise<{ id: string } | null> {
+    const row = this.rows.get(presentedId);
+    // Atomic check-and-set: the check and the rotated_at write happen with no
+    // intervening await, so two concurrent presentations cannot both consume the
+    // token — exactly the SQL conditional UPDATE's guarantee, in miniature.
+    if (!row || row.rotatedAt !== null || row.revokedAt !== null) {
+      return null;
     }
+    row.rotatedAt = now;
+    return this.create(_tenantId, successor);
   }
   async revokeFamily(_tenantId: string, familyId: string, now: Date): Promise<void> {
     for (const row of this.rows.values()) {
@@ -95,12 +108,14 @@ const fakeTokens = {
   },
 };
 
-function buildDeps(): { deps: AuthDeps; refresh: FakeRefreshRepo } {
+function buildDeps(): { deps: AuthDeps; refresh: FakeRefreshRepo; tenant: Tenant } {
   const refresh = new FakeRefreshRepo();
   let secretSeq = 0;
   let idSeq = 0;
+  // Fresh per-call clone so a test mutating status (suspension) never leaks.
+  const tenant: Tenant = { ...TENANT };
   const deps: AuthDeps = {
-    tenants: new FakeTenantRepo([TENANT]) as unknown as AuthDeps['tenants'],
+    tenants: new FakeTenantRepo([tenant]) as unknown as AuthDeps['tenants'],
     users: new FakeUserRepo(
       new Map<string, AuthRecord>([
         [
@@ -121,17 +136,19 @@ function buildDeps(): { deps: AuthDeps; refresh: FakeRefreshRepo } {
     clock: { now: () => new Date('2026-06-27T00:00:00Z') },
     refreshTtlSeconds: 3600,
   };
-  return { deps, refresh };
+  return { deps, refresh, tenant };
 }
 
 describe('AuthService', () => {
   let service: AuthService;
   let refresh: FakeRefreshRepo;
+  let tenant: Tenant;
 
   beforeEach(() => {
     const built = buildDeps();
     service = new AuthService(built.deps);
     refresh = built.refresh;
+    tenant = built.tenant;
   });
 
   it('logs in with valid credentials and returns an enriched Bearer session', async () => {
@@ -202,5 +219,40 @@ describe('AuthService', () => {
       row.expiresAt = new Date('2020-01-01T00:00:00Z');
     }
     await expect(service.refresh(session.refreshToken)).rejects.toBeInstanceOf(UnauthorizedError);
+  });
+
+  it('rejects refresh when the tenant is no longer active (suspended/deleted)', async () => {
+    const session = await service.login({
+      tenantSlug: 'acme',
+      email: 'admin@acme.co',
+      password: 'pw',
+    });
+    // Suspending the tenant must immediately bar refresh (login already bars it).
+    tenant.status = 'suspended';
+    await expect(service.refresh(session.refreshToken)).rejects.toBeInstanceOf(UnauthorizedError);
+    // The family is revoked, so even re-activation would not resurrect the session.
+    tenant.status = 'active';
+    await expect(service.refresh(session.refreshToken)).rejects.toBeInstanceOf(UnauthorizedError);
+  });
+
+  it('concurrent refresh with the same token: exactly one succeeds, family revoked', async () => {
+    const session = await service.login({
+      tenantSlug: 'acme',
+      email: 'admin@acme.co',
+      password: 'pw',
+    });
+    // Two simultaneous presentations of the SAME refresh token. The atomic
+    // consume (rotate) must let exactly one win; the other is treated as reuse.
+    const results = await Promise.allSettled([
+      service.refresh(session.refreshToken),
+      service.refresh(session.refreshToken),
+    ]);
+    const fulfilled = results.filter((r) => r.status === 'fulfilled');
+    const rejected = results.filter((r) => r.status === 'rejected');
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    // Reuse detection revoked the family, so the freshly minted successor is dead.
+    const winner = (fulfilled[0] as PromiseFulfilledResult<{ refreshToken: string }>).value;
+    await expect(service.refresh(winner.refreshToken)).rejects.toBeInstanceOf(UnauthorizedError);
   });
 });
