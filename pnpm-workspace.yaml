@@ -1,0 +1,12 @@
+# Logalot pnpm workspace.
+#
+# Node services live under services/* (e.g. control-plane, issue #11) and the
+# frontend app(s) under apps/* (e.g. web TanStack Start, issue #20). Shared repo
+# tooling/placeholder packages live under tools/*.
+#
+# A directory only joins the workspace once it has a package.json; reserved
+# service/app dirs that hold just a README are ignored until they are built.
+packages:
+  - "services/*"
+  - "apps/*"
+  - "tools/*"

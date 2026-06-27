@@ -1,0 +1,17 @@
+go 1.26
+
+// Logalot Go workspace.
+//
+// Each Go service is its own module under services/<name>/ and shares the
+// kernel module at pkg/kernel/. As services land (waves 1+), add their module
+// directory to the `use` block below:
+//
+//   use (
+//       ./pkg/kernel
+//       ./services/ingest-service   // issue #6
+//       ./services/processor        // issue #7
+//       ./services/query-service    // issue #8
+//   )
+//
+// For now only the kernel placeholder module exists (issue #4 fills it in).
+use ./pkg/kernel
