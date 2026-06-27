@@ -6,15 +6,19 @@ import { NodeIdGenerator, NodeSecretGenerator } from './adapters/crypto/node-ran
 import { SystemClock } from './adapters/crypto/system-clock';
 import { PgAlertRuleRepository } from './adapters/postgres/alert-rule-repository';
 import { PgApiKeyRepository } from './adapters/postgres/api-key-repository';
+import { PgDashboardRepository } from './adapters/postgres/dashboard-repository';
 import { PgRefreshTokenRepository } from './adapters/postgres/refresh-token-repository';
 import { PgRetentionRepository } from './adapters/postgres/retention-repository';
+import { PgSavedQueryRepository } from './adapters/postgres/saved-query-repository';
 import { PgTenantRepository } from './adapters/postgres/tenant-repository';
 import { PgUserRepository } from './adapters/postgres/user-repository';
 import { AlertRuleService } from './app/alert-rule-service';
 import { ApiKeyService } from './app/api-key-service';
 import { AuthService } from './app/auth-service';
+import { DashboardService } from './app/dashboard-service';
 import type { TokenService } from './app/ports';
 import { RetentionService } from './app/retention-service';
+import { SavedQueryService } from './app/saved-query-service';
 import { TenantService } from './app/tenant-service';
 import { UserService } from './app/user-service';
 import type { Config } from './config/env';
@@ -28,6 +32,8 @@ export interface Services {
   apiKeys: ApiKeyService;
   retention: RetentionService;
   alerts: AlertRuleService;
+  savedQueries: SavedQueryService;
+  dashboards: DashboardService;
 }
 
 export interface Container {
@@ -56,6 +62,8 @@ export function buildContainer(pool: Pool, config: Config): Container {
   const retentionRepo = new PgRetentionRepository(pool);
   const refreshTokenRepo = new PgRefreshTokenRepository(pool);
   const alertRuleRepo = new PgAlertRuleRepository(pool);
+  const savedQueryRepo = new PgSavedQueryRepository(pool);
+  const dashboardRepo = new PgDashboardRepository(pool);
 
   const services: Services = {
     auth: new AuthService({
@@ -74,6 +82,8 @@ export function buildContainer(pool: Pool, config: Config): Container {
     apiKeys: new ApiKeyService(apiKeyRepo, tenantRepo, keyGenerator, clock),
     retention: new RetentionService(retentionRepo),
     alerts: new AlertRuleService(alertRuleRepo),
+    savedQueries: new SavedQueryService(savedQueryRepo),
+    dashboards: new DashboardService(dashboardRepo),
   };
 
   return { services, tokenService };
