@@ -56,6 +56,19 @@ func (b *recordingBus) Subscribe(tc kernel.TenantContext, _ context.Context) (<-
 	return b.ch, nil
 }
 
+// failingSubscribeBus is a kernel.TailBus whose Subscribe always returns an
+// error. Used to test the issue-#39-M4 invariant: a subscribe failure before
+// headers are written must produce a JSON 5xx, not a silent empty 200.
+type failingSubscribeBus struct{ err error }
+
+func (b *failingSubscribeBus) Publish(kernel.TenantContext, context.Context, kernel.LogEvent) error {
+	return nil
+}
+
+func (b *failingSubscribeBus) Subscribe(_ kernel.TenantContext, _ context.Context) (<-chan kernel.LogEvent, error) {
+	return nil, b.err
+}
+
 func (b *recordingBus) subscribeCount() int {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -272,5 +285,27 @@ func waitFor(t *testing.T, d time.Duration, cond func() bool) {
 			return
 		}
 		time.Sleep(time.Millisecond)
+	}
+}
+
+// TestTail_503WhenSubscribeFails asserts the issue-#39-M4 invariant: when the
+// TailBus Subscribe returns an error, the handler must return a JSON 5xx BEFORE
+// writing the 200/SSE headers — not a silent empty-body 200. This is only
+// possible because Subscribe is now called before WriteHeader.
+func TestTail_503WhenSubscribeFails(t *testing.T) {
+	bus := &failingSubscribeBus{err: errors.New("redis: connection refused")}
+	srv := newTestServer(t, stubAuth{tc: okTenant()}, bus, nil)
+
+	resp, cancel := openTail(t, srv.URL, "text/event-stream", bearer())
+	defer cancel()
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d, want 503 when subscribe fails (headers not yet written)", resp.StatusCode)
+	}
+	// Must be JSON (not an empty SSE stream) so the client can parse the error.
+	ct := resp.Header.Get("Content-Type")
+	if !strings.HasPrefix(ct, "application/json") {
+		t.Fatalf("Content-Type=%q, want application/json (error before SSE headers)", ct)
 	}
 }

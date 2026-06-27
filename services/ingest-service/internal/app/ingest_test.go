@@ -12,23 +12,45 @@ import (
 
 // fakeBroker is a kernel.Broker test double that records published envelopes and
 // can be told to fail after N successful publishes.
+//
+// M1 (issue #35): the fake does NOT overwrite env.TenantID from tc. That was a
+// defensive mirror of what the real adapter does, but it masked the app-core's
+// own responsibility: app.Ingest must stamp env.TenantID from tc.TenantID before
+// calling Publish. Without the overwrite here, the test proves the app sets it.
 type fakeBroker struct {
 	published []kernel.Envelope
 	failAt    int // 1-based index at which Publish returns failErr; 0 = never
 	failErr   error
 }
 
-func (f *fakeBroker) Publish(tc kernel.TenantContext, _ context.Context, env kernel.Envelope) error {
+func (f *fakeBroker) Publish(_ kernel.TenantContext, _ context.Context, env kernel.Envelope) error {
 	if f.failAt != 0 && len(f.published)+1 == f.failAt {
 		return f.failErr
 	}
-	// Mirror the real adapter: tenant is authoritative from tc.
-	env.TenantID = tc.TenantID
 	f.published = append(f.published, env)
 	return nil
 }
 
 func (f *fakeBroker) Consume(kernel.TenantContext, context.Context, kernel.EnvelopeHandler) error {
+	return errors.New("not used")
+}
+
+// slowBroker simulates a stalled broker that blocks for delay before each
+// Publish, respecting ctx cancellation. Used to test the publish-timeout path.
+type slowBroker struct {
+	delay time.Duration
+}
+
+func (b *slowBroker) Publish(_ kernel.TenantContext, ctx context.Context, _ kernel.Envelope) error {
+	select {
+	case <-time.After(b.delay):
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (b *slowBroker) Consume(kernel.TenantContext, context.Context, kernel.EnvelopeHandler) error {
 	return errors.New("not used")
 }
 
@@ -68,7 +90,9 @@ func TestIngest_PublishesEnvelopePerRaw(t *testing.T) {
 }
 
 // The load-bearing security property: a tenant_id in the BODY is ignored; the
-// enqueued envelope uses the KEY's tenant.
+// enqueued envelope uses the KEY's tenant. This test proves app.Ingest is
+// responsible for stamping env.TenantID (the fakeBroker no longer mirrors the
+// overwrite, so only the app-core's own assignment makes this pass — issue #35-M1).
 func TestIngest_TenantComesFromKeyNotBody(t *testing.T) {
 	fb := &fakeBroker{}
 	s := New(fb)
@@ -119,5 +143,34 @@ func TestIngest_RejectsInvalidTenantContext(t *testing.T) {
 	}
 	if len(fb.published) != 0 {
 		t.Fatal("nothing should be published without a valid tenant")
+	}
+}
+
+// TestIngest_PublishTimeout asserts the issue-#35-I1 invariant: a stalled broker
+// that blocks beyond the publish timeout returns an error instead of blocking the
+// request goroutine indefinitely. The timeout surfaces as ctx.Err() (deadline
+// exceeded) which the transport maps to 503 via the existing error path.
+func TestIngest_PublishTimeout(t *testing.T) {
+	slow := &slowBroker{delay: time.Hour} // blocks forever without a timeout
+	s := New(slow, WithPublishTimeout(5*time.Millisecond))
+
+	_, err := s.Ingest(tcFor(tenantKey), context.Background(), []json.RawMessage{json.RawMessage(`{"message":"x"}`)})
+	if err == nil {
+		t.Fatal("expected a timeout error, got nil")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err=%v, want context.DeadlineExceeded", err)
+	}
+}
+
+// TestIngest_PublishTimeoutZeroDisablesTimeout verifies that WithPublishTimeout(0)
+// disables the deadline (opt-out for tests that provide their own ctx deadline).
+func TestIngest_PublishTimeoutZeroDisablesTimeout(t *testing.T) {
+	slow := &slowBroker{delay: 5 * time.Millisecond} // short delay, will succeed
+	s := New(slow, WithPublishTimeout(0))
+
+	_, err := s.Ingest(tcFor(tenantKey), context.Background(), []json.RawMessage{json.RawMessage(`{"message":"x"}`)})
+	if err != nil {
+		t.Fatalf("WithPublishTimeout(0) should disable the timeout; got err=%v", err)
 	}
 }

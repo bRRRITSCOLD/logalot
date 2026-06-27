@@ -5,6 +5,7 @@ go 1.26
 require (
 	github.com/bRRRITSCOLD/logalot/pkg/auth v0.0.0
 	github.com/bRRRITSCOLD/logalot/pkg/broker v0.0.0
+	github.com/bRRRITSCOLD/logalot/pkg/httpkit v0.0.0
 	github.com/bRRRITSCOLD/logalot/pkg/kernel v0.0.0
 	github.com/bRRRITSCOLD/logalot/pkg/platform v0.0.0
 	github.com/gin-gonic/gin v1.12.0
@@ -109,3 +110,5 @@ replace github.com/bRRRITSCOLD/logalot/pkg/platform => ../../pkg/platform
 replace github.com/bRRRITSCOLD/logalot/pkg/auth => ../../pkg/auth
 
 replace github.com/bRRRITSCOLD/logalot/pkg/broker => ../../pkg/broker
+
+replace github.com/bRRRITSCOLD/logalot/pkg/httpkit => ../../pkg/httpkit

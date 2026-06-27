@@ -131,23 +131,26 @@ func New(bus kernel.TailBus, opts ...Option) *Streamer {
 	return s
 }
 
-// Stream subscribes to the tenant's tail channel and writes matching events to
-// sink until ctx is cancelled (client disconnect / shutdown) or the upstream
-// subscription ends. The channel is derived from tc inside the TailBus adapter,
-// so the subscription target can never be caller-controlled (load-bearing
-// tenant isolation, ADR-0002 / overview.md §5.3).
+// Subscribe opens the tenant's tail channel and returns the event stream. It is
+// exposed separately from StreamEvents so the transport handler can call Subscribe
+// BEFORE writing SSE response headers: a Subscribe error then maps to a JSON 5xx
+// instead of a silent empty 200 (issue #39-M4). The channel derives from tc inside
+// the TailBus adapter (kernel.TailChannel) — never from caller input.
+func (s *Streamer) Subscribe(tc kernel.TenantContext, ctx context.Context) (<-chan kernel.LogEvent, error) {
+	return s.bus.Subscribe(tc, ctx)
+}
+
+// StreamEvents runs the fan-out loop over an already-opened events channel,
+// writing filtered events and heartbeats to sink until ctx is cancelled (client
+// disconnect / shutdown) or the upstream channel closes. It is the second phase
+// of the two-step Subscribe → StreamEvents flow used by the Tail HTTP handler.
 //
 // Backpressure: a pump goroutine drains the bus into a bounded buffer with a
 // NON-blocking send; on overflow the event is dropped and counted, so a slow
 // consumer can never block the Redis subscriber or back up the publisher (the
 // processor). The drop count surfaces to the client as a `Gap` before the next
 // emission, so a tail is best-effort-lossy by design, never stalling.
-func (s *Streamer) Stream(tc kernel.TenantContext, ctx context.Context, f Filter, sink Sink) error {
-	events, err := s.bus.Subscribe(tc, ctx)
-	if err != nil {
-		return err
-	}
-
+func (s *Streamer) StreamEvents(events <-chan kernel.LogEvent, ctx context.Context, f Filter, sink Sink) error {
 	buf := make(chan kernel.LogEvent, s.buffer)
 	var dropped atomic.Int64
 	upstreamClosed := make(chan struct{})
@@ -180,11 +183,18 @@ func (s *Streamer) Stream(tc kernel.TenantContext, ctx context.Context, f Filter
 	tick, stop := s.newTicker(s.heartbeat)
 	defer stop()
 
+	// Recover the tenant for log context. The ctx was enriched by AuthMiddleware
+	// via kernel.WithTenant, so FromContext succeeds when invoked from the handler.
+	tenantID := ""
+	if tc, ok := kernel.FromContext(ctx); ok {
+		tenantID = string(tc.TenantID)
+	}
+
 	for {
 		// Surface any drops accumulated since the last emission as a single Gap,
 		// in order, before the next data frame.
 		if d := dropped.Swap(0); d > 0 {
-			s.log.WarnContext(ctx, "tail slow consumer; dropped events", "dropped", d, "tenant_id", string(tc.TenantID))
+			s.log.WarnContext(ctx, "tail slow consumer; dropped events", "dropped", d, "tenant_id", tenantID)
 			if err := sink.Gap(int(d)); err != nil {
 				return nil // client hung up
 			}
@@ -204,4 +214,20 @@ func (s *Streamer) Stream(tc kernel.TenantContext, ctx context.Context, f Filter
 			}
 		}
 	}
+}
+
+// Stream subscribes to the tenant's tail channel and writes matching events to
+// sink until ctx is cancelled (client disconnect / shutdown) or the upstream
+// subscription ends. It is the combined Subscribe+StreamEvents convenience method
+// used when pre-flight header separation is not required.
+//
+// The channel is derived from tc inside the TailBus adapter, so the subscription
+// target can never be caller-controlled (load-bearing tenant isolation, ADR-0002 /
+// overview.md §5.3).
+func (s *Streamer) Stream(tc kernel.TenantContext, ctx context.Context, f Filter, sink Sink) error {
+	events, err := s.Subscribe(tc, ctx)
+	if err != nil {
+		return err
+	}
+	return s.StreamEvents(events, ctx, f, sink)
 }

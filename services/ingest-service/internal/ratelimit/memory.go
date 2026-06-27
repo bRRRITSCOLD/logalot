@@ -49,7 +49,16 @@ func WithMemoryClock(now func() time.Time) MemoryOption {
 
 // Allow admits one request for tc against its per-tenant bucket. The bucket key is
 // derived from tc.TenantID only, so tenants are fully isolated.
+//
+// tc is validated BEFORE the Unlimited short-circuit (issue #47): an exempted
+// tenant (Rate=0:0) with a blank or invalid TenantContext must still fail
+// closed rather than bypass the UUID validity check.
 func (m *MemoryLimiter) Allow(tc kernel.TenantContext, _ context.Context) (Decision, error) {
+	// Fail closed unconditionally on an invalid TenantContext BEFORE applying
+	// any resolver exemption, so a malformed tc can never silently bypass limits.
+	if err := tc.Valid(); err != nil {
+		return Decision{}, err
+	}
 	lim := m.resolver.Resolve(tc)
 	if lim.Unlimited() {
 		return Decision{Allowed: true}, nil

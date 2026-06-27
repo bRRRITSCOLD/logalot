@@ -15,12 +15,20 @@ import (
 	"github.com/bRRRITSCOLD/logalot/pkg/kernel"
 )
 
+// DefaultPublishTimeout is the per-envelope publish deadline applied when no
+// explicit timeout is configured. It bounds how long a stalled-but-open broker
+// connection can block a request goroutine (issue #35-I1). A context.WithTimeout
+// wrapping the request ctx means an expired deadline becomes a broker error that
+// maps to the existing 503 path — no new error handling needed.
+const DefaultPublishTimeout = 10 * time.Second
+
 // Service is the ingest application service. It turns already-validated raw event
 // payloads into durable envelopes and publishes them via the Broker port.
 type Service struct {
-	broker kernel.Broker
-	now    func() time.Time
-	log    *slog.Logger
+	broker         kernel.Broker
+	now            func() time.Time
+	log            *slog.Logger
+	publishTimeout time.Duration
 }
 
 // Option configures a Service.
@@ -32,12 +40,20 @@ func WithClock(now func() time.Time) Option { return func(s *Service) { s.now = 
 // WithLogger sets the structured logger (defaults to a discard logger).
 func WithLogger(l *slog.Logger) Option { return func(s *Service) { s.log = l } }
 
+// WithPublishTimeout overrides the per-publish context deadline (default
+// DefaultPublishTimeout). Set to 0 to disable the timeout (not recommended in
+// production — a stalled broker will then block indefinitely).
+func WithPublishTimeout(d time.Duration) Option {
+	return func(s *Service) { s.publishTimeout = d }
+}
+
 // New builds the ingest Service over a Broker.
 func New(broker kernel.Broker, opts ...Option) *Service {
 	s := &Service{
-		broker: broker,
-		now:    time.Now,
-		log:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+		broker:         broker,
+		now:            time.Now,
+		log:            slog.New(slog.NewTextHandler(io.Discard, nil)),
+		publishTimeout: DefaultPublishTimeout,
 	}
 	for _, o := range opts {
 		o(s)
@@ -48,6 +64,7 @@ func New(broker kernel.Broker, opts ...Option) *Service {
 	if s.log == nil {
 		s.log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
+	// publishTimeout=0 is an explicit opt-out; keep 0 as-is (no floor applied).
 	return s
 }
 
@@ -60,9 +77,21 @@ func New(broker kernel.Broker, opts ...Option) *Service {
 // returned so the transport can answer non-2xx (never a false 202). Because each
 // envelope is individually confirmed, `published` reflects exactly how many are
 // durably enqueued — the caller decides how to report a partial bulk failure.
+//
+// A per-publish context deadline (publishTimeout) is applied so a stalled-but-open
+// broker connection cannot block the request goroutine indefinitely (issue #35-I1).
+// When the deadline fires, the broker returns a context.DeadlineExceeded error
+// which the transport maps to the existing 503 path.
 func (s *Service) Ingest(tc kernel.TenantContext, ctx context.Context, raws []json.RawMessage) (published int, err error) {
 	if err := tc.Valid(); err != nil {
 		return 0, err
+	}
+	// Apply a bounded publish deadline if configured (default 10 s). The timeout
+	// wraps the caller's ctx so cancellation from either direction is respected.
+	if s.publishTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, s.publishTimeout)
+		defer cancel()
 	}
 	receivedAt := s.now().UTC()
 	for _, raw := range raws {

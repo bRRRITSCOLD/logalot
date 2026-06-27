@@ -4,18 +4,16 @@
 // (ADR-0002): the TenantContext is established only from a verified credential,
 // and the tail channel is derived from THAT inside the TailBus adapter.
 //
-// The auth middleware mirrors ingest-service's by intent (DRY-with-copy): it is a
-// few lines over the shared kernel.Authenticator port, so duplicating it keeps
-// each service's edge self-contained rather than introducing a shared
-// transport-coupling package for almost no code. The Authenticator port stays
-// swappable, so the wave-2 JWT session authenticator slots in with no edge change.
+// Credential parsing uses pkg/httpkit.CredentialFromRequest — a shared, Gin-free
+// pure function that is the single source of truth for Bearer/X-API-Key extraction
+// across all logalot HTTP services (issue #39-M3).
 package httpx
 
 import (
 	"log/slog"
 	"net/http"
-	"strings"
 
+	"github.com/bRRRITSCOLD/logalot/pkg/httpkit"
 	"github.com/bRRRITSCOLD/logalot/pkg/kernel"
 	"github.com/gin-gonic/gin"
 )
@@ -23,26 +21,6 @@ import (
 // ginTenantKey is the gin.Context key the auth middleware stashes the verified
 // TenantContext under. The request context also carries it via kernel.WithTenant.
 const ginTenantKey = "logalot.tenant"
-
-const bearerPrefix = "Bearer "
-
-// credentialFromRequest extracts a credential from either
-// `Authorization: Bearer <key>` or `X-API-Key: <key>`. For the slice this is an
-// ingest API key; a wave-2 JWT authenticator would read the same Bearer header.
-// ok is false when neither is present so the caller fails closed with 401.
-func credentialFromRequest(r *http.Request) (kernel.Credential, bool) {
-	if h := r.Header.Get("Authorization"); h != "" {
-		if len(h) > len(bearerPrefix) && strings.EqualFold(h[:len(bearerPrefix)], bearerPrefix) {
-			if key := strings.TrimSpace(h[len(bearerPrefix):]); key != "" {
-				return kernel.Credential{APIKey: key}, true
-			}
-		}
-	}
-	if k := strings.TrimSpace(r.Header.Get("X-API-Key")); k != "" {
-		return kernel.Credential{APIKey: k}, true
-	}
-	return kernel.Credential{}, false
-}
 
 // AuthMiddleware authenticates the presented credential into a TenantContext and
 // attaches it to the request BEFORE any handler (and therefore before any
@@ -52,7 +30,7 @@ func credentialFromRequest(r *http.Request) (kernel.Credential, bool) {
 // swapping API-key auth for JWT is a constructor change, not an edge change.
 func AuthMiddleware(authr kernel.Authenticator, log *slog.Logger) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		cred, ok := credentialFromRequest(c.Request)
+		cred, ok := httpkit.CredentialFromRequest(c.Request)
 		if !ok {
 			abortUnauthorized(c)
 			return

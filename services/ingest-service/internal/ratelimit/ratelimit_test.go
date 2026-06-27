@@ -178,6 +178,31 @@ func TestMemoryLimiter_InvalidTenantFailsClosed(t *testing.T) {
 	}
 }
 
+// TestMemoryLimiter_InvalidTenantFailsClosed_EvenWhenUnlimited asserts the
+// issue-#47 invariant: tc.Valid() is called BEFORE the Unlimited() short-
+// circuit, so an exempted (0:0) resolver still rejects an invalid tenant.
+func TestMemoryLimiter_InvalidTenantFailsClosed_EvenWhenUnlimited(t *testing.T) {
+	// Rate=0:0 → Unlimited() is true for any tenant that resolves to this.
+	r := NewStaticResolver(Limits{Rate: 0, Burst: 0}, nil)
+	lim := NewMemoryLimiter(r)
+	_, err := lim.Allow(kernel.TenantContext{}, context.Background())
+	if err == nil {
+		t.Fatal("invalid tenant must error (fail closed) even when the resolver returns Unlimited")
+	}
+}
+
+// TestRedisLimiter_InvalidTenantFailsClosed_EvenWhenUnlimited mirrors the above
+// for RedisLimiter. The nil Redis client is safe because the validation error
+// fires before any Redis call.
+func TestRedisLimiter_InvalidTenantFailsClosed_EvenWhenUnlimited(t *testing.T) {
+	r := NewStaticResolver(Limits{Rate: 0, Burst: 0}, nil)
+	lim := NewRedisLimiter(nil, r) // nil client: never reached due to early validation
+	_, err := lim.Allow(kernel.TenantContext{}, context.Background())
+	if err == nil {
+		t.Fatal("invalid tenant must error (fail closed) even when the resolver returns Unlimited")
+	}
+}
+
 func TestStaticResolver_DefaultAndOverride(t *testing.T) {
 	def := Limits{Rate: 100, Burst: 200}
 	override := Limits{Rate: 5, Burst: 5}

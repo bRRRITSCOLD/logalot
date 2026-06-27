@@ -49,12 +49,22 @@ func RateLimitMiddleware(limiter ratelimit.Limiter, failOpen bool, log *slog.Log
 			}
 			log.ErrorContext(c.Request.Context(), "rate limiter unavailable; failing closed",
 				"tenant_id", string(tc.TenantID), "err", err)
+			// Retry-After: 5 on the fail-closed 503 so clients back off rather than
+			// hammering an already-degraded rate-limit store (issue #47).
+			c.Header("Retry-After", "5")
 			c.AbortWithStatusJSON(http.StatusServiceUnavailable,
 				errorBody("rate_limiter_unavailable", "rate limiter temporarily unavailable"))
 			return
 		}
 
 		if !d.Allowed {
+			// Per-tenant 429 metric: structured log tagged as a metric so the
+			// observability layer (log-based alerts / dashboards) can aggregate
+			// throttle counts per tenant without a separate metrics sink (issue #47).
+			log.InfoContext(c.Request.Context(), "ingest.ratelimit.throttled",
+				"tenant_id", string(tc.TenantID),
+				"retry_after_ms", d.RetryAfter.Milliseconds(),
+			)
 			c.Header("Retry-After", retryAfterSeconds(d))
 			c.AbortWithStatusJSON(http.StatusTooManyRequests,
 				errorBody("rate_limited", "per-tenant ingest rate limit exceeded; retry after the indicated delay"))

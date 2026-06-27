@@ -43,13 +43,19 @@ type keyResolver interface {
 // presented secret is re-verified (constant time) on every cache hit — a cache
 // hit skips Postgres, NOT the secret check. KeyHash is the SHA-256 of a
 // high-entropy secret (irreversible), so caching it is not a secret disclosure.
-// Only successful validations are ever cached (no negative caching), so revoked/
-// expired state is not represented here.
+// Only successful validations are ever cached (no negative caching), so revoked
+// state is not represented here.
+//
+// ExpiresAt is stored so a key that expires WITHIN the 60 s cache TTL is still
+// rejected on the cache-hit path: without it a key would keep authenticating
+// from cache until the entry itself expired, up to 60 s after the key's own
+// ExpiresAt (issue #33).
 type cacheEntry struct {
 	TenantID    kernel.TenantID    `json:"tenant_id"`
 	PrincipalID kernel.PrincipalID `json:"principal_id"`
 	Scopes      []kernel.Scope     `json:"scopes"`
 	KeyHash     []byte             `json:"key_hash"`
+	ExpiresAt   *time.Time         `json:"expires_at,omitempty"`
 }
 
 // authCache is the 60s validated-key cache port (Redis in production, a fake in
@@ -165,6 +171,13 @@ func (a *Authenticator) Authenticate(ctx context.Context, cred kernel.Credential
 		if !constantTimeEqual(secretHash, ent.KeyHash) {
 			return kernel.TenantContext{}, ErrBadSecret
 		}
+		// Enforce expiry within the cache TTL window (issue #33): a key can
+		// expire while its cache entry is still live. Bust the entry on expiry so
+		// the next request falls through to Postgres and gets a fresh rejection.
+		if ent.ExpiresAt != nil && !a.now().Before(*ent.ExpiresAt) {
+			_ = a.cache.del(ctx, pk.KeyID)
+			return kernel.TenantContext{}, ErrExpiredKey
+		}
 		return tenantContextFrom(ent.TenantID, ent.PrincipalID, ent.Scopes)
 	}
 
@@ -190,6 +203,7 @@ func (a *Authenticator) Authenticate(ctx context.Context, cred kernel.Credential
 		PrincipalID: kernel.PrincipalID(sk.KeyID),
 		Scopes:      sk.Scopes,
 		KeyHash:     sk.KeyHash,
+		ExpiresAt:   sk.ExpiresAt, // propagated so cache-hit path can enforce expiry (#33)
 	}
 	if cerr := a.cache.set(ctx, pk.KeyID, ent); cerr != nil {
 		// Caching is an optimization; a failure must not fail authentication.

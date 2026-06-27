@@ -105,7 +105,13 @@ func (h *Handler) Ingest(c *gin.Context) {
 		// Broker unavailable / confirm timeout / nack. NEVER a false 202.
 		h.log.ErrorContext(c.Request.Context(), "ingest enqueue failed",
 			"tenant_id", string(tc.TenantID), "published", published, "err", err)
-		c.JSON(http.StatusServiceUnavailable, errorBody("ingest_unavailable", "could not durably enqueue events"))
+		// Surface the confirmed count in the error body so callers can implement
+		// at-least-once: the confirmed events are durably enqueued; only the
+		// remaining (total - confirmed) need retrying (issue #35-M2).
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"error":     gin.H{"code": "ingest_unavailable", "message": "could not durably enqueue events"},
+			"confirmed": published,
+		})
 		return
 	}
 
