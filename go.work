@@ -13,5 +13,12 @@ go 1.26
 //       ./services/query-service    // issue #8
 //   )
 //
-// For now only the kernel placeholder module exists (issue #4 fills it in).
-use ./pkg/kernel
+// Shared modules land as waves progress:
+//   - pkg/kernel   — TenantContext + ports (#4)
+//   - pkg/platform — pgx pool + redis client constructors (#5)
+//   - pkg/auth     — ingest API-key Authenticator/KeyStore (#5)
+use (
+	./pkg/auth
+	./pkg/kernel
+	./pkg/platform
+)
