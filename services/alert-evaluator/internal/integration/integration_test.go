@@ -32,6 +32,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -233,11 +234,11 @@ func TestIntegration_LogCounter_CountsOnlyArmedTenantUnderRLS(t *testing.T) {
 	q := app.RuleQuery{Level: &lvl}
 	from, to := now.Add(-time.Hour), now.Add(time.Minute)
 
-	gotA, err := counter.Count(kernel.TenantContext{TenantID: tenantA}, context.Background(), q, from, to)
+	gotA, err := counter.Count(context.Background(), kernel.TenantContext{TenantID: tenantA}, q, from, to)
 	if err != nil {
 		t.Fatalf("count A: %v", err)
 	}
-	gotB, err := counter.Count(kernel.TenantContext{TenantID: tenantB}, context.Background(), q, from, to)
+	gotB, err := counter.Count(context.Background(), kernel.TenantContext{TenantID: tenantB}, q, from, to)
 	if err != nil {
 		t.Fatalf("count B: %v", err)
 	}
@@ -250,7 +251,7 @@ func TestIntegration_LogCounter_CountsOnlyArmedTenantUnderRLS(t *testing.T) {
 	t.Logf("AC2(b) PROOF: LogCounter under RLS — A sees 3, B sees 1 (no cross-tenant bleed)")
 
 	// Fail-closed: a blank tenant context is rejected before any count runs.
-	if _, err := counter.Count(kernel.TenantContext{}, context.Background(), q, from, to); err == nil {
+	if _, err := counter.Count(context.Background(), kernel.TenantContext{}, q, from, to); err == nil {
 		t.Fatal("blank tenant context must fail closed")
 	}
 }
@@ -325,6 +326,136 @@ func TestIntegration_RuleCrossesThreshold_FiresOnceThenResolvesOnce(t *testing.T
 		t.Fatalf("AC1: total outbox rows = %d, want 2 (1 firing + 1 resolved)", got)
 	}
 	t.Logf("AC1 PROOF: window cleared -> resolved + exactly 1 resolved notification (2 outbox rows total)")
+}
+
+// ── I1: outbox relay — a notify failure is recovered, never dropped ───────────
+
+// flakeyNotifier fails its first failUntil Notify calls, then records deliveries.
+type flakeyNotifier struct {
+	mu        sync.Mutex
+	attempts  int
+	failUntil int
+	delivered int
+}
+
+func (n *flakeyNotifier) Notify(_ context.Context, _ app.Notification) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.attempts++
+	if n.attempts <= n.failUntil {
+		return fmt.Errorf("flaky: transient failure %d", n.attempts)
+	}
+	n.delivered++
+	return nil
+}
+
+func (n *flakeyNotifier) deliveries() int {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.delivered
+}
+
+func (e *itEnv) pendingOutboxCount(t *testing.T, ruleID string) int {
+	t.Helper()
+	var n int
+	if err := e.adminPool.QueryRow(context.Background(),
+		`SELECT count(*) FROM alert_notifications WHERE rule_id=$1 AND dispatched_at IS NULL`, ruleID).Scan(&n); err != nil {
+		t.Fatalf("count pending outbox: %v", err)
+	}
+	return n
+}
+
+func TestIntegration_OutboxRelay_NotifyFailureIsRedeliveredNotDropped(t *testing.T) {
+	e := setup(t)
+	e.seedTenant(t, tenantA, "tenant-a")
+	lvl := kernel.LevelError
+	e.seedRule(t, ruleAID, tenantA, "too many errors", 5, 300, app.RuleQuery{Level: &lvl})
+
+	base := time.Now().UTC()
+	for i := 0; i < 9; i++ {
+		e.insertLog(t, tenantA, base.Add(-time.Duration(i)*time.Second), kernel.LevelError, "boom")
+	}
+
+	clock := &settableClock{}
+	clock.set(base.Add(time.Minute))
+	notifier := &flakeyNotifier{failUntil: 1} // first delivery attempt fails
+	ev := app.New(
+		pgadapter.NewRuleStore(e.metaPool),
+		pgadapter.NewLogCounter(e.appPool),
+		notifier,
+		app.WithClock(clock.now),
+		app.WithInterval(10*time.Second),
+	)
+	ctx := context.Background()
+
+	// Cycle 1: transition commits the outbox row; the relay's Notify FAILS, so the
+	// row stays pending (dispatched_at NULL) — committed but undelivered, NOT dropped.
+	if _, err := ev.EvaluateDue(ctx); err != nil {
+		t.Fatalf("cycle 1: %v", err)
+	}
+	if got := e.countNotifications(t, tenantA, ruleAID); got != 1 {
+		t.Fatalf("outbox rows after cycle 1 = %d, want 1", got)
+	}
+	if got := e.pendingOutboxCount(t, ruleAID); got != 1 {
+		t.Fatalf("pending (undelivered) rows after failed notify = %d, want 1 (no drop)", got)
+	}
+	if got := notifier.deliveries(); got != 0 {
+		t.Fatalf("deliveries after cycle 1 = %d, want 0", got)
+	}
+	t.Logf("I1 PROOF: notify failure left the outbox row committed-but-pending (no drop)")
+
+	// Cycle 2: still firing (no new transition), the relay redelivers the pending
+	// row and marks it dispatched.
+	clock.set(base.Add(2 * time.Minute))
+	if _, err := ev.EvaluateDue(ctx); err != nil {
+		t.Fatalf("cycle 2: %v", err)
+	}
+	if got := e.countNotifications(t, tenantA, ruleAID); got != 1 {
+		t.Fatalf("outbox rows after cycle 2 = %d, want still 1 (no new transition)", got)
+	}
+	if got := e.pendingOutboxCount(t, ruleAID); got != 0 {
+		t.Fatalf("pending rows after redelivery = %d, want 0 (dispatched)", got)
+	}
+	if got := notifier.deliveries(); got != 1 {
+		t.Fatalf("deliveries after redelivery = %d, want exactly 1 (no drop, no duplicate)", got)
+	}
+	t.Logf("I1 PROOF: next cycle redelivered the pending row exactly once and marked it dispatched")
+}
+
+// ── M1: real-Postgres CAS — concurrent evaluators write exactly one outbox row ─
+
+func TestIntegration_ConcurrentEvaluators_ExactlyOneOutboxRow(t *testing.T) {
+	e := setup(t)
+	e.seedTenant(t, tenantA, "tenant-a")
+	lvl := kernel.LevelError
+	e.seedRule(t, ruleAID, tenantA, "too many errors", 5, 300, app.RuleQuery{Level: &lvl})
+
+	base := time.Now().UTC()
+	for i := 0; i < 9; i++ {
+		e.insertLog(t, tenantA, base.Add(-time.Duration(i)*time.Second), kernel.LevelError, "boom")
+	}
+
+	clock := &settableClock{}
+	clock.set(base.Add(time.Minute))
+	const n = 8
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		ev := app.New(
+			pgadapter.NewRuleStore(e.metaPool),
+			pgadapter.NewLogCounter(e.appPool),
+			notify.NewLogSink(nil),
+			app.WithClock(clock.now),
+			app.WithInterval(10*time.Second),
+		)
+		go func() { defer wg.Done(); _, _ = ev.EvaluateDue(context.Background()) }()
+	}
+	wg.Wait()
+
+	if got := e.countNotifications(t, tenantA, ruleAID); got != 1 {
+		t.Fatalf("M1: outbox rows from %d racing evaluators = %d, want exactly 1 (CAS serialized)", n, got)
+	}
+	t.Logf("M1 PROOF: %d concurrent evaluators produced exactly 1 outbox row (real-Postgres CAS)", n)
 }
 
 // ── floci SNS/SQS dispatch (skippable — floci AWS fidelity is a tracked risk) ──

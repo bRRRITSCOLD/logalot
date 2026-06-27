@@ -38,7 +38,7 @@ func NewLogCounter(pool *pgxpool.Pool) *LogCounter { return &LogCounter{pool: po
 // ALSO bound from tc into the WHERE for defense-in-depth + partition pruning — but
 // RLS is the backstop: even without the predicate, an unarmed/foreign context
 // returns zero.
-func (c *LogCounter) Count(tc kernel.TenantContext, ctx context.Context, q app.RuleQuery, from, to time.Time) (int64, error) {
+func (c *LogCounter) Count(ctx context.Context, tc kernel.TenantContext, q app.RuleQuery, from, to time.Time) (int64, error) {
 	if err := tc.Valid(); err != nil {
 		return 0, err
 	}

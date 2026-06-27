@@ -93,9 +93,14 @@ func (e *Evaluator) Run(ctx context.Context) error {
 	}
 }
 
-// EvaluateDue runs ONE evaluation cycle: list the rules due as of now-interval and
-// evaluate each. It returns the number of rules evaluated. Per-rule failures are
-// logged and do not abort the batch (one bad tenant must not stall the rest).
+// EvaluateDue runs ONE evaluation cycle: evaluate every due rule (which may write
+// outbox notification rows on a state change), then run the relay to DELIVER any
+// pending outbox rows. It returns the number of rules evaluated. Per-rule failures
+// are logged and do not abort the batch (one bad tenant must not stall the rest).
+//
+// Dispatch is the relay's job ONLY (the single dispatch path): evaluateRule never
+// notifies, so there is no inline-vs-relay double-send, and a delivery failure
+// simply leaves the row pending for the next cycle's relay (at-least-once).
 func (e *Evaluator) EvaluateDue(ctx context.Context) (int, error) {
 	now := e.now()
 	due, err := e.rules.ListDue(ctx, now.Add(-e.interval), e.batchSize)
@@ -108,11 +113,44 @@ func (e *Evaluator) EvaluateDue(ctx context.Context) (int, error) {
 				"rule_id", r.ID, "tenant_id", r.TenantID, "err", err)
 		}
 	}
+	// Relay: deliver this cycle's new transitions AND retry anything left pending
+	// from a prior cycle (a crash or a transient Notify failure).
+	e.dispatchPending(ctx)
 	return len(due), nil
 }
 
+// dispatchPending is the transactional-outbox relay — the SINGLE place a
+// notification is delivered. It reads undelivered outbox rows and, for each,
+// Notify -> MarkDispatched. A Notify failure leaves dispatched_at NULL so the next
+// cycle retries (no drop); MarkDispatched after a successful send stops redelivery
+// (no duplicate on the happy path). The UNIQUE (rule_id, transition_seq) outbox key
+// makes the rare crash-after-send-before-mark redelivery idempotent for a deduping
+// consumer.
+func (e *Evaluator) dispatchPending(ctx context.Context) {
+	pending, err := e.rules.ListPending(ctx, e.batchSize)
+	if err != nil {
+		e.log.ErrorContext(ctx, "alert-evaluator: list pending notifications failed", "err", err)
+		return
+	}
+	for _, n := range pending {
+		if err := e.notifier.Notify(ctx, n); err != nil {
+			// Stays pending; retried next cycle. No drop.
+			e.log.WarnContext(ctx, "alert-evaluator: notify failed (outbox row stays pending for retry)",
+				"rule_id", n.RuleID, "notification_id", n.ID, "err", err)
+			continue
+		}
+		if err := e.rules.MarkDispatched(ctx, n, e.now()); err != nil {
+			// Delivered but not marked: a future cycle may redeliver (idempotent via
+			// the unique key). Logged so the rare case is observable.
+			e.log.WarnContext(ctx, "alert-evaluator: mark dispatched failed (may redeliver)",
+				"rule_id", n.RuleID, "notification_id", n.ID, "err", err)
+		}
+	}
+}
+
 // evaluateRule is the per-rule pipeline: count under tenant RLS, decide the target
-// state, and — only on a state CHANGE — transition + dispatch exactly once.
+// state, and — only on a state CHANGE — write the outbox row (the relay delivers
+// it). It does NOT notify; delivery is the relay's single responsibility.
 //
 // THE TENANT BOUNDARY: the count runs through LogCounter under a TenantContext
 // built from the rule's own tenant_id, so the log read is RLS-governed by
@@ -120,14 +158,27 @@ func (e *Evaluator) EvaluateDue(ctx context.Context) (int, error) {
 // log content at all. The two never cross.
 func (e *Evaluator) evaluateRule(ctx context.Context, r Rule) error {
 	now := e.now()
+
+	// Refuse to evaluate a rule with no inline filter: an empty query would count
+	// EVERY event in the window and spuriously fire. Saved-query resolution is
+	// deferred, so a saved-query-only rule is skipped (not failed) until then. The
+	// control-plane already rejects empty-query rules at create/update; this is the
+	// evaluator-side backstop for any rule that predates that guard.
+	if r.Query.IsEmpty() {
+		e.log.WarnContext(ctx, "alert-evaluator: skipping rule with empty inline query (saved-query resolution deferred)",
+			"rule_id", r.ID, "tenant_id", r.TenantID)
+		return e.rules.MarkEvaluated(ctx, r.ID, now)
+	}
+
 	to := now.UTC()
 	from := to.Add(-r.Window())
 
-	// Tenant context for the RLS-scoped log count. Only the tenant id matters at
-	// the storage layer; it is the rule's authoritative tenant_id, never input.
-	tc := kernel.TenantContext{TenantID: r.TenantID, Role: kernel.RolePlatformOperator}
+	// Tenant context for the RLS-scoped log count. Only the tenant id matters at the
+	// storage layer; it is the rule's authoritative tenant_id, never input. A
+	// per-tenant log read is NOT a platform-operator action, so no role is set.
+	tc := kernel.TenantContext{TenantID: r.TenantID}
 
-	count, err := e.counter.Count(tc, ctx, r.Query, from, to)
+	count, err := e.counter.Count(ctx, tc, r.Query, from, to)
 	if err != nil {
 		return err
 	}
@@ -142,6 +193,7 @@ func (e *Evaluator) evaluateRule(ctx context.Context, r Rule) error {
 
 	// State change. The CAS transition + outbox insert is one transaction; it
 	// succeeds for exactly ONE evaluator per transition (ok=false => another won).
+	// The relay (dispatchPending) delivers the resulting outbox row.
 	n, ok, err := e.rules.Transition(ctx, TransitionInput{
 		Rule:          r,
 		ExpectedFrom:  r.State,
@@ -153,21 +205,12 @@ func (e *Evaluator) evaluateRule(ctx context.Context, r Rule) error {
 		return err
 	}
 	if !ok {
-		// Lost the race; the winner emitted the single notification. Idempotent.
+		// Lost the race; the winner wrote the single outbox row. Idempotent.
 		return nil
 	}
 
 	e.log.InfoContext(ctx, "alert-evaluator: state transition",
 		"rule_id", r.ID, "tenant_id", r.TenantID, "from", r.State, "to", target,
 		"count", count, "threshold", r.Threshold, "transition_seq", n.TransitionSeq)
-
-	// Dispatch the single notification for this transition. The outbox row already
-	// exists, so a delivery failure is recoverable by a future redispatch sweep
-	// (idempotent via the UNIQUE (rule_id, transition_seq) ledger key).
-	if err := e.notifier.Notify(ctx, n); err != nil {
-		e.log.WarnContext(ctx, "alert-evaluator: notify failed (outbox row persisted, pending redispatch)",
-			"rule_id", r.ID, "notification_id", n.ID, "err", err)
-		return err
-	}
-	return e.rules.MarkDispatched(ctx, n.ID, now)
+	return nil
 }

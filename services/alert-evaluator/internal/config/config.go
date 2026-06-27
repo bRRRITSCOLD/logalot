@@ -8,6 +8,8 @@ import (
 	"os"
 	"strconv"
 	"time"
+
+	"github.com/bRRRITSCOLD/logalot/services/alert-evaluator/internal/app"
 )
 
 // Env var names. The evaluator holds TWO database connections by design
@@ -45,11 +47,12 @@ func Load() (Config, error) {
 	c := Config{
 		EvaluatorDatabaseURL: os.Getenv(EvaluatorDatabaseURLEnv),
 		AppDatabaseURL:       os.Getenv(AppDatabaseURLEnv),
-		Interval:             10 * time.Second,
-		BatchSize:            200,
-		Notifier:             "logsink",
-		SNSTopicARN:          os.Getenv(SNSTopicARNEnv),
-		AWSEndpoint:          os.Getenv(AWSEndpointEnv),
+		// DRY: single source of truth for the defaults lives in the app core.
+		Interval:    app.DefaultInterval,
+		BatchSize:   app.DefaultBatchSize,
+		Notifier:    "logsink",
+		SNSTopicARN: os.Getenv(SNSTopicARNEnv),
+		AWSEndpoint: os.Getenv(AWSEndpointEnv),
 	}
 
 	if c.EvaluatorDatabaseURL == "" {

@@ -21,6 +21,7 @@ package app
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/bRRRITSCOLD/logalot/pkg/kernel"
@@ -85,6 +86,17 @@ type Rule struct {
 // Window returns the rule's evaluation window duration.
 func (r Rule) Window() time.Duration { return time.Duration(r.WindowSeconds) * time.Second }
 
+// IsEmpty reports whether the inline query carries no filter at all. An empty
+// query would count EVERY event in the window (no predicate) and spuriously fire,
+// so the evaluator refuses to evaluate such a rule (saved-query resolution is
+// deferred) and the control-plane rejects it at create/update.
+func (q RuleQuery) IsEmpty() bool {
+	return strings.TrimSpace(q.Text) == "" &&
+		strings.TrimSpace(q.Service) == "" &&
+		q.Level == nil &&
+		len(q.Labels) == 0
+}
+
 // Channel is one notification target on a rule (alert_rules.notify_channels). v1
 // supports webhook + email-stub; the Notifier adapter decides how each is routed
 // (e.g. floci SNS fan-out).
@@ -134,8 +146,12 @@ type TransitionInput struct {
 // UNDER THE TENANT'S RLS CONTEXT. The adapter MUST arm `SET LOCAL app.tenant_id`
 // from tc (the NOSUPERUSER logalot_app role) before the count, so a missing
 // context yields zero (fail-closed) and one tenant can never count another's logs.
+//
+// NOTE on parameter order: this service's internal ports are uniformly ctx-first
+// (RuleStore is ctx-first too), so LogCounter is ctx-first as well — deliberately
+// distinct from the kernel's tc-first cross-service ports.
 type LogCounter interface {
-	Count(tc kernel.TenantContext, ctx context.Context, q RuleQuery, from, to time.Time) (int64, error)
+	Count(ctx context.Context, tc kernel.TenantContext, q RuleQuery, from, to time.Time) (int64, error)
 }
 
 // RuleStore is the scheduling-metadata port, backed by the BYPASSRLS
@@ -154,8 +170,18 @@ type RuleStore interface {
 	// MarkEvaluated stamps last_evaluated_at without changing state (the rule was
 	// due, evaluated, and did not transition).
 	MarkEvaluated(ctx context.Context, ruleID string, now time.Time) error
-	// MarkDispatched stamps the outbox row's dispatched_at after a successful send.
-	MarkDispatched(ctx context.Context, notificationID string, now time.Time) error
+	// ListPending returns outbox notifications not yet delivered (dispatched_at IS
+	// NULL), oldest first, capped at limit. This is the relay/sweeper source: every
+	// transition writes an outbox row, and the relay is the SINGLE dispatch path, so
+	// a Notify failure or a crash before MarkDispatched is recovered next cycle
+	// (at-least-once delivery; the UNIQUE (rule_id, transition_seq) key makes a
+	// redelivery idempotent). Without this, the transition would commit but the
+	// notification could be dropped on a transient blip — contradicting AC1.
+	ListPending(ctx context.Context, limit int) ([]Notification, error)
+	// MarkDispatched marks the outbox row delivered (dispatched_at) and truthfully
+	// stamps the rule's last_notified_at — both at ACTUAL dispatch time, not at
+	// transition time. Takes the whole Notification so it has the rule id.
+	MarkDispatched(ctx context.Context, n Notification, now time.Time) error
 }
 
 // Notifier dispatches a notification to its channels. Implementations: a log-sink

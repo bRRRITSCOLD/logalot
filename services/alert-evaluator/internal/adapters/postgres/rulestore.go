@@ -82,12 +82,14 @@ func (s *RuleStore) Transition(ctx context.Context, in app.TransitionInput) (app
 
 	var seq int64
 	err = tx.QueryRow(ctx,
+		// last_notified_at is intentionally NOT set here — it is stamped at ACTUAL
+		// dispatch time by MarkDispatched, so it never lies that a notification was
+		// sent when only the transition was recorded.
 		`UPDATE alert_rules
 		    SET state = $2::alert_state,
 		        transition_seq = transition_seq + 1,
 		        last_evaluated_at = $3,
-		        last_triggered_at = CASE WHEN $2::alert_state = 'firing' THEN $3 ELSE last_triggered_at END,
-		        last_notified_at = $3
+		        last_triggered_at = CASE WHEN $2::alert_state = 'firing' THEN $3 ELSE last_triggered_at END
 		  WHERE id = $1 AND state = $4::alert_state
 		  RETURNING transition_seq`,
 		in.Rule.ID, string(in.To), in.Now.UTC(), string(in.ExpectedFrom),
@@ -146,14 +148,83 @@ func (s *RuleStore) MarkEvaluated(ctx context.Context, ruleID string, now time.T
 	return nil
 }
 
-// MarkDispatched stamps the outbox row's dispatched_at after a successful send.
-func (s *RuleStore) MarkDispatched(ctx context.Context, notificationID string, now time.Time) error {
-	_, err := s.pool.Exec(ctx,
-		`UPDATE alert_notifications SET dispatched_at = $2 WHERE id = $1`, notificationID, now.UTC())
+// ListPending returns outbox notifications not yet delivered (dispatched_at IS
+// NULL), oldest first — the relay's work queue. It JOINs alert_rules to recover the
+// rule's name/severity/channels for the delivery payload (both tables are readable
+// by the BYPASSRLS evaluator role; neither is log content).
+//
+// Multi-replica note (review M6, deferred): a `FOR UPDATE SKIP LOCKED` on this
+// SELECT would let several evaluator replicas drain the queue without double-
+// delivering. Single-process today, so it is a noted follow-up, not done here.
+func (s *RuleStore) ListPending(ctx context.Context, limit int) ([]app.Notification, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT n.id::text, n.tenant_id::text, n.rule_id::text, r.name,
+		        n.transition_seq, n.to_state::text, r.severity,
+		        n.observed_count, n.threshold, r.notify_channels, n.occurred_at
+		   FROM alert_notifications n
+		   JOIN alert_rules r ON r.id = n.rule_id
+		  WHERE n.dispatched_at IS NULL
+		  ORDER BY n.occurred_at
+		  LIMIT $1`, limit)
 	if err != nil {
+		return nil, fmt.Errorf("rulestore: list pending: %w", err)
+	}
+	defer rows.Close()
+
+	var out []app.Notification
+	for rows.Next() {
+		n, serr := scanNotification(rows)
+		if serr != nil {
+			return nil, serr
+		}
+		out = append(out, n)
+	}
+	return out, rows.Err()
+}
+
+// MarkDispatched marks the outbox row delivered AND truthfully stamps the rule's
+// last_notified_at — both at actual dispatch time — in one transaction.
+func (s *RuleStore) MarkDispatched(ctx context.Context, n app.Notification, now time.Time) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("rulestore: begin mark dispatched: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx,
+		`UPDATE alert_notifications SET dispatched_at = $2 WHERE id = $1`, n.ID, now.UTC()); err != nil {
 		return fmt.Errorf("rulestore: mark dispatched: %w", err)
 	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE alert_rules SET last_notified_at = $2 WHERE id = $1`, n.RuleID, now.UTC()); err != nil {
+		return fmt.Errorf("rulestore: stamp last_notified_at: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("rulestore: commit mark dispatched: %w", err)
+	}
 	return nil
+}
+
+// scanNotification reads one ListPending row into an app.Notification.
+func scanNotification(rows pgx.Rows) (app.Notification, error) {
+	var (
+		n        app.Notification
+		tenantID string
+		state    string
+		chanRaw  []byte
+	)
+	if err := rows.Scan(&n.ID, &tenantID, &n.RuleID, &n.RuleName, &n.TransitionSeq,
+		&state, &n.Severity, &n.ObservedCount, &n.Threshold, &chanRaw, &n.OccurredAt); err != nil {
+		return app.Notification{}, fmt.Errorf("rulestore: scan notification: %w", err)
+	}
+	n.TenantID = kernel.TenantID(tenantID)
+	n.ToState = app.State(state)
+	if len(chanRaw) > 0 {
+		if err := json.Unmarshal(chanRaw, &n.Channels); err != nil {
+			return app.Notification{}, fmt.Errorf("rulestore: parse channels: %w", err)
+		}
+	}
+	return n, nil
 }
 
 // scanRule reads one alert_rules row (ruleColumns order) into an app.Rule, parsing
