@@ -48,3 +48,41 @@ export interface RetentionPolicy {
   createdAt: Date;
   updatedAt: Date;
 }
+
+export type AlertComparator = 'gt' | 'gte' | 'lt' | 'lte' | 'eq';
+export type AlertState = 'ok' | 'firing' | 'no_data';
+
+// RuleQuery is the structured query a rule evaluates over its window. Mirrors the
+// alert-evaluator's RuleQuery (Go) and the `query` jsonb column. No time range —
+// the evaluator derives it from windowSeconds.
+export interface RuleQuery {
+  text?: string;
+  service?: string;
+  level?: string;
+  labels?: Record<string, string>;
+}
+
+export type NotifyChannel = { type: 'webhook'; url: string } | { type: 'email'; to: string };
+
+// AlertRule is the public projection of an alert_rules row. The state +
+// last_evaluated_at/last_triggered_at fields are owned by the alert-evaluator
+// worker and are read-only here (the control-plane never writes them).
+export interface AlertRule {
+  id: string;
+  tenantId: string;
+  name: string;
+  savedQueryId: string | null;
+  query: RuleQuery;
+  comparator: AlertComparator;
+  threshold: number;
+  windowSeconds: number;
+  severity: string;
+  enabled: boolean;
+  notifyChannels: NotifyChannel[];
+  state: AlertState;
+  lastEvaluatedAt: Date | null;
+  lastTriggeredAt: Date | null;
+  createdBy: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}

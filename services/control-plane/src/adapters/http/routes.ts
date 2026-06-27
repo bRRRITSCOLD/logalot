@@ -1,10 +1,12 @@
 import {
+  createAlertRuleRequestSchema,
   createApiKeyRequestSchema,
   createTenantRequestSchema,
   createUserRequestSchema,
   loginRequestSchema,
   logoutRequestSchema,
   refreshRequestSchema,
+  updateAlertRuleRequestSchema,
   updateTenantRequestSchema,
   updateUserRequestSchema,
 } from '@logalot/contracts';
@@ -230,6 +232,64 @@ export function registerRoutes(app: FastifyInstance, deps: RouteDeps): void {
     async (req) => {
       const body = parse(upsertRetentionSchema, req.body);
       return services.retention.upsert(requireTenantContext(req), body);
+    },
+  );
+
+  // ── Alert rules (read/list: member; write: tenant_admin) ──────────────────
+  // CRUD only. Evaluation (state transitions + notification dispatch) is the
+  // alert-evaluator worker's job (ADR-0001); this never sets state.
+  app.post(
+    '/v1/alert-rules',
+    { preHandler: [authenticate, makeRequireOperation('alert:create')] },
+    async (req, reply) => {
+      const body = parse(createAlertRuleRequestSchema, req.body);
+      const rule = await services.alerts.create(requireTenantContext(req), {
+        name: body.name,
+        savedQueryId: body.savedQueryId ?? null,
+        query: body.query,
+        comparator: body.comparator,
+        threshold: body.threshold,
+        windowSeconds: body.windowSeconds,
+        severity: body.severity,
+        enabled: body.enabled,
+        notifyChannels: body.notifyChannels,
+      });
+      return reply.code(201).send(rule);
+    },
+  );
+
+  app.get(
+    '/v1/alert-rules',
+    { preHandler: [authenticate, makeRequireOperation('alert:list')] },
+    async (req) => ({ alertRules: await services.alerts.list(requireTenantContext(req)) }),
+  );
+
+  app.get(
+    '/v1/alert-rules/:id',
+    { preHandler: [authenticate, makeRequireOperation('alert:read')] },
+    async (req) => {
+      const { id } = parse(uuidParamSchema, req.params);
+      return services.alerts.get(requireTenantContext(req), id);
+    },
+  );
+
+  app.patch(
+    '/v1/alert-rules/:id',
+    { preHandler: [authenticate, makeRequireOperation('alert:update')] },
+    async (req) => {
+      const { id } = parse(uuidParamSchema, req.params);
+      const body = parse(updateAlertRuleRequestSchema, req.body);
+      return services.alerts.update(requireTenantContext(req), id, body);
+    },
+  );
+
+  app.delete(
+    '/v1/alert-rules/:id',
+    { preHandler: [authenticate, makeRequireOperation('alert:delete')] },
+    async (req, reply) => {
+      const { id } = parse(uuidParamSchema, req.params);
+      await services.alerts.remove(requireTenantContext(req), id);
+      return reply.code(204).send();
     },
   );
 }

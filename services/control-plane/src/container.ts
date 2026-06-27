@@ -4,11 +4,13 @@ import { JoseTokenService } from './adapters/crypto/jose-token-service';
 import { NodeKeyMaterialGenerator } from './adapters/crypto/node-key-material';
 import { NodeIdGenerator, NodeSecretGenerator } from './adapters/crypto/node-random';
 import { SystemClock } from './adapters/crypto/system-clock';
+import { PgAlertRuleRepository } from './adapters/postgres/alert-rule-repository';
 import { PgApiKeyRepository } from './adapters/postgres/api-key-repository';
 import { PgRefreshTokenRepository } from './adapters/postgres/refresh-token-repository';
 import { PgRetentionRepository } from './adapters/postgres/retention-repository';
 import { PgTenantRepository } from './adapters/postgres/tenant-repository';
 import { PgUserRepository } from './adapters/postgres/user-repository';
+import { AlertRuleService } from './app/alert-rule-service';
 import { ApiKeyService } from './app/api-key-service';
 import { AuthService } from './app/auth-service';
 import type { TokenService } from './app/ports';
@@ -25,6 +27,7 @@ export interface Services {
   users: UserService;
   apiKeys: ApiKeyService;
   retention: RetentionService;
+  alerts: AlertRuleService;
 }
 
 export interface Container {
@@ -52,6 +55,7 @@ export function buildContainer(pool: Pool, config: Config): Container {
   const apiKeyRepo = new PgApiKeyRepository(pool);
   const retentionRepo = new PgRetentionRepository(pool);
   const refreshTokenRepo = new PgRefreshTokenRepository(pool);
+  const alertRuleRepo = new PgAlertRuleRepository(pool);
 
   const services: Services = {
     auth: new AuthService({
@@ -69,6 +73,7 @@ export function buildContainer(pool: Pool, config: Config): Container {
     users: new UserService(userRepo, hasher),
     apiKeys: new ApiKeyService(apiKeyRepo, tenantRepo, keyGenerator, clock),
     retention: new RetentionService(retentionRepo),
+    alerts: new AlertRuleService(alertRuleRepo),
   };
 
   return { services, tokenService };

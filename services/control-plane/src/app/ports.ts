@@ -1,5 +1,15 @@
 import type { KeyMaterial } from '../domain/api-key';
-import type { ApiKeyRecord, RetentionPolicy, Tenant, TenantStatus, User } from '../domain/entities';
+import type {
+  AlertComparator,
+  AlertRule,
+  ApiKeyRecord,
+  NotifyChannel,
+  RetentionPolicy,
+  RuleQuery,
+  Tenant,
+  TenantStatus,
+  User,
+} from '../domain/entities';
 import type { MembershipRole, Role } from '../domain/roles';
 
 // ── Driven ports (the application core depends on these; adapters implement them).
@@ -149,6 +159,42 @@ export interface RetentionInput {
 export interface RetentionRepository {
   get(tenantId: string): Promise<RetentionPolicy | null>;
   upsert(tenantId: string, input: RetentionInput): Promise<RetentionPolicy>;
+}
+
+// Alert-rule persistence (Alerting context, migrations 000009 + 000013). The
+// control-plane owns rule CRUD; the alert-evaluator worker owns state/evaluation,
+// so this repo never writes state/last_evaluated_at/transition_seq.
+export interface NewAlertRule {
+  name: string;
+  savedQueryId: string | null;
+  query: RuleQuery;
+  comparator: AlertComparator;
+  threshold: number;
+  windowSeconds: number;
+  severity: string;
+  enabled: boolean;
+  notifyChannels: NotifyChannel[];
+  createdBy: string | null;
+}
+
+export interface AlertRulePatch {
+  name?: string;
+  savedQueryId?: string | null;
+  query?: RuleQuery;
+  comparator?: AlertComparator;
+  threshold?: number;
+  windowSeconds?: number;
+  severity?: string;
+  enabled?: boolean;
+  notifyChannels?: NotifyChannel[];
+}
+
+export interface AlertRuleRepository {
+  create(tenantId: string, input: NewAlertRule): Promise<AlertRule>;
+  list(tenantId: string): Promise<AlertRule[]>;
+  findById(tenantId: string, id: string): Promise<AlertRule | null>;
+  update(tenantId: string, id: string, patch: AlertRulePatch): Promise<AlertRule | null>;
+  delete(tenantId: string, id: string): Promise<boolean>;
 }
 
 // Refresh-token persistence (migration 000012). Stored hashed; rotation + family

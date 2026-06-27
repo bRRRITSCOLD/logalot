@@ -40,6 +40,20 @@ describe('rbac matrix', () => {
     expect(can('member', 'retention:update')).toBe(false);
   });
 
+  it('gates alert-rule writes to tenant_admin; members may only read/list', () => {
+    expect(can('tenant_admin', 'alert:create')).toBe(true);
+    expect(can('tenant_admin', 'alert:update')).toBe(true);
+    expect(can('tenant_admin', 'alert:delete')).toBe(true);
+    expect(can('member', 'alert:read')).toBe(true);
+    expect(can('member', 'alert:list')).toBe(true);
+    expect(can('member', 'alert:create')).toBe(false);
+    expect(can('member', 'alert:update')).toBe(false);
+    expect(can('member', 'alert:delete')).toBe(false);
+    // platform_operator is barred from tenant content, including alert rules.
+    expect(can('platform_operator', 'alert:list')).toBe(false);
+    expect(can('platform_operator', 'alert:create')).toBe(false);
+  });
+
   it('is total: every role × operation returns a boolean (fail closed by default)', () => {
     for (const role of ROLES) {
       for (const op of OPERATIONS) {

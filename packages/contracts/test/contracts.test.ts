@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  createAlertRuleRequestSchema,
   createApiKeyRequestSchema,
   createTenantRequestSchema,
   createUserRequestSchema,
   loginRequestSchema,
+  updateAlertRuleRequestSchema,
 } from '../src/index.js';
 
 describe('createTenantRequest', () => {
@@ -68,6 +70,57 @@ describe('createApiKeyRequest', () => {
     expect(createApiKeyRequestSchema.safeParse({ name: 'ci', scopes: ['admin:all'] }).success).toBe(
       false,
     );
+  });
+});
+
+describe('createAlertRuleRequest', () => {
+  it('applies sensible defaults', () => {
+    const r = createAlertRuleRequestSchema.parse({ name: 'errors', threshold: 5 });
+    expect(r.comparator).toBe('gt');
+    expect(r.windowSeconds).toBe(300);
+    expect(r.severity).toBe('warning');
+    expect(r.enabled).toBe(true);
+    expect(r.notifyChannels).toEqual([]);
+  });
+
+  it('accepts a webhook channel + inline query', () => {
+    const r = createAlertRuleRequestSchema.parse({
+      name: 'payment errors',
+      threshold: 10,
+      query: { text: 'payment failed', level: 'error' },
+      notifyChannels: [{ type: 'webhook', url: 'https://hooks.example/x' }],
+    });
+    expect(r.query.level).toBe('error');
+    expect(r.notifyChannels[0]).toMatchObject({ type: 'webhook' });
+  });
+
+  it.each([
+    ['negative threshold', { name: 'x', threshold: -1 }],
+    ['window below 30s', { name: 'x', threshold: 1, windowSeconds: 10 }],
+    ['window above 1d', { name: 'x', threshold: 1, windowSeconds: 999999 }],
+    ['unknown comparator', { name: 'x', threshold: 1, comparator: 'between' }],
+    ['bad level', { name: 'x', threshold: 1, query: { level: 'verbose' } }],
+    ['email channel without to', { name: 'x', threshold: 1, notifyChannels: [{ type: 'email' }] }],
+    ['unknown key (strict)', { name: 'x', threshold: 1, extra: true }],
+    ['empty name', { name: '', threshold: 1 }],
+  ])('rejects %s', (_label, input) => {
+    expect(createAlertRuleRequestSchema.safeParse(input).success).toBe(false);
+  });
+
+  it('does not allow setting state (evaluator-owned)', () => {
+    expect(
+      createAlertRuleRequestSchema.safeParse({ name: 'x', threshold: 1, state: 'firing' }).success,
+    ).toBe(false);
+  });
+});
+
+describe('updateAlertRuleRequest', () => {
+  it('accepts a partial patch', () => {
+    expect(updateAlertRuleRequestSchema.safeParse({ enabled: false }).success).toBe(true);
+  });
+
+  it('rejects an empty patch', () => {
+    expect(updateAlertRuleRequestSchema.safeParse({}).success).toBe(false);
   });
 });
 
