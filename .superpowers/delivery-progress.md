@@ -265,3 +265,26 @@ Pick up at **Wave 3, scoped tight** (see handoff prompt). Recommended order:
 3. #17 cold tier + floci spikes #13/#14/#15 — these are floci-fidelity-gated; keep the feature flag; spike first.
 4. Wave 4 frontend (design system READY, file `9N3v2ZGGo3McfSxOLfBPnC`): #20 scaffold + component library FIRST (shadcn/ui-on-Base-UI `@base-ui-components/react`, build from Figma + tokens), then #21/#22/#23 pages, #24 Code Connect.
 DISCIPLINE: one issue per fresh session where possible; staff-review gate before every merge; route ALL Figma work through ux-designer; never create new Figma files. See [[figma-workflow-rules]].
+
+---
+
+## SESSION 3 + 4 UPDATE (2026-06-27) — Wave 3 backend (#16 alerting, #18 dashboards)
+
+> NOTE: the Session-3 ledger entry was lost with unpushed commit `34ec6de`; durable state (merged PRs + closed issues) was unaffected. This entry reconstructs #16 from the handoff and adds #18.
+
+### #16 alerting — MERGED (Session 3)
+PR #49, squash `00b7587`, #16 closed. Alert-rule CRUD → control-plane (Node+Fastify, mirrors tenant/user CRUD); alert-evaluator → new Go worker `services/alert-evaluator/` (11th go.work module). Migrations 000013 (BYPASSRLS `logalot_evaluator` role granted ONLY alert_rules+alert_notifications, ZERO on log_events; transition_seq + outbox `UNIQUE(rule_id,transition_seq)`) + 000014 (query-source CHECK). Idempotency = transactional outbox + relay-only dispatch (at-least-once + unique-key dedup). Notify: logsink default + floci SNS/SQS adapter. Staff gate: REQUEST-CHANGES → 1 fix-pass (I1 outbox relay, I2 savedQueryId-only spurious-fire) → APPROVE. Left a **deferred saved_query_id resolution hook** (savedQueryId-only rules inert).
+
+### #18 dashboards + saved-queries backend — APPROVED, MERGE PENDING (Session 4)
+PR #51 (branch `feat/18-dashboards`, head `2da7d4c`). Built by ai:backend-engineer foreground in main tree (no worktree). **Staff-engineer gate: APPROVE — 0 Critical / 0 Important / 6 Minor.** CI all green (go-lint, go-test, node-lint, node-test).
+- Saved-query CRUD + dashboard CRUD in control-plane (hexagonal, RLS tenant-scoped via tenant-tx `SET LOCAL app.tenant_id`, tenant from TenantContext never body). New contracts `savedQuery.ts` + `dashboard.ts` (zod v4). Dashboards own panels inline (JSONB), reference savedQueryId by identity (no FK). Tables `saved_queries`(000007)/`dashboards`(000008) already existed w/ RLS + 000011 grants.
+- **Panel-data**: `GET /v1/panel-data` placed in **query-service** (Go), not control-plane — query-service owns all log-content reads per ADR-0001; avoids service-to-service HTTP; reuses WithTenantScope/logalot_app RLS pool. Returns count + time-series + recent-logs.
+- **Evaluator saved-query hook wired** (closes #16's deferral): `rulestore.go` resolves `saved_query_id`→RuleQuery; migration **000015** grants `logalot_evaluator` SELECT on `saved_queries` ONLY (definitions = metadata, NOT log content; count still via RLS LogCounter). Empty-query refusal preserved as fallback. savedQueryId-only rules now fire — test-proven.
+- Tests: control-plane unit 18 + integration 13 (two-tenant RLS isolation proven); query-service panel unit 4 + integration 3 (AC3a/AC4); alert-evaluator integration +2 (resolve-and-fire, missing-saved-query-skipped). Random ports.
+- **6 Minor follow-ups → issue #52** (panelstore errors.Is 404-vs-500 #1/#2, ListDue N+1 #3, service DRY isUniqueViolation #4, 000015 down comment #5, TimeSeries sparse-bucket contract #6).
+
+### ⚠️ MERGE BLOCKER (same class as session-3 ledger push)
+`gh pr merge 51 --squash` **denied by auto-mode classifier** ([Merge Without Review] — AI-only gate, no human approval). PR is reviewed+approved+green; needs USER to run `! gh pr merge 51 --squash --delete-branch` (or add a Bash allow-rule). #18 stays OPEN until then.
+
+### Wave 3 status
+#16 done (merged). #18 done (approved, merge-pending-user). Remaining: #17 cold tier (floci-gated; spikes #13/#14/#15 first). Backend hardening batch: #33 #35 #37 #39 #41 #42 #47 #52 + #16 M6 (FOR UPDATE SKIP LOCKED multi-replica). Wave 4 frontend next major (#20 scaffold+component-lib first, then #21/#22/#23, #24 Code Connect).
