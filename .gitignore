@@ -22,3 +22,6 @@ coverage/
 # Editor / OS cruft
 .DS_Store
 *.swp
+
+# Agent worktrees / local Claude state
+.claude/
