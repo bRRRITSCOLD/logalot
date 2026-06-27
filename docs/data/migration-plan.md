@@ -30,6 +30,7 @@ migrations/
   000009_alert_rules.{up,down}.sql                  AlertRule (RLS)
   000010_log_events.{up,down}.sql                   Hot store: partitioned parent + RLS + default
                                                     partition + lifecycle functions + bootstrap window
+  000011_logalot_app_role.{up,down}.sql             NOSUPERUSER, non-BYPASSRLS app login + grants
   seeds/dev_tenant.sql                              dev tenant + admin + API key + retention (manual)
 ```
 
@@ -38,36 +39,51 @@ migrations/
 ## 2. Running migrations locally (golang-migrate via docker)
 
 Postgres comes up with the rest of the stack (`docker compose up`: postgres, mongodb, redis,
-rabbitmq, floci). Run migrations against it with the dockerized migrate CLI — no host install
-needed:
+rabbitmq, floci). The Makefile wires the dockerized migrate CLI into the workflow — no host
+install needed. The runner joins the compose `logalot` network and reaches Postgres by service
+hostname, building `DATABASE_URL` from the same `.env` Postgres creds compose uses:
 
 ```bash
-# from repo root; DATABASE_URL points at the compose postgres
-export DATABASE_URL='postgres://postgres:postgres@localhost:5432/logalot?sslmode=disable'
+make up              # bring the stack up (creates .env from .env.example first run)
+make migrate-up      # apply all pending migrations (000001..000011)
+make migrate-version # print the current version (=> 11 after a clean up)
+make migrate-down    # roll back exactly ONE migration (run again to step further)
+make seed            # load the dev tenant + API key (idempotent; §5)
 
-# apply everything
-docker run --rm --network host -v "$PWD/migrations:/m" \
-  migrate/migrate -path=/m -database "$DATABASE_URL" up
-
-# roll back one step / everything
-docker run --rm --network host -v "$PWD/migrations:/m" \
-  migrate/migrate -path=/m -database "$DATABASE_URL" down 1
-
-# inspect current version
-docker run --rm --network host -v "$PWD/migrations:/m" \
-  migrate/migrate -path=/m -database "$DATABASE_URL" version
+make migrate-create name=add_widgets   # scaffold a new NNNNNN_*.{up,down}.sql pair
 ```
 
-> If your compose maps Postgres on a non-default port or runs on a user-defined network, swap
-> `--network host` for `--network <compose_net>` and use the service hostname
-> (`postgres://postgres:postgres@postgres:5432/logalot`). Integration tests use the same
-> migrations via testcontainers so the test schema is byte-identical to dev/prod.
+Under the hood each target is:
 
-**Application role (important for RLS).** Migrations run as the owner/superuser, but the services
-must connect as a **non-superuser, non-`BYPASSRLS`** role — otherwise `FORCE ROW LEVEL SECURITY`
-is bypassed and the tenant backstop is silently disabled. Provision e.g. `logalot_app` with
-`SELECT/INSERT/UPDATE/DELETE` on the domain tables and `EXECUTE` on `app.*`, and point every
-service's `DATABASE_URL` at it. The migrate/admin role stays separate.
+```bash
+docker run --rm --network logalot -v "$PWD/migrations:/m" \
+  migrate/migrate -path=/m \
+  -database "postgres://$POSTGRES_USER:$POSTGRES_PASSWORD@postgres:5432/$POSTGRES_DB?sslmode=disable" <cmd>
+```
+
+> Integration tests use the same migrations via testcontainers so the test schema is
+> byte-identical to dev/prod.
+
+### Two roles, two connection strings (important for RLS)
+
+Migrations run as the **admin/migrate** role (`POSTGRES_USER`), which OWNS the schema and runs
+all DDL. Services must **never** use it. They connect as **`logalot_app`** — a
+**`NOSUPERUSER`, non-`BYPASSRLS`** role — otherwise `FORCE ROW LEVEL SECURITY` is bypassed and
+the tenant backstop is silently disabled (model.md §4.2).
+
+`logalot_app` is provisioned by **migration `000011_logalot_app_role`** (repeatable, applied with
+the rest of `make migrate-up` — no separate bootstrap script to remember). It is created
+`NOSUPERUSER NOBYPASSRLS`, owns nothing, and is granted `SELECT/INSERT/UPDATE/DELETE` on the
+domain tables in `public` plus `EXECUTE` on `app.*`. Default privileges extend those grants to
+future tables/functions created by the migrate role, so new migrations don't have to re-grant.
+
+| Role | Used by | `.env` var | Attributes |
+|---|---|---|---|
+| `logalot` (admin) | `make migrate-*`, `make seed` | `DATABASE_URL` | owner, runs DDL |
+| `logalot_app` | every service (ingest/processor/query/control-plane) | `LOGALOT_APP_DATABASE_URL` | `NOSUPERUSER`, `NOBYPASSRLS`, DML + EXECUTE only |
+
+Dev creds for `logalot_app` are baked into `000011` (`logalot_app` / `logalot_app`, LOCAL DEV
+ONLY). Rotate for any non-local environment with `ALTER ROLE logalot_app PASSWORD '…';`.
 
 ---
 
@@ -113,11 +129,15 @@ The full sequence was applied and rolled back against `postgres:16-alpine`:
 
 ## 5. Seed strategy (dev tenant + API key for the vertical slice)
 
-After `up`, provision the slice's tenant by hand:
+After `up`, provision the slice's tenant:
 
 ```bash
-docker exec -i <postgres> psql "$DATABASE_URL" < migrations/seeds/dev_tenant.sql
+make seed   # = docker exec -i logalot-postgres psql "$DATABASE_URL" -f - < migrations/seeds/dev_tenant.sql
 ```
+
+`make seed` runs against the running compose Postgres as the admin role. Every insert is
+`ON CONFLICT DO NOTHING`, so re-running is safe; the API-key plaintext is printed once in the
+seed file header (by design — it is never stored).
 
 It creates (DEV ONLY):
 

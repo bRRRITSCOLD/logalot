@@ -3,8 +3,29 @@
 
 COMPOSE := docker compose --env-file .env
 
+# Load .env (when present) so the migrate runner can build DATABASE_URL from the
+# same Postgres creds compose uses. `-include` is silent before the first `make up`
+# creates .env from the template.
+-include .env
+
+# ----------------------------------------------------------------------------
+# Migrations (golang-migrate via docker — no host install needed; see
+# docs/data/migration-plan.md §2). The runner joins the compose `logalot` network
+# and reaches Postgres by service hostname.
+#
+#   MIGRATE_DATABASE_URL = the ADMIN/migrate role (POSTGRES_USER). It OWNS the
+#   schema and runs DDL. Services must NOT use it — they connect as the
+#   NOSUPERUSER `logalot_app` role (see .env.example LOGALOT_APP_DATABASE_URL),
+#   provisioned by migration 000011.
+# ----------------------------------------------------------------------------
+MIGRATE_IMAGE        := migrate/migrate:v4.18.1
+MIGRATE_DATABASE_URL := postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres:5432/$(POSTGRES_DB)?sslmode=disable
+MIGRATE_RUN          := docker run --rm --network logalot -v $(CURDIR)/migrations:/m $(MIGRATE_IMAGE) \
+	-path=/m -database "$(MIGRATE_DATABASE_URL)"
+
 .DEFAULT_GOAL := help
 .PHONY: help up down logs ps reset seed \
+	migrate-up migrate-down migrate-version migrate-create \
 	go-sync go-build go-test go-fmt go-lint \
 	node-install node-test node-lint \
 	test lint
@@ -37,11 +58,32 @@ ps:
 reset:
 	$(COMPOSE) down -v
 
-## seed: placeholder — migrate + seed runner is wired up in issue #3
+## migrate-up: apply all pending migrations (admin role)
+migrate-up:
+	$(MIGRATE_RUN) up
+
+## migrate-down: roll back exactly one migration (use again to step further)
+migrate-down:
+	$(MIGRATE_RUN) down 1
+
+## migrate-version: print the current schema version
+migrate-version:
+	$(MIGRATE_RUN) version
+
+## migrate-create: scaffold a new pair, e.g. `make migrate-create name=add_widgets`
+migrate-create:
+	@test -n "$(name)" || (echo "usage: make migrate-create name=<description>" && exit 1)
+	docker run --rm -v $(CURDIR)/migrations:/m $(MIGRATE_IMAGE) \
+		create -ext sql -dir /m -seq $(name)
+
+## seed: load the DEV tenant + admin + API key (migrations/seeds/dev_tenant.sql)
+# Runs against the running compose postgres as the admin role. Idempotent: every
+# insert is ON CONFLICT DO NOTHING, so re-running is safe (the API-key secret is
+# only printed by this seed file's header — it is shown once, here, by design).
 seed:
-	@echo "seed is not implemented here. The migration + seed runner"
-	@echo "(NOSUPERUSER logalot_app role, golang-migrate, dev seed) lands in issue #3."
-	@echo "See docs/data/migration-plan.md once #3 is merged."
+	docker exec -i logalot-postgres \
+		psql "postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@localhost:5432/$(POSTGRES_DB)?sslmode=disable" \
+		-v ON_ERROR_STOP=1 -f - < migrations/seeds/dev_tenant.sql
 
 # ----------------------------------------------------------------------------
 # Monorepo CI helpers. CI (.github/workflows/ci.yml) calls these same targets,

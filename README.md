@@ -102,7 +102,31 @@ never run this compose file on a shared or production host.
 | `make logs`  | Tail logs from all services                                     |
 | `make down`  | Stop and remove containers (volumes kept)                       |
 | `make reset` | Stop everything and **wipe all volumes** (destructive)          |
-| `make seed`  | Placeholder — migrate + seed runner lands in issue #3           |
 
-> Database migrations and the dev seed (the `logalot_app` role + golang-migrate
-> runner) are not part of this stack; they arrive in issue #3.
+### Database migrations & seed
+
+Schema migrations use [golang-migrate](https://github.com/golang-migrate/migrate)
+run through Docker (no host install). With the stack up:
+
+| Command               | What it does                                                  |
+|-----------------------|--------------------------------------------------------------|
+| `make migrate-up`     | Apply all pending migrations                                  |
+| `make migrate-down`   | Roll back exactly one migration                              |
+| `make migrate-version`| Print the current schema version                            |
+| `make migrate-create name=...` | Scaffold a new `.up.sql`/`.down.sql` pair          |
+| `make seed`           | Load the dev tenant + admin + API key (idempotent)          |
+
+```sh
+make up
+make migrate-up        # applies 000001..000011
+make seed              # dev tenant + key lgk_dev_devkey001_devsecret0123456789
+```
+
+**Two Postgres roles, two connection strings.** Migrations and `make seed` run as
+the **admin** role (`DATABASE_URL`), which owns the schema. Every *service*
+connects as **`logalot_app`** (`LOGALOT_APP_DATABASE_URL`) — a `NOSUPERUSER`,
+non-`BYPASSRLS` role provisioned by migration `000011`. That separation is what
+makes `FORCE ROW LEVEL SECURITY` actually enforce tenant isolation; a service
+must never use the admin URL. See
+[`docs/data/migration-plan.md §2`](docs/data/migration-plan.md) and
+[`docs/data/model.md §4.2`](docs/data/model.md).
