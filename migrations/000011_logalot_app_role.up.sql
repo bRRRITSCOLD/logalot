@@ -46,6 +46,11 @@ GRANT USAGE ON SCHEMA app    TO logalot_app;
 -- governs them — no per-partition grant needed.
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO logalot_app;
 
+-- Grant minimization: the blanket grant above also covers golang-migrate's
+-- schema_migrations bookkeeping table. Services have no business writing it, so
+-- revoke it back off the app role (the migrate/admin role still owns it).
+REVOKE ALL ON TABLE schema_migrations FROM logalot_app;
+
 -- ── Function execution ───────────────────────────────────────────────────────
 -- EXECUTE on app.* (current_tenant_id, set_updated_at, and the partition
 -- lifecycle helpers). app.current_tenant_id() is invoked by every RLS policy, so
