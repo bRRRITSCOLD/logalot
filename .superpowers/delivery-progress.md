@@ -228,3 +228,32 @@ services/ingest-service · services/processor · services/query-service · tools
 ### Resume map
 GitHub issues + this ledger are the durable state. Critical path next: #11 (control-plane) unlocks
 #16/#20/#23; #10 (search) unlocks #22. Frontend wave can start once #11 + the design-system components land.
+
+---
+
+## SESSION 2 UPDATE (2026-06-27) — supersedes the session-1 "morning status" above
+
+### Corrections to session-1 state
+- **`main` now HAS everything.** Merge guard no longer blocks self-merge. PR #27 merged (commit 3987620);
+  foundation + vertical slice live on `main`. #1–#9 closed. Work off `main` per-issue now (real PRs → squash-merge).
+- **Design system REDONE PROPERLY** (session-1 version was thin + in a WRONG new file). Now in the user's
+  ACTUAL files: Design System `9N3v2ZGGo3McfSxOLfBPnC` (187 variables: Primitives 131 + Semantic 45 Dark/Light +
+  Aliases 11; 12 text styles; 8 effect styles; **35 component sets / 140 nodes** w/ full state matrices, all
+  token-bound, shadcn/Base-UI anatomy; 6 pages) + App Screens `bgxzUUUNlz149nkYYjh67x` (9 responsive frames
+  Explore·Live-tail/Search/Alerts·Admin × desktop/tablet/mobile + States frame). Verified by screenshots.
+  PR #43 merged, #19 closed. ⚠️ stray file `UnSNz4q7hokc0ZEaabyHWW` = old mistake, ignore. See [[figma-workflow-rules]].
+
+### Wave 2 (this session)
+- **#10 search API** — PR #46 ✅ staff-APPROVE (reviewer ran tests: cross-tenant isolation, FTS safety, keyset all proven) → **MERGED to main**.
+- **#12 rate limiting** — PR #45 ✅ staff-APPROVE (per-tenant isolation, atomic no-over-admit, 429 proven) → **MERGED to main**. Minor follow-up #47.
+- **#11 control-plane** — ⚠️ **DRAFT PR #48, UNVERIFIED.** The agent hit the session limit mid-run before committing/reporting; I salvaged its uncommitted worktree (full Node+Fastify hexagonal service: domain/app/postgres-adapters, migration 000012_refresh_tokens, packages/contracts, full test suite) and pushed it. **NOT built/tested/reviewed.** PR #48 body lists the required pre-merge checklist (build+test, API-key-hash compat vs pkg/auth+000005, RLS cross-tenant denial, migration 000012 up/down + grants, CI green, staff review). **DO THIS FIRST next session.**
+
+### Open follow-ups (non-blocking): #33 #35 #37 #39 #41 #42 #47
+
+### NEXT SESSION resume (fresh session recommended — context was large)
+1. **Finish #11**: verify+fix PR #48 per its checklist → staff review → merge. (Critical-path: unlocks #16/#20/#23.)
+2. Wave 3: #16 alerting, #17 cold tier (floci-flagged), #18 dashboards; floci spikes #13/#14/#15.
+3. Wave 4 frontend (design system is READY): #20 TanStack Start scaffold + component library (shadcn/Base-UI,
+   build from Figma `9N3v2ZGGo3McfSxOLfBPnC` + tokens), #21 log explorer+tail, #22 search page, #23 alerts+admin, #24 Code Connect.
+4. Worktree cleanup: several `.claude/worktrees/agent-*` + stale local `feat/*` branches remain; `git worktree prune` + delete merged branches.
+5. Build component library to the shadcn/ui-on-Base-UI pattern (`@base-ui-components/react`); route ALL Figma work through ux-designer; never create new Figma files. See [[figma-workflow-rules]].
