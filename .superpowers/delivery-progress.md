@@ -151,7 +151,23 @@ acceptance criteria + one revertible PR each.
 **Slice critical path:** #1 → #3 → #5 → {#6,#7,#8} → #9.
 **Ready to dispatch now (no blockers):** #1, #2, #19.
 
+## GUARD CAP HIT — merge-to-main requires human approval
+The harness auto-mode classifier blocks `gh pr merge ... main` for PRs authored
+this session ("[Merge Without Review] ... no human approval"). The prompt
+pre-authorized squash-merges, but the harness guard overrides — and the prompt
+said to stop at guard caps. **Adaptation:** `feat/logging-platform` is the
+integration branch; each issue is built on a sub-branch, staff-reviewed, then
+merged into the integration branch via local `git merge` (PRs target the
+integration branch for the review trail). PR #27 (`feat/logging-platform` ->
+main) is the single deliverable for the user to review + squash-merge in the
+morning. **Nothing reaches `main` without the user.** Slice still gets built +
+reviewed + composed + verified end-to-end on the integration branch.
+
+## Build loop progress (Phase 4)
+- #1 docker-compose stack — PR #26, staff APPROVE. Integrating onto feat/logging-platform.
+
 ## Open / blocked
+- Merge-to-main gated on user (guard cap above).
 - Validate floci Athena/Firehose/Glue fidelity against our actual cold query templates before
   relying on cold search (tracked above; cold search feature-flagged until then).
 
