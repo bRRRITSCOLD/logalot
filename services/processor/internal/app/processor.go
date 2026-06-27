@@ -33,10 +33,17 @@ type Service struct {
 	now   func() time.Time
 	log   *slog.Logger
 
-	maxRetries int                                  // bounded persist retries before dead-lettering
-	retryDelay time.Duration                        // base backoff between persist attempts
-	sleep      func(context.Context, time.Duration) // injectable for fast tests
+	maxRetries   int                                  // bounded persist retries before dead-lettering
+	retryDelay   time.Duration                        // base backoff between persist attempts
+	drainTimeout time.Duration                        // upper bound on an in-flight drain persist
+	sleep        func(context.Context, time.Duration) // injectable for fast tests
 }
+
+// DefaultDrainTimeout bounds the in-flight persist that runs on a drain after
+// the lifecycle context is cancelled (issue #37). It must be comfortably less
+// than the deployment's terminationGracePeriodSeconds so the drain completes
+// before the orchestrator escalates to SIGKILL.
+const DefaultDrainTimeout = 8 * time.Second
 
 // Option configures a Service.
 type Option func(*Service)
@@ -54,6 +61,19 @@ func WithRetry(maxRetries int, base time.Duration) Option {
 	return func(s *Service) { s.maxRetries = maxRetries; s.retryDelay = base }
 }
 
+// WithDrainTimeout bounds the in-flight persist that runs on a shutdown drain
+// (issue #37). The drain persist runs on a context derived from
+// context.WithoutCancel so a SIGTERM does not abort it — but it MUST still be
+// bounded so a stuck DB cannot hang shutdown forever (and force a SIGKILL, which
+// would defeat the drain). A non-positive d leaves the default in place.
+func WithDrainTimeout(d time.Duration) Option {
+	return func(s *Service) {
+		if d > 0 {
+			s.drainTimeout = d
+		}
+	}
+}
+
 // withSleeper overrides the backoff sleeper (test seam).
 func withSleeper(f func(context.Context, time.Duration)) Option {
 	return func(s *Service) { s.sleep = f }
@@ -62,13 +82,14 @@ func withSleeper(f func(context.Context, time.Duration)) Option {
 // New builds the processor Service over the LogStore + TailBus ports.
 func New(store kernel.LogStore, tail kernel.TailBus, opts ...Option) *Service {
 	s := &Service{
-		store:      store,
-		tail:       tail,
-		now:        time.Now,
-		log:        slog.New(slog.NewTextHandler(io.Discard, nil)),
-		maxRetries: 3,
-		retryDelay: 200 * time.Millisecond,
-		sleep:      sleepCtx,
+		store:        store,
+		tail:         tail,
+		now:          time.Now,
+		log:          slog.New(slog.NewTextHandler(io.Discard, nil)),
+		maxRetries:   3,
+		retryDelay:   200 * time.Millisecond,
+		drainTimeout: DefaultDrainTimeout,
+		sleep:        sleepCtx,
 	}
 	for _, o := range opts {
 		o(s)
@@ -81,6 +102,9 @@ func New(store kernel.LogStore, tail kernel.TailBus, opts ...Option) *Service {
 	}
 	if s.sleep == nil {
 		s.sleep = sleepCtx
+	}
+	if s.drainTimeout <= 0 {
+		s.drainTimeout = DefaultDrainTimeout
 	}
 	return s
 }
@@ -133,15 +157,22 @@ func (s *Service) Handle(tc kernel.TenantContext, ctx context.Context, env kerne
 // NOT abort an in-flight DB write. This prevents a graceful-shutdown signal from
 // being misclassified as a poison persist and routing the message to the DLQ.
 //
+// The drainCtx is bounded by s.drainTimeout (NOT unbounded): WithoutCancel strips
+// the parent deadline, so a stuck DB would otherwise hang shutdown forever and
+// force a SIGKILL — which would defeat the drain. The timeout caps the in-flight
+// persist so shutdown always completes within terminationGracePeriodSeconds.
+//
 // ctx (the lifecycle context) is still used for the retry sleep so that a
 // cancellation wakes up the sleep immediately, and ctx.Err() is checked between
 // retry attempts to stop retrying once the process is shutting down. This means:
-//   - Attempt 0 always runs to completion (drain).
+//   - Attempt 0 always runs to completion (bounded drain).
 //   - Subsequent retry attempts are skipped after a shutdown signal.
 func (s *Service) persist(tc kernel.TenantContext, ctx context.Context, ev kernel.LogEvent) error {
-	// drainCtx inherits all values from ctx (trace IDs etc.) but is never
-	// cancelled, so the DB write completes regardless of lifecycle cancellation.
-	drainCtx := context.WithoutCancel(ctx)
+	// drainCtx inherits all values from ctx (trace IDs etc.) but not its
+	// cancellation, so the DB write survives a lifecycle cancellation — yet it is
+	// bounded by drainTimeout so a stuck DB cannot hang shutdown indefinitely.
+	drainCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.drainTimeout)
+	defer cancel()
 
 	attempts := s.maxRetries + 1
 	if attempts < 1 {

@@ -16,6 +16,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log/slog"
 	"time"
 
 	"github.com/bRRRITSCOLD/logalot/pkg/kernel"
@@ -29,12 +31,36 @@ import (
 // tenant's rules, but no grant on log_events so it can never read log content.
 type RuleStore struct {
 	pool *pgxpool.Pool
+	log  *slog.Logger
 }
 
 var _ app.RuleStore = (*RuleStore)(nil)
 
+// RuleStoreOption configures a RuleStore.
+type RuleStoreOption func(*RuleStore)
+
+// WithLogger sets the structured logger (defaults to discard). Used to surface
+// best-effort failures (e.g. saved-query batch resolution) that must not abort a
+// ListDue cycle but must not be silent either.
+func WithLogger(l *slog.Logger) RuleStoreOption {
+	return func(s *RuleStore) {
+		if l != nil {
+			s.log = l
+		}
+	}
+}
+
 // NewRuleStore wraps the logalot_evaluator pool.
-func NewRuleStore(pool *pgxpool.Pool) *RuleStore { return &RuleStore{pool: pool} }
+func NewRuleStore(pool *pgxpool.Pool, opts ...RuleStoreOption) *RuleStore {
+	s := &RuleStore{pool: pool, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	for _, o := range opts {
+		o(s)
+	}
+	if s.log == nil {
+		s.log = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
+	return s
+}
 
 const ruleColumns = `id::text, tenant_id::text, name, comparator::text, threshold,
 	window_seconds, severity, state::text, transition_seq, query, notify_channels,
@@ -85,9 +111,14 @@ func (s *RuleStore) ListDue(ctx context.Context, dueBefore time.Time, limit int)
 	// suspenders guard that prevents a saved_query from a different tenant from
 	// being injected into a rule.
 	if err := s.resolveSavedQueriesBatch(ctx, out); err != nil {
-		// A resolution error must not abort the whole batch; individual query
-		// failures leave r.Query empty and the evaluator's IsEmpty guard skips them.
-		_ = err
+		// A resolution failure must not abort the whole batch — rules with inline
+		// queries still evaluate. But it must NOT be silent: a single batch-query
+		// failure skips EVERY saved-query-backed rule this cycle, so operators need
+		// visibility. The affected rules keep an empty Query and the evaluator's
+		// IsEmpty guard skips (does not fail) them.
+		s.log.ErrorContext(ctx,
+			"rulestore: saved_query batch resolution failed; saved-query-backed rules skipped this cycle",
+			"err", err)
 	}
 
 	return out, nil
@@ -251,6 +282,12 @@ type savedQueryKey struct{ id, tenantID string }
 // (and the WHERE clause therefore fetches rows across all tenants), each result row
 // is keyed by (id, tenant_id) so a cross-tenant injection requires a UUID collision
 // across tenants — infeasible. See applyBatchResolutions for the apply step.
+//
+// Correctness note: this relies on saved_queries.id being a globally-unique PK
+// (one id maps to exactly one tenant). If a future schema ever made the id key
+// tenant-scoped (so the same id could exist under two tenants), the AND tenant_id
+// filter here AND the composite (id, tenant_id) lookup key remain the load-bearing
+// guard — do not weaken either to a plain id match.
 func (s *RuleStore) resolveSavedQueriesBatch(ctx context.Context, rules []app.Rule) error {
 	// Collect the IDs we actually need to fetch (rules with no inline query).
 	var needed []savedQueryKey
@@ -337,55 +374,6 @@ func applyBatchResolutions(rules []app.Rule, lookup map[savedQueryKey]savedQuery
 			}
 		}
 	}
-}
-
-// resolveSavedQuery reads the saved_query row identified by r.SavedQueryID+r.TenantID
-// and populates r.Query in-place. If the row is missing (deleted, wrong tenant) the
-// method returns nil and r.Query stays empty — the evaluator's IsEmpty guard will then
-// skip the rule. No error is surfaced for a missing row (only for unexpected DB errors).
-//
-// Kept for reference; superseded by resolveSavedQueriesBatch for ListDue (issue #52).
-//
-// Security note: although logalot_evaluator is BYPASSRLS, we include tenant_id in the
-// WHERE clause so that the resolved query can never belong to a different tenant. This
-// is belt-and-suspenders: the DB would already enforce this through the FK on
-// alert_rules.tenant_id ≡ saved_queries.tenant_id, but an explicit check here makes
-// the intent clear and guards against any future schema change.
-func (s *RuleStore) resolveSavedQuery(ctx context.Context, r *app.Rule) error {
-	var (
-		queryText  string
-		filtersRaw []byte
-	)
-	err := s.pool.QueryRow(ctx,
-		`SELECT query_text, filters FROM saved_queries WHERE id = $1 AND tenant_id = $2`,
-		r.SavedQueryID, string(r.TenantID),
-	).Scan(&queryText, &filtersRaw)
-	if err == pgx.ErrNoRows {
-		// Saved query deleted or wrong tenant — leave r.Query empty (evaluator skips).
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("rulestore: resolve saved_query %s: %w", r.SavedQueryID, err)
-	}
-
-	r.Query.Text = queryText
-
-	if len(filtersRaw) > 0 && string(filtersRaw) != `{}` {
-		var filters struct {
-			Service string            `json:"service"`
-			Level   string            `json:"level"`
-			Labels  map[string]string `json:"labels"`
-		}
-		if jerr := json.Unmarshal(filtersRaw, &filters); jerr == nil {
-			r.Query.Service = filters.Service
-			if filters.Level != "" {
-				lvl := kernel.Level(filters.Level)
-				r.Query.Level = &lvl
-			}
-			r.Query.Labels = filters.Labels
-		}
-	}
-	return nil
 }
 
 // scanNotification reads one ListPending row into an app.Notification.

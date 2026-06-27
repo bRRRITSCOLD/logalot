@@ -78,6 +78,7 @@ func run(log *slog.Logger) error {
 	svc := app.New(store, tail,
 		app.WithLogger(log),
 		app.WithRetry(cfg.MaxRetries, cfg.RetryBackoff),
+		app.WithDrainTimeout(cfg.DrainTimeout),
 	)
 
 	// The consuming identity is a platform worker; the broker rebuilds a fresh

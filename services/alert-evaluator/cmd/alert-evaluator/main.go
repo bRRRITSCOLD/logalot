@@ -52,7 +52,7 @@ func run(log *slog.Logger) error {
 	}
 	defer appPool.Close()
 
-	rules := pgadapter.NewRuleStore(metaPool)
+	rules := pgadapter.NewRuleStore(metaPool, pgadapter.WithLogger(log))
 	counter := pgadapter.NewLogCounter(appPool)
 
 	notifier, err := buildNotifier(ctx, cfg, log)
