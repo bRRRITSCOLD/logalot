@@ -3,7 +3,6 @@ package logstore
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -12,10 +11,6 @@ import (
 	"github.com/bRRRITSCOLD/logalot/pkg/kernel"
 	"github.com/jackc/pgx/v5"
 )
-
-// ErrSearchNotImplemented marks the hot Search path as not yet wired. Search
-// lands with the query API (#10); the write-path issue (#7) only needs Append.
-var ErrSearchNotImplemented = errors.New("logstore: Search not implemented (tracked by #10)")
 
 // beginner is the minimal transaction-opening seam the adapter depends on. It is
 // satisfied by *pgxpool.Pool, and lets the unit tests substitute a fake tx to
@@ -138,22 +133,163 @@ func (s *Store) Tail(tc kernel.TenantContext, ctx context.Context, q kernel.Tail
 	return events, tx.Commit(ctx)
 }
 
-// Search runs a tenant-scoped hot query. Not implemented in #7 — it lands with
-// the query API (#10). It fails closed with a clear sentinel rather than
-// returning a misleading empty page.
+// Search runs a tenant-scoped, keyset-paginated hot query inside one RLS-armed
+// transaction (SET LOCAL app.tenant_id from tc, then the SELECT on the same tx).
+// It supports, in any combination: full-text on the generated `search` tsvector
+// via websearch_to_tsquery, structured `labels @> $` containment, a [from,to)
+// time range on ts (BRIN/partition friendly), and level/service equality. Results
+// are ordered (ts DESC, id DESC) — the PK's backward scan — and paginated with an
+// opaque keyset cursor instead of OFFSET, so deep pages cost the same as shallow.
 //
-// TODO(#10): implement keyset-paginated FTS + structured + time-range search.
+// Tenant isolation is layered (model.md §4.4): the builder binds tenant_id from
+// tc into the WHERE (application layer) AND RLS is armed (storage backstop), so a
+// search for tenant A can never return tenant B's rows. The tenant is taken ONLY
+// from tc — SearchQuery has no tenant field a caller could spoof (ADR-0002). All
+// values, including the FTS text, are bound parameters; websearch_to_tsquery parses
+// arbitrary user input without ever raising a syntax error, so a malformed query
+// degrades to fewer matches rather than a 500 (no injection, no error surface).
 func (s *Store) Search(tc kernel.TenantContext, ctx context.Context, q kernel.SearchQuery) (kernel.SearchPage, error) {
 	if err := tc.Valid(); err != nil {
 		return kernel.SearchPage{}, err
 	}
-	return kernel.SearchPage{}, ErrSearchNotImplemented
+	limit := q.Limit
+	if limit <= 0 || limit > maxSearchLimit {
+		limit = defaultSearchLimit
+	}
+
+	// Fetch one extra row: its presence is exactly the signal that another page
+	// exists, and the last kept row becomes the next cursor (see paginate).
+	sql, args, err := buildSearch(tc.TenantID, q, limit+1)
+	if err != nil {
+		return kernel.SearchPage{}, err
+	}
+
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return kernel.SearchPage{}, fmt.Errorf("logstore: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var events []kernel.LogEvent
+	err = kernel.WithTenantScope(tc, ctx, execOf(tx), func() error {
+		rows, qerr := tx.Query(ctx, sql, args...)
+		if qerr != nil {
+			return qerr
+		}
+		defer rows.Close()
+		loaded, serr := scanEvents(rows)
+		if serr != nil {
+			return serr
+		}
+		events = loaded
+		return rows.Err()
+	})
+	if err != nil {
+		return kernel.SearchPage{}, fmt.Errorf("logstore: search: %w", err)
+	}
+
+	page, next := paginate(events, limit)
+	return kernel.SearchPage{Events: page, NextCursor: next}, tx.Commit(ctx)
 }
 
 const (
 	defaultTailLimit = 200
 	maxTailLimit     = 1000
+
+	// Search page bounds. These are a defensive backstop independent of the
+	// edge's own validation (app.MaxSearchLimit): the store always clamps, so an
+	// over-large or unset limit can never translate into an unbounded scan.
+	defaultSearchLimit = 50
+	maxSearchLimit     = 1000
 )
+
+// buildSearch renders the tenant-scoped keyset SELECT and its bound args.
+// fetchLimit is the LIMIT to request (callers pass desiredLimit+1 so paginate can
+// detect a following page). Pure and side-effect free so the filter→SQL+args
+// mapping is unit-testable without a database.
+//
+// $1 is always the tenant predicate, bound from tc — never from the query — which
+// (a) is the application-layer half of the layered tenant isolation and (b) lets
+// the planner use the (tenant_id, service|level, ts) btree indexes and prune
+// partitions. Every other clause is appended only when its filter is set, each
+// value a fresh placeholder, so there is no SQL injection surface.
+func buildSearch(tenantID kernel.TenantID, q kernel.SearchQuery, fetchLimit int) (string, []any, error) {
+	var b strings.Builder
+	args := make([]any, 0, 8)
+
+	// $1: tenant predicate (defense-in-depth with RLS + planner pruning).
+	args = append(args, string(tenantID))
+	b.WriteString("SELECT ")
+	b.WriteString(selectColumns)
+	b.WriteString(" FROM log_events WHERE tenant_id = $1::uuid")
+
+	// ph binds v as the next positional parameter and returns its $N token.
+	ph := func(v any) string {
+		args = append(args, v)
+		return "$" + strconv.Itoa(len(args))
+	}
+
+	if !q.From.IsZero() {
+		b.WriteString(" AND ts >= ")
+		b.WriteString(ph(q.From.UTC()))
+	}
+	if !q.To.IsZero() {
+		b.WriteString(" AND ts < ")
+		b.WriteString(ph(q.To.UTC()))
+	}
+	if text := strings.TrimSpace(q.Text); text != "" {
+		// websearch_to_tsquery tolerates ANY user input (it never raises on bad
+		// syntax), so a malformed query degrades to fewer/zero matches, never a 500.
+		b.WriteString(" AND search @@ websearch_to_tsquery('english', ")
+		b.WriteString(ph(text))
+		b.WriteString(")")
+	}
+	if len(q.Labels) > 0 {
+		labels, err := marshalLabels(q.Labels)
+		if err != nil {
+			return "", nil, err
+		}
+		b.WriteString(" AND labels @> ")
+		b.WriteString(ph(labels))
+		b.WriteString("::jsonb")
+	}
+	if svc := strings.TrimSpace(q.Service); svc != "" {
+		b.WriteString(" AND service = ")
+		b.WriteString(ph(svc))
+	}
+	if q.Level != nil {
+		b.WriteString(" AND level = ")
+		b.WriteString(ph(string(*q.Level)))
+		b.WriteString("::log_level")
+	}
+	if q.Cursor != nil {
+		// Keyset: continue strictly AFTER the last row in (ts DESC, id DESC) order.
+		// The row-value comparison (ts, id) < ($ts, $id) is served by a backward PK
+		// scan, so page depth does not affect cost (model.md §5.4).
+		b.WriteString(" AND (ts, id) < (")
+		b.WriteString(ph(q.Cursor.TS.UTC()))
+		b.WriteString(", ")
+		b.WriteString(ph(q.Cursor.ID))
+		b.WriteString("::uuid)")
+	}
+
+	b.WriteString(" ORDER BY ts DESC, id DESC LIMIT ")
+	b.WriteString(ph(fetchLimit))
+	return b.String(), args, nil
+}
+
+// paginate trims an over-fetched result to limit and derives the next cursor. If
+// the query returned more than limit rows there is a following page, so the last
+// KEPT row's (ts, id) is the cursor; otherwise the page is final (nil cursor).
+// Pure so the keyset boundary logic is testable without a database.
+func paginate(events []kernel.LogEvent, limit int) ([]kernel.LogEvent, *kernel.Cursor) {
+	if len(events) <= limit {
+		return events, nil
+	}
+	trimmed := events[:limit]
+	last := trimmed[len(trimmed)-1]
+	return trimmed, &kernel.Cursor{TS: last.TS, ID: last.ID}
+}
 
 // selectColumns is the read projection, ordered to match scanEvents (DRY).
 const selectColumns = `tenant_id::text, ts, id::text, service, level::text, message, labels, trace_id, span_id, raw`
