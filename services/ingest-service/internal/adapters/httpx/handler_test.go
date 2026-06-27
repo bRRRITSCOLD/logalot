@@ -74,7 +74,7 @@ func newTestServer(t *testing.T, authr kernel.Authenticator, broker kernel.Broke
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	svc := app.New(broker)
 	h := NewHandler(svc, ready, log)
-	srv := httptest.NewServer(NewRouter(h, authr, log))
+	srv := httptest.NewServer(NewRouter(h, authr, RateLimit{}, log))
 	t.Cleanup(srv.Close)
 	return srv
 }
