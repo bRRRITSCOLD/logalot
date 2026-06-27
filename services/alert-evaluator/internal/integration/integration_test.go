@@ -10,17 +10,17 @@
 // They prove the load-bearing properties fakes cannot — and that map 1:1 to the
 // issue's acceptance criteria:
 //
-//   AC1  A rule crossing its threshold within the window transitions to `firing`
-//        and dispatches EXACTLY ONE notification per transition (no spam while it
-//        stays firing); it transitions back to `resolved` (ok) when it clears,
-//        emitting exactly one resolved notification. Proven against a REAL
-//        Postgres CAS + the alert_notifications outbox.
-//   AC2  The evaluator reads log content ONLY under the rule's tenant RLS context.
-//        (a) The BYPASSRLS scheduler role (logalot_evaluator) is DENIED on
-//        log_events (permission denied), so the metadata scan cannot expose log
-//        content. (b) LogCounter (logalot_app) counts ONLY the armed tenant's rows
-//        — another tenant's context sees a different count.
-//   AC3  Evaluation latency is < 30s on the test setup.
+//	AC1  A rule crossing its threshold within the window transitions to `firing`
+//	     and dispatches EXACTLY ONE notification per transition (no spam while it
+//	     stays firing); it transitions back to `resolved` (ok) when it clears,
+//	     emitting exactly one resolved notification. Proven against a REAL
+//	     Postgres CAS + the alert_notifications outbox.
+//	AC2  The evaluator reads log content ONLY under the rule's tenant RLS context.
+//	     (a) The BYPASSRLS scheduler role (logalot_evaluator) is DENIED on
+//	     log_events (permission denied), so the metadata scan cannot expose log
+//	     content. (b) LogCounter (logalot_app) counts ONLY the armed tenant's rows
+//	     — another tenant's context sees a different count.
+//	AC3  Evaluation latency is < 30s on the test setup.
 //
 // A separate, SKIPPABLE test exercises the floci SNS/SQS dispatch path end-to-end
 // (publish -> SQS subscription), since floci AWS fidelity is a tracked risk.
@@ -68,8 +68,6 @@ type itEnv struct {
 	adminPool *pgxpool.Pool // postgres superuser — seeds (bypasses RLS)
 	metaPool  *pgxpool.Pool // logalot_evaluator (BYPASSRLS) — scheduling metadata
 	appPool   *pgxpool.Pool // logalot_app (NOSUPERUSER) — RLS log reads/writes
-	pgHost    string
-	pgPort    string
 }
 
 func setup(t *testing.T) *itEnv {
@@ -111,8 +109,6 @@ func setup(t *testing.T) *itEnv {
 		adminPool: adminPool,
 		metaPool:  mk("logalot_evaluator"),
 		appPool:   mk("logalot_app"),
-		pgHost:    host,
-		pgPort:    port.Port(),
 	}
 }
 

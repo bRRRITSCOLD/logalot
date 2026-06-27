@@ -77,14 +77,9 @@ func (s *fakeRuleStore) Transition(_ context.Context, in TransitionInput) (Notif
 
 func (s *fakeRuleStore) MarkEvaluated(_ context.Context, _ string, _ time.Time) error { return nil }
 
-func (s *fakeRuleStore) MarkDispatched(_ context.Context, id string, now time.Time) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for i := range s.outbox {
-		if s.outbox[i].ID == id {
-			s.outbox[i].OccurredAt = s.outbox[i].OccurredAt // no-op; dispatched tracked by notifier
-		}
-	}
+func (s *fakeRuleStore) MarkDispatched(_ context.Context, _ string, _ time.Time) error {
+	// Dispatch tracking is asserted via the notifier in these tests; the outbox
+	// dispatched_at write is exercised by the integration suite against real SQL.
 	return nil
 }
 
