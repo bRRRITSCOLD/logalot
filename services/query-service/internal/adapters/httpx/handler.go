@@ -25,22 +25,24 @@ type Streamer interface {
 var _ Streamer = (*app.Streamer)(nil)
 
 // Handler holds the dependencies for the query-service HTTP endpoints: live tail
-// (the wave-1 slice) and hot search (#10), each over its own app-core port.
+// (the wave-1 slice), hot search (#10), and panel-data (#18), each over its own
+// app-core port.
 type Handler struct {
 	stream Streamer
 	search Searcher
+	panel  Paneler
 	ready  func(context.Context) error
 	log    *slog.Logger
 }
 
-// NewHandler builds the query handler. search may be nil for tail-only wirings
-// (e.g. focused tail tests); ready may be nil (then /readyz always reports
-// ready), in production it pings Redis.
-func NewHandler(stream Streamer, search Searcher, ready func(context.Context) error, log *slog.Logger) *Handler {
+// NewHandler builds the query handler. search and panel may be nil for focused
+// tests that only exercise tail; ready may be nil (then /readyz always reports
+// ready, in production it pings Redis).
+func NewHandler(stream Streamer, search Searcher, panel Paneler, ready func(context.Context) error, log *slog.Logger) *Handler {
 	if log == nil {
 		log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
-	return &Handler{stream: stream, search: search, ready: ready, log: log}
+	return &Handler{stream: stream, search: search, panel: panel, ready: ready, log: log}
 }
 
 // Tail handles GET /v1/tail. It requires `Accept: text/event-stream`, derives the

@@ -24,6 +24,7 @@ func NewRouter(h *Handler, authr kernel.Authenticator, log *slog.Logger) *gin.En
 	v1.Use(AuthMiddleware(authr, log))
 	v1.GET("/tail", h.Tail)
 	v1.GET("/search", h.Search)
+	v1.GET("/panel-data", h.PanelData)
 
 	return r
 }
