@@ -1,0 +1,4 @@
+# Local environment — copy .env.example to .env (never commit real values).
+.env
+.env.*
+!.env.example
