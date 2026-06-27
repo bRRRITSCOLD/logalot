@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/bRRRITSCOLD/logalot/pkg/auth"
+	"github.com/bRRRITSCOLD/logalot/pkg/logstore"
 	"github.com/bRRRITSCOLD/logalot/pkg/platform"
 	"github.com/bRRRITSCOLD/logalot/pkg/tailbus"
 	"github.com/bRRRITSCOLD/logalot/services/query-service/internal/adapters/httpx"
@@ -61,7 +62,10 @@ func run(log *slog.Logger) error {
 	authr := auth.New(pool, rc, auth.WithLogger(log))
 	bus := tailbus.New(rc, tailbus.WithLogger(log))
 	svc := app.New(bus, app.WithLogger(log))
-	handler := httpx.NewHandler(svc, readiness(rc), log)
+	// Hot search runs over the RLS-governed logalot_app pool (the LogStore adapter
+	// arms SET LOCAL app.tenant_id per query); search shares the same pool.
+	searcher := app.NewSearcher(logstore.New(pool))
+	handler := httpx.NewHandler(svc, searcher, readiness(rc), log)
 	router := httpx.NewRouter(handler, authr, log)
 
 	srv := &http.Server{

@@ -9,8 +9,8 @@ import (
 )
 
 // NewRouter wires the query-service HTTP surface: unauthenticated liveness/
-// readiness probes, and an authenticated /v1/tail SSE stream behind the auth
-// middleware. #10 adds /v1/search to the same authenticated group.
+// readiness probes, and the authenticated /v1/tail SSE stream and /v1/search hot
+// query behind the auth middleware (so neither runs without a verified tenant).
 func NewRouter(h *Handler, authr kernel.Authenticator, log *slog.Logger) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
@@ -23,6 +23,7 @@ func NewRouter(h *Handler, authr kernel.Authenticator, log *slog.Logger) *gin.En
 	v1 := r.Group("/v1")
 	v1.Use(AuthMiddleware(authr, log))
 	v1.GET("/tail", h.Tail)
+	v1.GET("/search", h.Search)
 
 	return r
 }

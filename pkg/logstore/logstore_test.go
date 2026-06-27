@@ -212,10 +212,140 @@ func TestBuildInsert_NullsEmptyTraceSpan(t *testing.T) {
 	}
 }
 
-func TestSearch_NotImplemented(t *testing.T) {
-	s := New(&fakeDB{tx: &fakeTx{}})
-	_, err := s.Search(kernel.TenantContext{TenantID: tenantA}, context.Background(), kernel.SearchQuery{})
-	if !errors.Is(err, ErrSearchNotImplemented) {
-		t.Fatalf("Search err = %v, want ErrSearchNotImplemented", err)
+func TestSearch_FailsClosedOnInvalidTenant(t *testing.T) {
+	db := &fakeDB{tx: &fakeTx{}}
+	s := New(db)
+	_, err := s.Search(kernel.TenantContext{TenantID: "not-a-uuid"}, context.Background(), kernel.SearchQuery{})
+	if !errors.Is(err, kernel.ErrInvalidTenantID) {
+		t.Fatalf("Search err = %v, want ErrInvalidTenantID", err)
+	}
+	if db.beginSeen {
+		t.Error("must not open a tx for an invalid tenant")
+	}
+}
+
+func TestBuildSearch_TenantOnlyMinimalQuery(t *testing.T) {
+	sql, args, err := buildSearch(tenantA, kernel.SearchQuery{}, 51)
+	if err != nil {
+		t.Fatalf("buildSearch: %v", err)
+	}
+	// Tenant predicate is ALWAYS $1, bound from the context tenant — never absent.
+	if !strings.Contains(sql, "WHERE tenant_id = $1::uuid") {
+		t.Errorf("missing tenant predicate, sql=%q", sql)
+	}
+	if got := args[0]; got != string(tenantA) {
+		t.Errorf("args[0] = %v, want tenant %v", got, tenantA)
+	}
+	// No optional filters => only tenant + the LIMIT placeholder are bound.
+	if !strings.Contains(sql, "ORDER BY ts DESC, id DESC LIMIT $2") {
+		t.Errorf("expected LIMIT $2 with no filters, sql=%q", sql)
+	}
+	if len(args) != 2 {
+		t.Fatalf("args len = %d, want 2 (tenant, limit)", len(args))
+	}
+	if got := args[1]; got != 51 {
+		t.Errorf("limit arg = %v, want 51 (fetchLimit)", got)
+	}
+	// A bare query must NOT leak any filter clauses.
+	for _, frag := range []string{"websearch_to_tsquery", "labels @>", "service =", "level =", "(ts, id) <", "ts >=", "ts <"} {
+		if strings.Contains(sql, frag) {
+			t.Errorf("unexpected clause %q in minimal query, sql=%q", frag, sql)
+		}
+	}
+}
+
+func TestBuildSearch_AllFiltersBindInOrder(t *testing.T) {
+	from := time.Date(2026, 6, 27, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 6, 28, 0, 0, 0, 0, time.UTC)
+	lvl := kernel.LevelError
+	cursorTS := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
+	q := kernel.SearchQuery{
+		Text:    "disk full",
+		Service: "api",
+		Level:   &lvl,
+		Labels:  map[string]string{"region": "us-east-1"},
+		From:    from,
+		To:      to,
+		Cursor:  &kernel.Cursor{TS: cursorTS, ID: "00000000-0000-0000-0000-0000000000ff"},
+	}
+	sql, args, err := buildSearch(tenantA, q, 26)
+	if err != nil {
+		t.Fatalf("buildSearch: %v", err)
+	}
+
+	// Each filter produces its parameterized clause (never inlined user text).
+	for _, frag := range []string{
+		"WHERE tenant_id = $1::uuid",
+		"AND ts >= $2",
+		"AND ts < $3",
+		"AND search @@ websearch_to_tsquery('english', $4)",
+		"AND labels @> $5::jsonb",
+		"AND service = $6",
+		"AND level = $7::log_level",
+		"AND (ts, id) < ($8, $9::uuid)",
+		"ORDER BY ts DESC, id DESC LIMIT $10",
+	} {
+		if !strings.Contains(sql, frag) {
+			t.Errorf("missing clause %q, sql=%q", frag, sql)
+		}
+	}
+
+	// The FTS text is a bound ARG, not concatenated into the SQL (injection-safe).
+	if strings.Contains(sql, "disk full") {
+		t.Errorf("FTS text must be a bound parameter, not inlined; sql=%q", sql)
+	}
+
+	want := []any{
+		string(tenantA),
+		from.UTC(),
+		to.UTC(),
+		"disk full",
+		[]byte(`{"region":"us-east-1"}`),
+		"api",
+		string(kernel.LevelError),
+		cursorTS.UTC(),
+		"00000000-0000-0000-0000-0000000000ff",
+		26,
+	}
+	if len(args) != len(want) {
+		t.Fatalf("args len = %d, want %d", len(args), len(want))
+	}
+	for i := range want {
+		if b, ok := want[i].([]byte); ok {
+			if string(args[i].([]byte)) != string(b) {
+				t.Errorf("arg[%d] = %s, want %s", i, args[i].([]byte), b)
+			}
+			continue
+		}
+		if args[i] != want[i] {
+			t.Errorf("arg[%d] = %v, want %v", i, args[i], want[i])
+		}
+	}
+}
+
+func TestPaginate_DerivesNextCursorOnlyWhenMore(t *testing.T) {
+	mk := func(id string, ts time.Time) kernel.LogEvent {
+		return kernel.LogEvent{ID: id, TS: ts}
+	}
+	t1 := time.Date(2026, 6, 27, 12, 0, 2, 0, time.UTC)
+	t2 := time.Date(2026, 6, 27, 12, 0, 1, 0, time.UTC)
+	t3 := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
+
+	// Over-fetched (limit+1): page is trimmed and the LAST KEPT row is the cursor.
+	page, next := paginate([]kernel.LogEvent{mk("a", t1), mk("b", t2), mk("c", t3)}, 2)
+	if len(page) != 2 {
+		t.Fatalf("page len = %d, want 2 (trimmed to limit)", len(page))
+	}
+	if next == nil {
+		t.Fatal("expected a next cursor when an extra row was fetched")
+	}
+	if next.ID != "b" || !next.TS.Equal(t2) {
+		t.Errorf("next cursor = %+v, want last kept row (b,%v)", next, t2)
+	}
+
+	// Exactly limit (or fewer): final page, no cursor.
+	page, next = paginate([]kernel.LogEvent{mk("a", t1), mk("b", t2)}, 2)
+	if len(page) != 2 || next != nil {
+		t.Errorf("final page: got len=%d next=%v, want len=2 next=nil", len(page), next)
 	}
 }
