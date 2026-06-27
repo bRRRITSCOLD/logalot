@@ -25,6 +25,7 @@ use (
 	./pkg/logstore
 	./pkg/platform
 	./pkg/tailbus
+	./services/alert-evaluator
 	./services/ingest-service
 	./services/processor
 	./services/query-service
