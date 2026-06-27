@@ -110,7 +110,7 @@ export class AuthService {
     }
 
     const record = await this.deps.users.findCredentialsById(parsed.tenantId, row.userId);
-    if (!record || record.status !== 'active' || record.role === null) {
+    if (record?.status !== 'active' || record.role === null) {
       await this.deps.refreshTokens.revokeFamily(parsed.tenantId, row.familyId, now);
       throw new UnauthorizedError('invalid refresh token');
     }
