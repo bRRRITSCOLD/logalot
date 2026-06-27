@@ -6,6 +6,7 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"strconv"
@@ -51,8 +52,11 @@ func (s *PanelStore) Resolve(ctx context.Context, tc kernel.TenantContext, saved
 			filtersRaw []byte
 		)
 		if scanErr := row.Scan(&queryText, &filtersRaw); scanErr != nil {
-			// pgx uses ErrNoRows; treat as "not found" (invisible under RLS or missing).
-			if strings.Contains(scanErr.Error(), "no rows") {
+			// pgx uses pgx.ErrNoRows; treat as "not found" (invisible under RLS or
+			// missing). Using errors.Is correctly handles wrapped sentinel values
+			// and avoids false-positive matches on unrelated errors that contain
+			// the substring "no rows" (e.g. "invalid input syntax for type uuid").
+			if errors.Is(scanErr, pgx.ErrNoRows) {
 				return nil
 			}
 			return fmt.Errorf("panelstore: scan saved_query: %w", scanErr)
@@ -105,7 +109,11 @@ func (s *PanelStore) Count(ctx context.Context, tc kernel.TenantContext, def app
 
 // TimeSeries returns nBuckets time-bucketed event counts over [from, to).
 // The bucket granularity is derived from the range / nBuckets. Buckets with
-// zero events are omitted (sparse representation).
+// zero events are omitted (sparse/gap representation) — the response contains
+// only buckets where at least one event matched the filter. Callers (UI panels)
+// MUST gap-fill missing buckets with a zero count when rendering a continuous
+// time-series chart. This is intentional: returning dense buckets for a wide
+// time range with many empty slots wastes bandwidth and query time.
 func (s *PanelStore) TimeSeries(ctx context.Context, tc kernel.TenantContext, def app.SavedQueryDef, from, to time.Time, nBuckets int) ([]app.Bucket, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {

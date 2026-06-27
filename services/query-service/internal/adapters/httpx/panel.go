@@ -11,6 +11,7 @@ import (
 	"github.com/bRRRITSCOLD/logalot/pkg/kernel"
 	"github.com/bRRRITSCOLD/logalot/services/query-service/internal/app"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 // Paneler is the port the panel-data handler depends on.
@@ -23,7 +24,7 @@ var _ Paneler = (*app.PanelService)(nil)
 
 // PanelData handles GET /v1/panel-data.
 //
-//	?savedQueryId=<uuid>  – required
+//	?savedQueryId=<uuid>  – required; must be a valid UUID v4 (RFC 4122)
 //	?from=<RFC3339>       – optional; default: now - 1h
 //	?to=<RFC3339>         – optional; default: now
 //	?buckets=<int>        – optional; default 30, max 100
@@ -32,6 +33,10 @@ var _ Paneler = (*app.PanelService)(nil)
 // Tenant isolation flows from the verified JWT → TenantContext → PanelStore,
 // which arms SET LOCAL app.tenant_id before every DB access. A savedQueryId
 // from a different tenant is invisible (RLS) → 404.
+//
+// Time-series contract: the buckets array in the response is SPARSE — buckets
+// with zero matching events are omitted. The caller must gap-fill missing
+// buckets with a zero count when rendering a continuous chart.
 func (h *Handler) PanelData(c *gin.Context) {
 	tc, ok := tenantFromGin(c)
 	if !ok {
@@ -69,9 +74,11 @@ func parsePanelQuery(c *gin.Context) (app.PanelQuery, error) {
 	if sq == "" {
 		return q, errors.New("savedQueryId is required")
 	}
-	// Lightweight UUID shape check (full validation happens at RLS / not-found).
-	if len(sq) < 32 {
-		return q, errors.New("savedQueryId must be a UUID")
+	// Validate UUID shape at the edge so malformed IDs (e.g. "invalid input syntax
+	// for type uuid") surface as 400 Bad Request rather than reaching the DB and
+	// returning a 500 or a misleading 404 (#52).
+	if _, err := uuid.Parse(sq); err != nil {
+		return q, errors.New("savedQueryId must be a valid UUID")
 	}
 	q.SavedQueryID = sq
 

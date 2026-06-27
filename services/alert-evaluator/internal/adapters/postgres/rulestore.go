@@ -16,6 +16,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log/slog"
 	"time"
 
 	"github.com/bRRRITSCOLD/logalot/pkg/kernel"
@@ -29,12 +31,36 @@ import (
 // tenant's rules, but no grant on log_events so it can never read log content.
 type RuleStore struct {
 	pool *pgxpool.Pool
+	log  *slog.Logger
 }
 
 var _ app.RuleStore = (*RuleStore)(nil)
 
+// RuleStoreOption configures a RuleStore.
+type RuleStoreOption func(*RuleStore)
+
+// WithLogger sets the structured logger (defaults to discard). Used to surface
+// best-effort failures (e.g. saved-query batch resolution) that must not abort a
+// ListDue cycle but must not be silent either.
+func WithLogger(l *slog.Logger) RuleStoreOption {
+	return func(s *RuleStore) {
+		if l != nil {
+			s.log = l
+		}
+	}
+}
+
 // NewRuleStore wraps the logalot_evaluator pool.
-func NewRuleStore(pool *pgxpool.Pool) *RuleStore { return &RuleStore{pool: pool} }
+func NewRuleStore(pool *pgxpool.Pool, opts ...RuleStoreOption) *RuleStore {
+	s := &RuleStore{pool: pool, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	for _, o := range opts {
+		o(s)
+	}
+	if s.log == nil {
+		s.log = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
+	return s
+}
 
 const ruleColumns = `id::text, tenant_id::text, name, comparator::text, threshold,
 	window_seconds, severity, state::text, transition_seq, query, notify_channels,
@@ -76,20 +102,23 @@ func (s *RuleStore) ListDue(ctx context.Context, dueBefore time.Time, limit int)
 		return nil, err
 	}
 
-	// Resolve saved_query_id → Query for rules that have no inline filter. This uses
-	// the same logalot_evaluator pool (BYPASSRLS, SELECT on saved_queries per
-	// migration 000015). The query reads the saved_queries row by both id AND
-	// tenant_id, providing defence-in-depth (the evaluator's BYPASSRLS role sees all
-	// tenants, so we add tenant_id to the WHERE to guarantee we resolve only the
-	// correct tenant's query — a belt-and-suspenders guard beyond DB grants).
-	for i := range out {
-		r := &out[i]
-		if r.Query.IsEmpty() && r.SavedQueryID != "" {
-			if err := s.resolveSavedQuery(ctx, r); err != nil {
-				// Log and continue: one bad reference must not fail the batch.
-				_ = err // caller's evaluator will skip this rule via IsEmpty guard
-			}
-		}
+	// Resolve saved_query_id → Query for rules that have no inline filter. Batch
+	// all IDs into a single round-trip (WHERE id = ANY($1) AND tenant_id = ANY($2))
+	// instead of one query per rule (N+1, up to batchSize round-trips per cycle).
+	// Tenant scoping is preserved: each resolved row is matched against both its id
+	// AND tenant_id before being applied to the corresponding rule — the BYPASSRLS
+	// evaluator role sees all tenants, so the in-code check is the belt-and-
+	// suspenders guard that prevents a saved_query from a different tenant from
+	// being injected into a rule.
+	if err := s.resolveSavedQueriesBatch(ctx, out); err != nil {
+		// A resolution failure must not abort the whole batch — rules with inline
+		// queries still evaluate. But it must NOT be silent: a single batch-query
+		// failure skips EVERY saved-query-backed rule this cycle, so operators need
+		// visibility. The affected rules keep an empty Query and the evaluator's
+		// IsEmpty guard skips (does not fail) them.
+		s.log.ErrorContext(ctx,
+			"rulestore: saved_query batch resolution failed; saved-query-backed rules skipped this cycle",
+			"err", err)
 	}
 
 	return out, nil
@@ -233,51 +262,118 @@ func (s *RuleStore) MarkDispatched(ctx context.Context, n app.Notification, now 
 	return nil
 }
 
-// resolveSavedQuery reads the saved_query row identified by r.SavedQueryID+r.TenantID
-// and populates r.Query in-place. If the row is missing (deleted, wrong tenant) the
-// method returns nil and r.Query stays empty — the evaluator's IsEmpty guard will then
-// skip the rule. No error is surfaced for a missing row (only for unexpected DB errors).
+// savedQueryResolution holds the raw fields read from a saved_queries row.
+// Used as the value in the (id, tenant_id) lookup built by resolveSavedQueriesBatch.
+type savedQueryResolution struct {
+	queryText  string
+	filtersRaw []byte
+}
+
+// savedQueryKey is the composite lookup key that guarantees tenant isolation: a
+// saved_query row from tenant B cannot be applied to a rule belonging to tenant A
+// even when the evaluator's BYPASSRLS role fetches across all tenants.
+type savedQueryKey struct{ id, tenantID string }
+
+// resolveSavedQueriesBatch fetches all saved_query definitions needed by the given
+// rules in ONE round-trip (WHERE id = ANY($1) AND tenant_id = ANY($2)) and applies
+// them in-place, replacing the per-rule N+1 loop (issue #52, item 3).
 //
-// Security note: although logalot_evaluator is BYPASSRLS, we include tenant_id in the
-// WHERE clause so that the resolved query can never belong to a different tenant. This
-// is belt-and-suspenders: the DB would already enforce this through the FK on
-// alert_rules.tenant_id ≡ saved_queries.tenant_id, but an explicit check here makes
-// the intent clear and guards against any future schema change.
-func (s *RuleStore) resolveSavedQuery(ctx context.Context, r *app.Rule) error {
-	var (
-		queryText  string
-		filtersRaw []byte
-	)
-	err := s.pool.QueryRow(ctx,
-		`SELECT query_text, filters FROM saved_queries WHERE id = $1 AND tenant_id = $2`,
-		r.SavedQueryID, string(r.TenantID),
-	).Scan(&queryText, &filtersRaw)
-	if err == pgx.ErrNoRows {
-		// Saved query deleted or wrong tenant — leave r.Query empty (evaluator skips).
+// Tenant isolation is preserved: although the logalot_evaluator role is BYPASSRLS
+// (and the WHERE clause therefore fetches rows across all tenants), each result row
+// is keyed by (id, tenant_id) so a cross-tenant injection requires a UUID collision
+// across tenants — infeasible. See applyBatchResolutions for the apply step.
+//
+// Correctness note: this relies on saved_queries.id being a globally-unique PK
+// (one id maps to exactly one tenant). If a future schema ever made the id key
+// tenant-scoped (so the same id could exist under two tenants), the AND tenant_id
+// filter here AND the composite (id, tenant_id) lookup key remain the load-bearing
+// guard — do not weaken either to a plain id match.
+func (s *RuleStore) resolveSavedQueriesBatch(ctx context.Context, rules []app.Rule) error {
+	// Collect the IDs we actually need to fetch (rules with no inline query).
+	var needed []savedQueryKey
+	for i := range rules {
+		r := &rules[i]
+		if r.Query.IsEmpty() && r.SavedQueryID != "" {
+			needed = append(needed, savedQueryKey{r.SavedQueryID, string(r.TenantID)})
+		}
+	}
+	if len(needed) == 0 {
 		return nil
 	}
+
+	// Collect ID and tenant slices for the ANY arrays. Duplicates are harmless.
+	ids := make([]string, 0, len(needed))
+	tenantIDs := make([]string, 0, len(needed))
+	for _, n := range needed {
+		ids = append(ids, n.id)
+		tenantIDs = append(tenantIDs, n.tenantID)
+	}
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT id::text, tenant_id::text, query_text, filters
+		   FROM saved_queries
+		  WHERE id = ANY($1::uuid[])
+		    AND tenant_id = ANY($2::uuid[])`,
+		ids, tenantIDs)
 	if err != nil {
-		return fmt.Errorf("rulestore: resolve saved_query %s: %w", r.SavedQueryID, err)
+		return fmt.Errorf("rulestore: batch resolve saved_queries: %w", err)
+	}
+	defer rows.Close()
+
+	lookup := make(map[savedQueryKey]savedQueryResolution, len(needed))
+	for rows.Next() {
+		var res savedQueryResolution
+		var id, tenantID string
+		if err := rows.Scan(&id, &tenantID, &res.queryText, &res.filtersRaw); err != nil {
+			return fmt.Errorf("rulestore: scan saved_query batch row: %w", err)
+		}
+		lookup[savedQueryKey{id, tenantID}] = res
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("rulestore: saved_query batch rows: %w", err)
 	}
 
-	r.Query.Text = queryText
-
-	if len(filtersRaw) > 0 && string(filtersRaw) != `{}` {
-		var filters struct {
-			Service string            `json:"service"`
-			Level   string            `json:"level"`
-			Labels  map[string]string `json:"labels"`
-		}
-		if jerr := json.Unmarshal(filtersRaw, &filters); jerr == nil {
-			r.Query.Service = filters.Service
-			if filters.Level != "" {
-				lvl := kernel.Level(filters.Level)
-				r.Query.Level = &lvl
-			}
-			r.Query.Labels = filters.Labels
-		}
-	}
+	applyBatchResolutions(rules, lookup)
 	return nil
+}
+
+// applyBatchResolutions writes resolved query definitions into rules in-place.
+// Extracted from resolveSavedQueriesBatch so the apply logic can be unit-tested
+// independently of the DB round-trip.
+//
+// Tenant isolation contract: lookup is keyed by (savedQueryID, tenantID). A rule
+// is only populated when BOTH its SavedQueryID and TenantID match — so a saved
+// query row from tenant B cannot be applied to a rule from tenant A even if they
+// share an accidental UUID collision.
+func applyBatchResolutions(rules []app.Rule, lookup map[savedQueryKey]savedQueryResolution) {
+	for i := range rules {
+		r := &rules[i]
+		if !r.Query.IsEmpty() || r.SavedQueryID == "" {
+			continue
+		}
+		res, ok := lookup[savedQueryKey{r.SavedQueryID, string(r.TenantID)}]
+		if !ok {
+			// Saved query deleted, not visible, or belongs to a different tenant —
+			// leave Query empty; the evaluator's IsEmpty guard will skip the rule.
+			continue
+		}
+		r.Query.Text = res.queryText
+		if len(res.filtersRaw) > 0 && string(res.filtersRaw) != `{}` {
+			var filters struct {
+				Service string            `json:"service"`
+				Level   string            `json:"level"`
+				Labels  map[string]string `json:"labels"`
+			}
+			if jerr := json.Unmarshal(res.filtersRaw, &filters); jerr == nil {
+				r.Query.Service = filters.Service
+				if filters.Level != "" {
+					lvl := kernel.Level(filters.Level)
+					r.Query.Level = &lvl
+				}
+				r.Query.Labels = filters.Labels
+			}
+		}
+	}
 }
 
 // scanNotification reads one ListPending row into an app.Notification.
