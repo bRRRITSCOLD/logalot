@@ -5,3 +5,20 @@
 .env
 .env.*
 !.env.example
+
+# Node / pnpm
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+.pnpm-store/
+
+# Go
+*.test
+*.out
+/bin/
+/vendor/
+
+# Editor / OS cruft
+.DS_Store
+*.swp

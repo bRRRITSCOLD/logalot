@@ -5,6 +5,33 @@ full-text + structured search, dashboards, and alerting. See
 [`docs/architecture/overview.md`](docs/architecture/overview.md) for the system
 design.
 
+## Monorepo layout
+
+Logalot is a polyglot monorepo. Go services share a Go workspace (`go.work`);
+Node services and the frontend share a pnpm workspace (`pnpm-workspace.yaml`).
+
+```
+pkg/kernel/        shared Go module (TenantContext + ports, issue #4)
+services/          backend services — Go (go.mod) AND Node (package.json)
+  ingest-service/  Go + Gin        (#6)
+  processor/       Go worker       (#7)
+  query-service/   Go + SSE        (#8)
+  control-plane/   Node + Fastify  (#11)
+apps/web/          TanStack Start frontend + BFF (#20)
+tools/             repo tooling + scaffold packages
+docs/  migrations/  architecture, ADRs, data model, SQL
+```
+
+Build, test, and lint everything with `make`:
+
+```sh
+make test    # all Go + Node tests       (CI runs the same targets)
+make lint    # all Go + Node lint/format checks
+```
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for where a new service/app goes,
+Conventional Commits, and the squash-merge workflow.
+
 ## Local stack
 
 `logalot` runs entirely on Docker for local development. One `docker-compose.yml`

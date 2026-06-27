@@ -1,0 +1,12 @@
+{
+  "name": "@logalot/scaffold-smoke",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Trivial placeholder package proving the pnpm workspace + Node test runner are wired into CI. Real Node services land under services/* (issue #11) and apps/* (issue #20).",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "test": "node --test",
+    "lint": "biome check ."
+  }
+}
