@@ -17,8 +17,11 @@ go 1.26
 //   - pkg/kernel   — TenantContext + ports (#4)
 //   - pkg/platform — pgx pool + redis client constructors (#5)
 //   - pkg/auth     — ingest API-key Authenticator/KeyStore (#5)
+//   - pkg/broker   — shared RabbitMQ kernel.Broker (publish+consume+DLX/DLQ) (#6)
 use (
 	./pkg/auth
+	./pkg/broker
 	./pkg/kernel
 	./pkg/platform
+	./services/ingest-service
 )

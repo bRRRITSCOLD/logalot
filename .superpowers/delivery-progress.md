@@ -165,6 +165,13 @@ reviewed + composed + verified end-to-end on the integration branch.
 
 ## Build loop progress (Phase 4)
 - #1 docker-compose stack — PR #26, staff APPROVE. Integrating onto feat/logging-platform.
+- #6 ingest-service POST /v1/ingest — branch `feat/6-ingest-service`. New shared
+  `pkg/broker` (RabbitMQ kernel.Broker: publish w/ confirms + Consume + DLX/DLQ
+  topology, reused by #7) + `services/ingest-service` (Gin, hexagonal). Topology:
+  exchange `logalot.ingest` → queue `logalot.ingest.events` (rk `ingest`),
+  dead-letters to DLX `logalot.ingest.dlx` → DLQ `logalot.ingest.events.dlq`.
+  202-only-after-confirm + tenant-from-key (not body) proven by unit + testcontainers
+  integration tests. PR base feat/logging-platform.
 
 ## Open / blocked
 - Merge-to-main gated on user (guard cap above).
