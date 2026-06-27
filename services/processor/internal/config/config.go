@@ -28,6 +28,10 @@ type Config struct {
 	RetryBackoff time.Duration
 	// ShutdownGrace bounds in-flight drain on shutdown.
 	ShutdownGrace time.Duration
+	// DrainTimeout bounds a single in-flight persist that runs on a shutdown drain
+	// (issue #37). It must be < terminationGracePeriodSeconds so the drain finishes
+	// before the orchestrator escalates to SIGKILL.
+	DrainTimeout time.Duration
 }
 
 const (
@@ -35,6 +39,7 @@ const (
 	defaultMaxRetries   = 3
 	defaultRetryBackoff = 200 * time.Millisecond
 	defaultShutdown     = 20 * time.Second
+	defaultDrain        = 8 * time.Second
 )
 
 // Load resolves configuration, failing closed if a required dependency DSN is
@@ -60,6 +65,7 @@ func Load() (Config, error) {
 		MaxRetries:    envInt("PROCESSOR_MAX_RETRIES", defaultMaxRetries),
 		RetryBackoff:  defaultRetryBackoff,
 		ShutdownGrace: defaultShutdown,
+		DrainTimeout:  defaultDrain,
 	}, nil
 }
 
