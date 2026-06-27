@@ -258,6 +258,28 @@ The #11 agent was wiped TWICE by my `git worktree remove --force` + `git branch 
 
 ### Open follow-ups (non-blocking, backend hardening): #33 #35 #37 #39 #41 #42 #47
 
+---
+
+## SESSION 3 UPDATE (2026-06-27) — Wave 3 start: #16 alerting
+
+### #16 alerting — MERGED to main (squash `00b7587`, PR #49), #16 closed
+Service placement (per ADR-0001): **alert-rule CRUD → control-plane** (Node+Fastify, mirrors tenant/user/api-key CRUD — RBAC + RLS + tenant-from-JWT-never-body); **alert-evaluator → new Go worker** `services/alert-evaluator/` (mirrors processor, hexagonal). Wired into go.work (11th module).
+- **Migrations 000013 + 000014.** 000013: BYPASSRLS `logalot_evaluator` role granted ONLY `alert_rules`+`alert_notifications` (ZERO grants on `log_events`), `transition_seq`+`last_notified_at`, `alert_notifications` outbox w/ `UNIQUE(rule_id, transition_seq)`. 000014: replaces tautological 000009 query-source CHECK with `saved_query_id IS NOT NULL OR query <> '{}'`. Both up→down→up validated PG16.
+- **Tenant isolation (load-bearing, model.md §4.5).** Evaluator holds 2 conns on 2 roles: `logalot_evaluator` (BYPASSRLS) reads rule metadata cross-tenant for scheduling; `logalot_app` (NOSUPERUSER) counts `log_events` under per-tenant `SET LOCAL app.tenant_id` RLS. BYPASSRLS role physically can't read log content (42501) — proven by test.
+- **Idempotency = transactional outbox + relay.** `evaluateRule` writes outbox row in the CAS tx, never notifies; `dispatchPending` is sole delivery site (drains `WHERE dispatched_at IS NULL` → Notify → MarkDispatched). At-least-once, dedup via unique key; crash/notify-fail → redeliver next cycle, no drop. `last_notified_at` stamped at actual dispatch.
+- **Notify port:** logsink default + floci SNS/SQS adapter (webhook + email-stub). floci faithful here (SNS→SQS integration test passed, didn't skip).
+- **Staff review gate: REQUEST-CHANGES → one fix-pass → APPROVE.** I1 (outbox had no relay → at-most-once, breaks AC1 exactly-once) + I2 (savedQueryId-only rules counted ALL logs → spurious fire) both resolved; M1–M5 fixed; M6 (`FOR UPDATE SKIP LOCKED` multi-replica scan amplification) deferred w/ note.
+- **Tests:** Go integration 6/6 (BYPASSRLS-denied, RLS log-count A=3/B=1, fire-once/no-spam/resolve, floci SNS→SQS, outbox-relay-redelivery, 8-concurrent-evaluators→1-outbox-row). Go unit all 11 modules + lint clean. Node contracts 33 + control-plane unit 44 + integration 18. CI green (go/node lint+test). Eval latency ~2ms (AC3 <30s).
+- **Deferred (documented):** saved-query resolution (evaluator uses inline query; savedQueryId-only rule is inert/skipped, not firing); `no_data` state reserved unused (YAGNI); M6 multi-replica skip-locked.
+
+**`main` @ `00b7587`.** Orchestration discipline held: implementer + fix-pass ran FOREGROUND in main tree (no worktree), no token-burn, no branch tangle.
+
+### NEXT SESSION resume — START SMALL (one chunk)
+1. **#18 dashboards + saved-queries backend** (unlocks frontend #20/#21 data). Note: #16's evaluator has a deferred `saved_query_id` resolution hook — wiring saved-queries here closes that loop.
+2. #17 cold tier — floci-fidelity-gated; do floci spikes #13/#14/#15 first; keep feature flag.
+3. Wave 4 frontend (DS ready, Figma `9N3v2ZGGo3McfSxOLfBPnC`): #20 scaffold + component lib FIRST, then #21/#22/#23 pages (#23 alerts page now has a backend), #24 Code Connect.
+Backend hardening follow-ups (batch when convenient): #33 #35 #37 #39 #41 #42 #47 + #16's M6.
+
 ### NEXT SESSION resume — START SMALL (one scoped chunk per fresh session)
 Pick up at **Wave 3, scoped tight** (see handoff prompt). Recommended order:
 1. **#16 alerting** (rule CRUD + evaluator + notification dispatch) — pure backend, unlocks frontend #23. Good first chunk.
