@@ -17,9 +17,9 @@ Multi-tenant logging platform: high-volume ingest, live tail, full-text + struct
 - [x] Architecture + ADRs decided (docs/architecture/, docs/adr/0001-0007)
 - [x] Data model + multi-tenant boundaries designed (docs/data/, migrations/)
 - [x] Issues decomposed / sequenced / tracked (GitHub #1-#25; roadmap docs/roadmap.md)
-- [ ] Docker infra scaffolded
-- [ ] Design system + tokens in Figma
-- [ ] First vertical slice built+reviewed+merged: ingest → store → live tail
+- [x] Docker infra scaffolded (#1 compose + #2 monorepo + #3 migrate)
+- [~] Design system: code-side tokens+spec done (#31); Figma authoring pending
+- [x] First vertical slice built+reviewed (ingest→store→live tail, e2e isolation-proven) — on integration branch, main-merge gated on user
 
 ## Environment (verified 2026-06-26)
 - docker 29.4.1, compose v5.1.3 · go 1.26.2 · node 25.9.0 / npm 11.12.1 · rust 1.95.0 · pnpm 10.33.2
@@ -163,26 +163,30 @@ main) is the single deliverable for the user to review + squash-merge in the
 morning. **Nothing reaches `main` without the user.** Slice still gets built +
 reviewed + composed + verified end-to-end on the integration branch.
 
-## Build loop progress (Phase 4)
-- #1 docker-compose stack — PR #26, staff APPROVE. Integrating onto feat/logging-platform.
-- #6 ingest-service POST /v1/ingest — branch `feat/6-ingest-service`. New shared
-  `pkg/broker` (RabbitMQ kernel.Broker: publish w/ confirms + Consume + DLX/DLQ
-  topology, reused by #7) + `services/ingest-service` (Gin, hexagonal). Topology:
-  exchange `logalot.ingest` → queue `logalot.ingest.events` (rk `ingest`),
-  dead-letters to DLX `logalot.ingest.dlx` → DLQ `logalot.ingest.events.dlq`.
-  202-only-after-confirm + tenant-from-key (not body) proven by unit + testcontainers
-  integration tests. PR base feat/logging-platform.
-- #7 processor — branch `feat/7-processor`. New shared `pkg/logstore` (Postgres
-  kernel.LogStore: RLS-armed `SET LOCAL app.tenant_id` tx + batched multi-row
-  INSERT into parent `log_events`; Tail read real, Search deferred to #10) + new
-  shared `pkg/tailbus` (Redis kernel.TailBus: PUBLISH/SUBSCRIBE `tail:{tenant_id}`,
-  channel from ctx only) + `services/processor` (Go worker, hexagonal). Reuses
-  `pkg/broker.Consume` (prefetch + manual ack); handler does normalize → persist
-  (bounded retry, transient→retry→ack / poison→immediate DLQ) → best-effort tail
-  publish. Tenant from envelope/ctx, never body. Proven by unit + testcontainers
-  integration: persist+RLS-invisible-to-B + tail receipt + poison→DLQ. `go work
-  sync` aligned testcontainers-go to v0.43.0 + pgx to v5.9.2 across modules. PR
-  base feat/logging-platform.
+## Build loop progress (Phase 4) — ALL staff-reviewed + integrated onto feat/logging-platform
+**Merge to `main` is gated on the user** (guard cap) → deliverable PR #27 + per-issue PRs #26-#40.
+
+- #1 docker-compose stack — PR #26 ✅ (floci pinned 1.5.28).
+- #2 monorepo go.work+pnpm + CI — PR #28 ✅ CI green.
+- #3 migrate runner + NOSUPERUSER logalot_app — PR #29 ✅.
+- #4 shared Go kernel (TenantContext+ports) — PR #30 ✅ (1 fix pass).
+- #5 API-key auth (pkg/auth+pkg/platform) — PR #32 ✅. Follow-up #33.
+- #6 ingest-service Gin→RabbitMQ (pkg/broker; exch logalot.ingest→queue .events→DLX .dlx→DLQ .events.dlq) — PR #34 ✅. Follow-up #35.
+- #7 processor→log_events(RLS)→tail (pkg/logstore+pkg/tailbus) — PR #36 ✅. Follow-up #37.
+- #8 query-service live tail SSE — PR #38 ✅ (I1 applied). Follow-up #39.
+- #9 slice e2e + isolation lock + demo — PR #40 ✅ (reviewer RAN e2e). Follow-ups #41,#42.
+- #19 groundwork: design tokens (W3C DTCG) + system spec — PR #31 ✅. Figma authoring still pending.
+
+**VERTICAL SLICE COMPLETE** (ingest→store→live tail, tenant-isolated, e2e-proven: A→tail 15ms,
+B sees 0 events+0 rows over 3s, pure-RLS). Live `make slice-up` demo ran. See `docs/demo.md`.
+
+### Go module map (go.work)
+pkg/kernel · pkg/platform · pkg/auth · pkg/broker · pkg/logstore · pkg/tailbus ·
+services/ingest-service · services/processor · services/query-service · tools/scaffold · tests/e2e
+
+### Open follow-up issues (non-blocking, from reviews)
+#33 auth expiry-in-cache · #35 ingest bounded confirm-timeout · #37 processor shutdown-drain ·
+#39 shared credential parsing · #41 e2e CI gate · #42 FORCE RLS on log_events
 
 ## Open / blocked
 - Merge-to-main gated on user (guard cap above).
