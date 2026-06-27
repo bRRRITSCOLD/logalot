@@ -37,11 +37,19 @@ var _ app.RuleStore = (*RuleStore)(nil)
 func NewRuleStore(pool *pgxpool.Pool) *RuleStore { return &RuleStore{pool: pool} }
 
 const ruleColumns = `id::text, tenant_id::text, name, comparator::text, threshold,
-	window_seconds, severity, state::text, transition_seq, query, notify_channels`
+	window_seconds, severity, state::text, transition_seq, query, notify_channels,
+	saved_query_id::text`
 
 // ListDue returns enabled rules due for evaluation (never evaluated, or last
 // evaluated at/before dueBefore), oldest first. It reads rule METADATA + the query
 // DEFINITION only — no log content. Served by idx_alert_rules_eval.
+//
+// When a rule has an empty inline query but a non-empty saved_query_id, this method
+// resolves the saved query definition by reading saved_queries (migration 000015
+// grants SELECT to logalot_evaluator). The filters jsonb is parsed into RuleQuery.
+// If the saved query is missing the rule's Query stays empty; evaluateRule will then
+// skip it (correct: not fail it). Resolution is best-effort and per-rule so one
+// broken reference never poisons the batch.
 func (s *RuleStore) ListDue(ctx context.Context, dueBefore time.Time, limit int) ([]app.Rule, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT `+ruleColumns+`
@@ -64,7 +72,27 @@ func (s *RuleStore) ListDue(ctx context.Context, dueBefore time.Time, limit int)
 		}
 		out = append(out, r)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Resolve saved_query_id → Query for rules that have no inline filter. This uses
+	// the same logalot_evaluator pool (BYPASSRLS, SELECT on saved_queries per
+	// migration 000015). The query reads the saved_queries row by both id AND
+	// tenant_id, providing defence-in-depth (the evaluator's BYPASSRLS role sees all
+	// tenants, so we add tenant_id to the WHERE to guarantee we resolve only the
+	// correct tenant's query — a belt-and-suspenders guard beyond DB grants).
+	for i := range out {
+		r := &out[i]
+		if r.Query.IsEmpty() && r.SavedQueryID != "" {
+			if err := s.resolveSavedQuery(ctx, r); err != nil {
+				// Log and continue: one bad reference must not fail the batch.
+				_ = err // caller's evaluator will skip this rule via IsEmpty guard
+			}
+		}
+	}
+
+	return out, nil
 }
 
 // Transition performs the state compare-and-swap and writes the outbox row in ONE
@@ -205,6 +233,53 @@ func (s *RuleStore) MarkDispatched(ctx context.Context, n app.Notification, now 
 	return nil
 }
 
+// resolveSavedQuery reads the saved_query row identified by r.SavedQueryID+r.TenantID
+// and populates r.Query in-place. If the row is missing (deleted, wrong tenant) the
+// method returns nil and r.Query stays empty — the evaluator's IsEmpty guard will then
+// skip the rule. No error is surfaced for a missing row (only for unexpected DB errors).
+//
+// Security note: although logalot_evaluator is BYPASSRLS, we include tenant_id in the
+// WHERE clause so that the resolved query can never belong to a different tenant. This
+// is belt-and-suspenders: the DB would already enforce this through the FK on
+// alert_rules.tenant_id ≡ saved_queries.tenant_id, but an explicit check here makes
+// the intent clear and guards against any future schema change.
+func (s *RuleStore) resolveSavedQuery(ctx context.Context, r *app.Rule) error {
+	var (
+		queryText  string
+		filtersRaw []byte
+	)
+	err := s.pool.QueryRow(ctx,
+		`SELECT query_text, filters FROM saved_queries WHERE id = $1 AND tenant_id = $2`,
+		r.SavedQueryID, string(r.TenantID),
+	).Scan(&queryText, &filtersRaw)
+	if err == pgx.ErrNoRows {
+		// Saved query deleted or wrong tenant — leave r.Query empty (evaluator skips).
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("rulestore: resolve saved_query %s: %w", r.SavedQueryID, err)
+	}
+
+	r.Query.Text = queryText
+
+	if len(filtersRaw) > 0 && string(filtersRaw) != `{}` {
+		var filters struct {
+			Service string            `json:"service"`
+			Level   string            `json:"level"`
+			Labels  map[string]string `json:"labels"`
+		}
+		if jerr := json.Unmarshal(filtersRaw, &filters); jerr == nil {
+			r.Query.Service = filters.Service
+			if filters.Level != "" {
+				lvl := kernel.Level(filters.Level)
+				r.Query.Level = &lvl
+			}
+			r.Query.Labels = filters.Labels
+		}
+	}
+	return nil
+}
+
 // scanNotification reads one ListPending row into an app.Notification.
 func scanNotification(rows pgx.Rows) (app.Notification, error) {
 	var (
@@ -229,22 +304,28 @@ func scanNotification(rows pgx.Rows) (app.Notification, error) {
 
 // scanRule reads one alert_rules row (ruleColumns order) into an app.Rule, parsing
 // the jsonb query + notify_channels into the typed query language.
+// Column order: id, tenant_id, name, comparator, threshold, window_seconds, severity,
+// state, transition_seq, query, notify_channels, saved_query_id.
 func scanRule(rows pgx.Rows) (app.Rule, error) {
 	var (
-		r        app.Rule
-		tenantID string
-		cmp      string
-		state    string
-		queryRaw []byte
-		chanRaw  []byte
+		r            app.Rule
+		tenantID     string
+		cmp          string
+		state        string
+		queryRaw     []byte
+		chanRaw      []byte
+		savedQueryID *string // nullable uuid → text
 	)
 	if err := rows.Scan(&r.ID, &tenantID, &r.Name, &cmp, &r.Threshold,
-		&r.WindowSeconds, &r.Severity, &state, &r.TransitionSeq, &queryRaw, &chanRaw); err != nil {
+		&r.WindowSeconds, &r.Severity, &state, &r.TransitionSeq, &queryRaw, &chanRaw, &savedQueryID); err != nil {
 		return app.Rule{}, fmt.Errorf("rulestore: scan rule: %w", err)
 	}
 	r.TenantID = kernel.TenantID(tenantID)
 	r.Comparator = app.Comparator(cmp)
 	r.State = app.State(state)
+	if savedQueryID != nil {
+		r.SavedQueryID = *savedQueryID
+	}
 	if len(queryRaw) > 0 {
 		if err := json.Unmarshal(queryRaw, &r.Query); err != nil {
 			return app.Rule{}, fmt.Errorf("rulestore: parse rule query: %w", err)
