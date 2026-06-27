@@ -19,6 +19,11 @@ export const OPERATIONS = [
   'apikey:revoke',
   'retention:read',
   'retention:update',
+  'alert:create',
+  'alert:read',
+  'alert:list',
+  'alert:update',
+  'alert:delete',
 ] as const;
 
 export type Operation = (typeof OPERATIONS)[number];
@@ -54,8 +59,16 @@ const MATRIX: Record<Role, ReadonlySet<Operation>> = {
     'apikey:revoke',
     'retention:read',
     'retention:update',
+    'alert:create',
+    'alert:read',
+    'alert:list',
+    'alert:update',
+    'alert:delete',
   ]),
-  member: new Set<Operation>(['tenant:read', 'retention:read']),
+  // member is read-mostly within its tenant: it can SEE alert rules (and
+  // retention) but writing rule config is a tenant_admin verb, consistent with
+  // how retention/keys are gated.
+  member: new Set<Operation>(['tenant:read', 'retention:read', 'alert:read', 'alert:list']),
 };
 
 // can reports whether `role` is permitted to perform `operation`. Pure and total:

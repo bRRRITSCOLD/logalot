@@ -6,6 +6,7 @@
  * never drift between backend and frontend (DRY).
  */
 
+export * from './alertRule.js';
 export * from './apiKey.js';
 export * from './auth.js';
 export * from './ids.js';
