@@ -18,7 +18,7 @@ Multi-tenant logging platform: high-volume ingest, live tail, full-text + struct
 - [x] Data model + multi-tenant boundaries designed (docs/data/, migrations/)
 - [x] Issues decomposed / sequenced / tracked (GitHub #1-#25; roadmap docs/roadmap.md)
 - [x] Docker infra scaffolded (#1 compose + #2 monorepo + #3 migrate)
-- [~] Design system: code-side tokens+spec done (#31); Figma authoring pending
+- [x] Design system + tokens in Figma: 125 variables (Primitives+Semantic dark/light+severity) + Foundations frame authored (file UnSNz4q7hokc0ZEaabyHWW); 29-component library + Code Connect = #19 follow-on
 - [x] First vertical slice built+reviewed (ingest→store→live tail, e2e isolation-proven) — on integration branch, main-merge gated on user
 
 ## Environment (verified 2026-06-26)
@@ -31,8 +31,8 @@ Multi-tenant logging platform: high-volume ingest, live tail, full-text + struct
 - [x] Phase 1: Plan & track (issues + roadmap) — DONE (GitHub #1-#25, docs/roadmap.md)
 - [x] Phase 2: Architecture (C4, ADRs, NFRs)
 - [x] Phase 3: Data (stores, schema, retention, MT boundaries)
-- [ ] Phase 4: Build loop (per-issue dispatch → review → merge)
-- [ ] Phase 5: Finish (cleanup, handoff)
+- [x] Phase 4: Build loop — wave 0 + vertical slice (#1-#9) + DS foundation done; waves 2-4 pending
+- [x] Phase 5: Finish — morning status + handoff written; merge-to-main gated on user
 
 ## Decisions log
 
@@ -193,5 +193,38 @@ services/ingest-service · services/processor · services/query-service · tools
 - Validate floci Athena/Firehose/Glue fidelity against our actual cold query templates before
   relying on cold search (tracked above; cold search feature-flagged until then).
 
-## Morning status
-- (pending)
+## Morning status (2026-06-27)
+
+### What's done (built + staff-reviewed + integrated on `feat/logging-platform`)
+- **Design corpus**: spec, architecture (C4 + NFRs + ADRs 0001-0007), data model + cold-tier + validated migrations (000001-000011) + dev seed.
+- **Vertical slice COMPLETE** — ingest → store → live tail, tenant-isolated, e2e-proven (A→tail 15ms;
+  tenant B sees 0 events + 0 rows over a 3s drain; pure-RLS row isolation vs NOSUPERUSER role).
+  Live `make slice-up` demo ran end-to-end. Demo steps: `docs/demo.md`.
+- **Wave 0**: #1 docker-compose (pg/mongo/redis/rabbitmq/floci), #2 monorepo go.work+pnpm+CI, #3 migrate runner + logalot_app role, #4 Go kernel.
+- **Wave 1**: #5 API-key auth, #6 ingest-service, #7 processor, #8 query-service SSE tail, #9 e2e slice.
+- **Design system in Figma**: 125 variables (Primitives + Semantic dark/light + log-severity) + Foundations
+  frame — file `UnSNz4q7hokc0ZEaabyHWW`. Plus code-side tokens (#31).
+- CI green on every PR (unit tier). 10 Go modules + tokens package.
+
+### What needs YOU (merge gate)
+- **Nothing is on `main` yet.** Harness blocks self-merge to main. Review + squash-merge **PR #27**
+  (`feat/logging-platform` → main) — the single deliverable carrying all of the above. Per-issue PRs
+  #26,#28,#29,#30,#31,#32,#34,#36,#38,#40 are the granular review trail (already integrated into #27).
+  Recommended: merge #27 as one squash (cohesive foundation), OR cherry-merge per-issue if you prefer.
+
+### What's open (next waves, not started — issues exist)
+- Wave 2: #10 search API, #11 control-plane CRUD+RBAC+JWT, #12 rate limiting.
+- Wave 3: #13/#14/#15 floci validation spikes, #16 alerting, #17 cold tier, #18 dashboards.
+- Wave 4: #20-#23 frontend (TanStack Start), #24 Code Connect; #19 remaining = Figma component library.
+- Review follow-ups (non-blocking hardening): #33 #35 #37 #39 #41 #42.
+
+### Blocked / watch
+- Merge-to-main gated on you (above).
+- Local `docker compose up` on standard ports conflicts with a pre-existing `burrow` stack (5672/6379/27017);
+  override those host ports in `.env` (see `docs/demo.md`). floci is on the required :4566 (free). Tests use
+  testcontainers (random ports) so they're unaffected.
+- floci Athena/Firehose/Glue fidelity still unvalidated → cold search feature-flagged until #13/#14.
+
+### Resume map
+GitHub issues + this ledger are the durable state. Critical path next: #11 (control-plane) unlocks
+#16/#20/#23; #10 (search) unlocks #22. Frontend wave can start once #11 + the design-system components land.
