@@ -18,8 +18,9 @@ Two distinct authentication surfaces with different needs:
 ## Decision
 
 ### Ingest: opaque, hashed API keys
-- Format `lgk_<tenantPublicId>_<secret>`. The `secret` is high-entropy random; the full key is shown to the
-  admin **exactly once** at creation.
+- Format `lgk_<tenantPublicId>_<keyId>_<secret>`. `tenantPublicId` (tenant slug) resolves the tenant so RLS
+  can be armed before the scoped key lookup; `keyId` is the `api_keys.id` looked up under RLS; `secret` is
+  high-entropy random. The `secret` (and full key) is shown to the admin **exactly once** at creation.
 - Store only `{key_id, tenant_id, scopes, hash}` where `hash = SHA-256(secret)` (fast, suitable because the
   secret is high-entropy random — argon2/bcrypt are for low-entropy human passwords and are too slow for the
   hot path). Lookup by `key_id`; compare in **constant time**.
