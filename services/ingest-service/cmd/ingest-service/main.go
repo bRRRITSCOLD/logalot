@@ -69,7 +69,10 @@ func run(log *slog.Logger) error {
 	)
 
 	authr := auth.New(pool, rc, auth.WithLogger(log))
-	svc := app.New(b, app.WithLogger(log))
+	// Bounded publish timeout (issue #35-I1): a stalled broker connection blocks
+	// publish up to DefaultPublishTimeout (10 s) before returning a context error
+	// that maps to the existing 503 path. Keep under http.Server.WriteTimeout.
+	svc := app.New(b, app.WithLogger(log), app.WithPublishTimeout(app.DefaultPublishTimeout))
 	handler := httpx.NewHandler(svc, readiness(b, pool, rc), log)
 
 	// Per-tenant ingest rate limiter (ADR-0004): a Redis token bucket on the
@@ -98,6 +101,10 @@ func run(log *slog.Logger) error {
 		Addr:              cfg.Addr,
 		Handler:           router,
 		ReadHeaderTimeout: 10 * time.Second,
+		// WriteTimeout bounds the total time from request received to response
+		// written. Set above the publish timeout (10 s) to give the broker path
+		// time to confirm before the server-level deadline fires (issue #35-I1).
+		WriteTimeout: 30 * time.Second,
 	}
 
 	errCh := make(chan error, 1)

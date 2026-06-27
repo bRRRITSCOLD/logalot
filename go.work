@@ -21,6 +21,7 @@ go 1.26
 use (
 	./pkg/auth
 	./pkg/broker
+	./pkg/httpkit
 	./pkg/kernel
 	./pkg/logstore
 	./pkg/platform

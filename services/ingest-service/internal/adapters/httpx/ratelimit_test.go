@@ -137,6 +137,25 @@ func TestRateLimit_FailClosedRejectsOnLimiterError(t *testing.T) {
 	}
 }
 
+// TestRateLimit_FailClosed503HasRetryAfter asserts the issue-#47 requirement:
+// the fail-closed 503 response carries a Retry-After header so well-behaved
+// clients back off rather than immediately retrying against a degraded limiter.
+func TestRateLimit_FailClosed503HasRetryAfter(t *testing.T) {
+	lim := newFakeLimiter(errors.New("redis down"))
+	_, url := newRateLimitedServer(t, lim, false) // fail-closed
+
+	resp := post(t, url+"/v1/ingest", "application/json", bearer(), `{"message":"hi"}`)
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d, want 503", resp.StatusCode)
+	}
+	ra := resp.Header.Get("Retry-After")
+	if ra == "" {
+		t.Fatal("Retry-After header missing on fail-closed 503 (issue #47)")
+	}
+}
+
 // The HTTP-layer isolation proof: the middleware keys the limiter by the
 // AUTHENTICATED tenant. Tenant A is exhausted (429) while tenant B (a different
 // authenticated context) still passes — and the limiter only ever saw the

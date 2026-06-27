@@ -102,7 +102,16 @@ func NewRedisLimiter(rc *redis.Client, resolver Resolver, opts ...RedisOption) *
 // Allow runs the atomic token-bucket step for tc. An error means Redis was
 // unreachable or the script failed; the caller (middleware) decides fail-open vs
 // fail-closed — Allow itself never silently admits on a backend error.
+//
+// tc is validated BEFORE the Unlimited short-circuit (issue #47): an exempted
+// tenant (Rate=0:0) with a blank or invalid TenantContext must still fail
+// closed rather than bypass the UUID validity check.
 func (r *RedisLimiter) Allow(tc kernel.TenantContext, ctx context.Context) (Decision, error) {
+	// Fail closed unconditionally on an invalid TenantContext BEFORE applying
+	// any resolver exemption, so a malformed tc can never silently bypass limits.
+	if err := tc.Valid(); err != nil {
+		return Decision{}, err
+	}
 	lim := r.resolver.Resolve(tc)
 	if lim.Unlimited() {
 		return Decision{Allowed: true}, nil

@@ -17,8 +17,18 @@ import (
 // Streamer is the port the SSE handler depends on — the app core. Keeping it an
 // interface lets handler tests drive the real core over a recording TailBus (so
 // "no subscribe on bad credential" is provable) without standing up Redis.
+//
+// The interface exposes Subscribe and StreamEvents as separate steps (issue
+// #39-M4): the handler calls Subscribe BEFORE writing 200/SSE headers so a
+// subscribe error (e.g. Redis down) returns a JSON 5xx instead of a silent
+// empty-body 200. Stream is retained as the combined convenience method.
 type Streamer interface {
-	Stream(tc kernel.TenantContext, ctx context.Context, f app.Filter, sink app.Sink) error
+	// Subscribe opens the tenant's tail channel and returns the event stream.
+	// Calling this before writing response headers lets the handler return a
+	// JSON 5xx instead of a silent empty 200 when the TailBus is unavailable.
+	Subscribe(tc kernel.TenantContext, ctx context.Context) (<-chan kernel.LogEvent, error)
+	// StreamEvents runs the fan-out loop over an already-opened events channel.
+	StreamEvents(events <-chan kernel.LogEvent, ctx context.Context, f app.Filter, sink app.Sink) error
 }
 
 // compile-time proof the app service satisfies the handler's port.
@@ -48,6 +58,10 @@ func NewHandler(stream Streamer, search Searcher, panel Paneler, ready func(cont
 // Tail handles GET /v1/tail. It requires `Accept: text/event-stream`, derives the
 // subscription channel from the authenticated TenantContext (never from a query
 // param), and streams matching events as SSE until the client disconnects.
+//
+// Subscribe is called BEFORE the 200/SSE headers are written (issue #39-M4) so a
+// TailBus failure (e.g. Redis down at subscribe time) can be returned as a JSON
+// 503 instead of a silent empty-body 200.
 func (h *Handler) Tail(c *gin.Context) {
 	tc, ok := tenantFromGin(c)
 	if !ok {
@@ -72,6 +86,17 @@ func (h *Handler) Tail(c *gin.Context) {
 		return
 	}
 
+	// Pre-subscribe BEFORE writing 200 headers so a TailBus failure returns a
+	// JSON 5xx rather than a silent empty-body 200 (issue #39-M4). The channel
+	// derives from tc inside the TailBus adapter — never from caller input.
+	events, err := h.stream.Subscribe(tc, c.Request.Context())
+	if err != nil {
+		h.log.ErrorContext(c.Request.Context(), "tail subscribe failed",
+			"tenant_id", string(tc.TenantID), "err", err)
+		c.JSON(http.StatusServiceUnavailable, errorBody("tail_unavailable", "could not subscribe to tail stream"))
+		return
+	}
+
 	// SSE headers, then flush so the client's EventSource opens immediately.
 	hdr := c.Writer.Header()
 	hdr.Set("Content-Type", "text/event-stream")
@@ -83,9 +108,8 @@ func (h *Handler) Tail(c *gin.Context) {
 
 	sink := &sseSink{w: c.Writer, flush: flusher.Flush}
 
-	// ctx is cancelled on client disconnect; Stream tears down (unsubscribe +
-	// close) when it returns.
-	if err := h.stream.Stream(tc, c.Request.Context(), filter, sink); err != nil {
+	// ctx is cancelled on client disconnect; StreamEvents tears down when it returns.
+	if err := h.stream.StreamEvents(events, c.Request.Context(), filter, sink); err != nil {
 		h.log.WarnContext(c.Request.Context(), "tail stream ended with error",
 			"tenant_id", string(tc.TenantID), "err", err)
 	}

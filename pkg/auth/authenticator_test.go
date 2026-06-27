@@ -276,3 +276,50 @@ func TestAuthenticate_NoCredential(t *testing.T) {
 		t.Fatalf("err = %v, want ErrNoCredential", err)
 	}
 }
+
+// TestAuthenticate_CacheHit_RejectsExpiredKey asserts that a key which expires
+// WITHIN the cache TTL window is still rejected on the cache-hit path (issue
+// #33). Without ExpiresAt in the cacheEntry a key expiring at T+30s would keep
+// authenticating from the 60 s entry until T+60s — a 30 s over-admission window.
+func TestAuthenticate_CacheHit_RejectsExpiredKey(t *testing.T) {
+	h := newHarness(t, nil)
+	// Populate the cache: first auth is a miss → DB → cache set.
+	if _, err := h.auth.Authenticate(context.Background(), cred(h.rawKey)); err != nil {
+		t.Fatalf("initial auth failed: %v", err)
+	}
+	if h.cache.sets != 1 {
+		t.Fatalf("cache sets=%d, want 1 after first call", h.cache.sets)
+	}
+
+	// Now set the key to expire at "now + 30s" — still within the 60 s TTL.
+	expiresAt := h.clock.now().Add(30 * time.Second)
+	sk := h.resolver.keys["devkey001"]
+	sk.ExpiresAt = &expiresAt
+	h.resolver.keys["devkey001"] = sk
+
+	// Also update the cached entry's ExpiresAt to mirror what would have been
+	// stored had the key been expiring at resolution time.
+	for k, v := range h.cache.entries {
+		v.ent.ExpiresAt = &expiresAt
+		h.cache.entries[k] = v
+	}
+
+	// Advance the clock past ExpiresAt but within the cache TTL (e.g., +45s).
+	h.clock.advance(45 * time.Second)
+
+	// The cache entry is still live (TTL = 60s, only 45s elapsed), but the
+	// key's ExpiresAt has passed — the hit must be rejected.
+	_, err := h.auth.Authenticate(context.Background(), cred(h.rawKey))
+	if !errors.Is(err, ErrExpiredKey) {
+		t.Fatalf("err = %v, want ErrExpiredKey on cache-hit after key expiry", err)
+	}
+	// The stale entry must have been busted (del called).
+	if h.cache.dels != 1 {
+		t.Errorf("cache dels = %d, want 1 (expired entry busted)", h.cache.dels)
+	}
+	// The resolver must NOT have been called (it's still a cache hit path — just
+	// one with an expired ExpiresAt, not a cache miss).
+	if h.resolver.calls != 1 {
+		t.Errorf("resolver calls = %d, want 1 (no DB call on cache hit expiry)", h.resolver.calls)
+	}
+}

@@ -8,8 +8,8 @@ package httpx
 import (
 	"log/slog"
 	"net/http"
-	"strings"
 
+	"github.com/bRRRITSCOLD/logalot/pkg/httpkit"
 	"github.com/bRRRITSCOLD/logalot/pkg/kernel"
 	"github.com/gin-gonic/gin"
 )
@@ -19,33 +19,18 @@ import (
 // context. The request context also carries it via kernel.WithTenant.
 const ginTenantKey = "logalot.tenant"
 
-const bearerPrefix = "Bearer "
-
-// credentialFromRequest extracts an ingest API key from either
-// `Authorization: Bearer <key>` or `X-API-Key: <key>`. ok is false when neither
-// is present so the caller can fail closed with 401.
-func credentialFromRequest(r *http.Request) (kernel.Credential, bool) {
-	if h := r.Header.Get("Authorization"); h != "" {
-		if len(h) > len(bearerPrefix) && strings.EqualFold(h[:len(bearerPrefix)], bearerPrefix) {
-			if key := strings.TrimSpace(h[len(bearerPrefix):]); key != "" {
-				return kernel.Credential{APIKey: key}, true
-			}
-		}
-	}
-	if k := strings.TrimSpace(r.Header.Get("X-API-Key")); k != "" {
-		return kernel.Credential{APIKey: k}, true
-	}
-	return kernel.Credential{}, false
-}
-
 // AuthMiddleware authenticates the presented credential into a TenantContext and
 // attaches it to the request before any work happens. On a missing/invalid
 // credential it aborts with 401 (opaque message — no malformed-vs-unknown oracle,
 // matching the auth package's enumeration-defense contract). A valid key lacking
 // the ingest:write scope is rejected 403.
+//
+// Defense-in-depth (#35-M3): tc.Valid() is called after Authenticate to ensure a
+// malformed TenantID returned by the Authenticator is rejected as 401 here rather
+// than surfacing as a 503 (broker error) deeper in the pipeline.
 func AuthMiddleware(authr kernel.Authenticator, log *slog.Logger) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		cred, ok := credentialFromRequest(c.Request)
+		cred, ok := httpkit.CredentialFromRequest(c.Request)
 		if !ok {
 			abortUnauthorized(c)
 			return
@@ -55,6 +40,14 @@ func AuthMiddleware(authr kernel.Authenticator, log *slog.Logger) gin.HandlerFun
 			// Distinct auth errors exist for server logs only; the client gets one
 			// opaque 401 (auth/errors.go contract).
 			log.WarnContext(c.Request.Context(), "ingest auth rejected", "err", err)
+			abortUnauthorized(c)
+			return
+		}
+		// Defense-in-depth: a structurally invalid TenantContext returned by the
+		// Authenticator (e.g., a malformed UUID in a stored row) must not leak to
+		// the broker/publish path where it would surface as a misleading 503.
+		if err := tc.Valid(); err != nil {
+			log.WarnContext(c.Request.Context(), "ingest auth returned invalid tenant context", "err", err)
 			abortUnauthorized(c)
 			return
 		}
