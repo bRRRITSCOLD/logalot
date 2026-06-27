@@ -56,7 +56,7 @@ func TestIntegration_202OnlyAfterDurableEnqueue(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	svc := app.New(b)
 	h := NewHandler(svc, nil, log)
-	srv := httptest.NewServer(NewRouter(h, stubAuth{tc: okTenant()}, log))
+	srv := httptest.NewServer(NewRouter(h, stubAuth{tc: okTenant()}, RateLimit{}, log))
 	t.Cleanup(srv.Close)
 
 	body := `{"tenant_id":"` + string(foreignTenant) + `","message":"e2e","level":"warn"}`
@@ -96,7 +96,7 @@ func TestIntegration_5xxWhenBrokerDown(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	svc := app.New(b)
 	h := NewHandler(svc, nil, log)
-	srv := httptest.NewServer(NewRouter(h, stubAuth{tc: okTenant()}, log))
+	srv := httptest.NewServer(NewRouter(h, stubAuth{tc: okTenant()}, RateLimit{}, log))
 	t.Cleanup(srv.Close)
 
 	resp := post(t, srv.URL+"/v1/ingest", "application/json", bearer(), `{"message":"down"}`)

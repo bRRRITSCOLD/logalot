@@ -19,6 +19,7 @@ import (
 	"github.com/bRRRITSCOLD/logalot/services/ingest-service/internal/adapters/httpx"
 	"github.com/bRRRITSCOLD/logalot/services/ingest-service/internal/app"
 	"github.com/bRRRITSCOLD/logalot/services/ingest-service/internal/config"
+	"github.com/bRRRITSCOLD/logalot/services/ingest-service/internal/ratelimit"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -70,7 +71,28 @@ func run(log *slog.Logger) error {
 	authr := auth.New(pool, rc, auth.WithLogger(log))
 	svc := app.New(b, app.WithLogger(log))
 	handler := httpx.NewHandler(svc, readiness(b, pool, rc), log)
-	router := httpx.NewRouter(handler, authr, log)
+
+	// Per-tenant ingest rate limiter (ADR-0004): a Redis token bucket on the
+	// accept path, after auth, keyed by the authenticated tenant. Disabled via
+	// INGEST_RATE_LIMIT_ENABLED=false (then NewRouter wires no limiter middleware).
+	var rl httpx.RateLimit
+	if cfg.RateLimit.Enabled {
+		resolver := ratelimit.NewStaticResolver(cfg.RateLimit.Default, cfg.RateLimit.Overrides)
+		rl = httpx.RateLimit{
+			Limiter:  ratelimit.NewRedisLimiter(rc, resolver),
+			FailOpen: cfg.RateLimit.FailOpen,
+		}
+		log.Info("per-tenant ingest rate limiting enabled",
+			"default_rps", cfg.RateLimit.Default.Rate,
+			"default_burst", cfg.RateLimit.Default.Burst,
+			"overrides", len(cfg.RateLimit.Overrides),
+			"fail_open", cfg.RateLimit.FailOpen,
+		)
+	} else {
+		log.Warn("per-tenant ingest rate limiting DISABLED (INGEST_RATE_LIMIT_ENABLED=false)")
+	}
+
+	router := httpx.NewRouter(handler, authr, rl, log)
 
 	srv := &http.Server{
 		Addr:              cfg.Addr,
