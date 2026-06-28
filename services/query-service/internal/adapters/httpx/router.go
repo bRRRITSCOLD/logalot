@@ -22,8 +22,12 @@ func NewRouter(h *Handler, authr kernel.Authenticator, log *slog.Logger) *gin.En
 
 	v1 := r.Group("/v1")
 	v1.Use(AuthMiddleware(authr, log))
-	// Defense-in-depth role/scope gate: member and tenant_admin (JWT) or
-	// ingest:write/logs:read scope (API key) may read log content (#76).
+	// LogReadAuthzMiddleware encodes the log-READ policy for the entire /v1
+	// group (#82: logs:read scope required for API keys; member/tenant_admin
+	// for JWT). This is correct while every /v1 route is a log-read endpoint.
+	// If a non-log-read /v1 route is ever added (e.g. a config or metadata
+	// endpoint), split the group into sub-groups or move authz to per-route
+	// preHandlers so that route is not inadvertently blocked by this gate.
 	v1.Use(LogReadAuthzMiddleware())
 	v1.GET("/tail", h.Tail)
 	v1.GET("/search", h.Search)

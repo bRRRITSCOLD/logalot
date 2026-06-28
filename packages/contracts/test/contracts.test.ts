@@ -66,6 +66,19 @@ describe('createApiKeyRequest', () => {
     expect(r.scopes).toEqual(['ingest:write']);
   });
 
+  it('accepts logs:read scope (#82)', () => {
+    const r = createApiKeyRequestSchema.parse({ name: 'reader', scopes: ['logs:read'] });
+    expect(r.scopes).toEqual(['logs:read']);
+  });
+
+  it('accepts both ingest:write and logs:read (#82 ingest+read key)', () => {
+    const r = createApiKeyRequestSchema.parse({
+      name: 'combined',
+      scopes: ['ingest:write', 'logs:read'],
+    });
+    expect(r.scopes).toEqual(['ingest:write', 'logs:read']);
+  });
+
   it('rejects an unknown scope', () => {
     expect(createApiKeyRequestSchema.safeParse({ name: 'ci', scopes: ['admin:all'] }).success).toBe(
       false,

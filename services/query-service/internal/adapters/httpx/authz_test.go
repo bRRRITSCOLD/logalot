@@ -72,20 +72,23 @@ func TestCanReadLogs_JWTPath(t *testing.T) {
 
 // TestCanReadLogs_APIKeyPath covers the scope-based allow/deny matrix for
 // API-key credentials (tc.Role empty, tc.Scopes set).
+//
+// As of #82 the back-compat grant is retired: ingest:write no longer satisfies
+// the log-read gate. Read consumers must carry logs:read explicitly.
 func TestCanReadLogs_APIKeyPath(t *testing.T) {
 	cases := []struct {
 		name   string
 		scopes []kernel.Scope
 		allow  bool
 	}{
-		// Allow: ingest:write preserves backward compat — all historically-issued
-		// API keys carry this scope and could already read logs.
-		{"ingest:write allowed", []kernel.Scope{kernel.ScopeIngestWrite}, true},
+		// DENY (#82): ingest:write is a WRITE scope only. Existing ingest-only
+		// keys lose log-read access; they must be re-issued with logs:read.
+		{"ingest:write alone denied", []kernel.Scope{kernel.ScopeIngestWrite}, false},
 
-		// Allow: logs:read is the forward-compatible explicit read scope (#76).
+		// Allow: logs:read is the explicit read scope required since #82.
 		{"logs:read allowed", []kernel.Scope{kernel.ScopeLogsRead}, true},
 
-		// Allow: a key that carries both (e.g. issued with both capabilities).
+		// Allow: a key that carries both (e.g. an ingest+read combo key).
 		{"ingest:write + logs:read allowed", []kernel.Scope{kernel.ScopeIngestWrite, kernel.ScopeLogsRead}, true},
 
 		// Deny: no scopes at all — there is nothing to authorise against.
@@ -326,17 +329,24 @@ func authzMatrix(_ *testing.T) []authzCase {
 
 		// --- API-key path (scopes set, role empty) ----------------------------
 
-		// ALLOW: ingest:write is the scope all existing API keys carry; the
-		// backward-compatible gate for log reads (#76 "don't regress").
+		// DENY (#82): ingest:write is a WRITE scope only. The back-compat grant
+		// from #76 has been retired. Existing ingest-only keys lose log-read
+		// access; read consumers must be re-issued with logs:read.
 		{
-			name:       "apikey/ingest:write→allow",
+			name:       "apikey/ingest:write_alone→deny",
 			principal:  tcAPIKey(kernel.ScopeIngestWrite),
-			wantStatus: http.StatusOK,
+			wantStatus: http.StatusForbidden,
 		},
-		// ALLOW: logs:read is the explicit forward-compatible read scope (#76).
+		// ALLOW: logs:read is the required explicit read scope since #82.
 		{
 			name:       "apikey/logs:read→allow",
 			principal:  tcAPIKey(kernel.ScopeLogsRead),
+			wantStatus: http.StatusOK,
+		},
+		// ALLOW: a key carrying both ingest:write and logs:read gets read access.
+		{
+			name:       "apikey/ingest:write+logs:read→allow",
+			principal:  tcAPIKey(kernel.ScopeIngestWrite, kernel.ScopeLogsRead),
 			wantStatus: http.StatusOK,
 		},
 		// DENY: empty scopes — no capability to read.
