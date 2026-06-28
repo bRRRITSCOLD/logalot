@@ -1,0 +1,35 @@
+module github.com/bRRRITSCOLD/logalot/pkg/coldstore
+
+go 1.26
+
+require (
+	github.com/aws/aws-sdk-go-v2 v1.42.0
+	github.com/aws/aws-sdk-go-v2/service/athena v1.52.0
+	github.com/aws/aws-sdk-go-v2/service/glue v1.116.0
+	github.com/aws/aws-sdk-go-v2/service/s3 v1.79.2
+	github.com/bRRRITSCOLD/logalot/pkg/kernel v0.0.0
+	github.com/google/uuid v1.6.0
+	github.com/parquet-go/parquet-go v0.23.0
+)
+
+require (
+	github.com/andybalholm/brotli v1.1.0 // indirect
+	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.6.10 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.29 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.29 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/v4a v1.4.30 // indirect
+	github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.12 // indirect
+	github.com/aws/aws-sdk-go-v2/service/internal/checksum v1.7.0 // indirect
+	github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.13.29 // indirect
+	github.com/aws/aws-sdk-go-v2/service/internal/s3shared v1.18.15 // indirect
+	github.com/aws/smithy-go v1.27.1 // indirect
+	github.com/klauspost/compress v1.17.9 // indirect
+	github.com/mattn/go-runewidth v0.0.15 // indirect
+	github.com/olekukonko/tablewriter v0.0.5 // indirect
+	github.com/pierrec/lz4/v4 v4.1.21 // indirect
+	github.com/rivo/uniseg v0.4.7 // indirect
+	github.com/segmentio/encoding v0.4.0 // indirect
+	golang.org/x/sys v0.21.0 // indirect
+)
+
+replace github.com/bRRRITSCOLD/logalot/pkg/kernel => ../../pkg/kernel
