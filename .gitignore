@@ -25,3 +25,4 @@ coverage/
 
 # Agent worktrees / local Claude state
 .claude/
+/.dev/

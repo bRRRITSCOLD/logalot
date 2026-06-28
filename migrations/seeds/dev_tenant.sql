@@ -7,8 +7,8 @@
 -- Dev credentials it creates (DEV ONLY — do not use anywhere real):
 --   tenant.public_id : dev
 --   tenant.id        : 00000000-0000-0000-0000-0000000000d1
---   admin login      : admin@dev.local / password: devpassword (hash is a stub;
---                       the control-plane should re-hash on first real login)
+--   admin login      : admin@dev.local / password: devpassword (real bcrypt hash
+--                       below — verifies against the control-plane login directly)
 --   API key (plaintext, shown once): lgk_dev_devkey001_devsecret0123456789
 --       parsed as -> tenantPublicId=dev  key_id=devkey001  secret=devsecret0123456789
 --       stored as  -> api_keys.id='devkey001', key_hash=sha256(secret)
@@ -31,10 +31,13 @@ VALUES (
   '00000000-0000-0000-0000-0000000000a1',
   '00000000-0000-0000-0000-0000000000d1',
   'admin@dev.local',
-  'stub$devpassword',         -- replace with a real hash via control-plane
+  '$2b$10$KIToUQi.7nqTONS/NKo1OOq8YfCnXOAtZMej7.aTsGsu.XOZ/yLly', -- bcrypt('devpassword', cost 10) — DEV ONLY
   'Dev Admin',
   false
-) ON CONFLICT (id) DO NOTHING;
+)
+-- DO UPDATE (not DO NOTHING) so an existing dev DB seeded with the prior stub
+-- hash self-heals to the real bcrypt hash on re-`make seed` (no `make reset` needed).
+ON CONFLICT (id) DO UPDATE SET password_hash = EXCLUDED.password_hash;
 
 INSERT INTO memberships (tenant_id, user_id, role)
 VALUES (

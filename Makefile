@@ -14,6 +14,7 @@ SLICE_SERVICES := ingest-service processor query-service
 # help text/echo is correct even before these are added to .env).
 INGEST_PORT ?= 8080
 QUERY_PORT  ?= 8081
+CONTROL_PLANE_PORT ?= 8082
 
 # Load .env (when present) so the migrate runner can build DATABASE_URL from the
 # same Postgres creds compose uses. `-include` is silent before the first `make up`
@@ -39,6 +40,7 @@ MIGRATE_RUN          := docker run --rm --network logalot -v $(CURDIR)/migration
 .PHONY: help up down logs ps reset seed \
 	migrate-up migrate-down migrate-version migrate-create \
 	slice-up slice-down slice-logs slice-demo slice-test \
+	dev-up dev-down dev-logs \
 	cold-tier-spike cold-tier-spike-athena \
 	go-sync go-build go-test go-fmt go-lint \
 	node-install node-test node-lint \
@@ -135,6 +137,37 @@ slice-demo:
 ## slice-test: run the hermetic e2e isolation test (testcontainers; needs Docker)
 slice-test:
 	cd tests/e2e && go test -tags=e2e -run TestSliceE2E -v -timeout 300s ./...
+
+# ----------------------------------------------------------------------------
+# Full local app loop (the UI's backends). slice-up gives infra + ingest/
+# processor/query-service; the control-plane is NOT containerized (it's the Node
+# auth/admin service the web login/admin/alerts pages call), so dev-up also boots
+# it via scripts/dev-control-plane.sh. Run the web UI separately with
+# `pnpm --filter @logalot/web dev` (it defaults CONTROL_PLANE_URL=:8082,
+# QUERY_SERVICE_URL=:8081, so no extra config).
+#
+# Dev login (from `make seed`): workspace `dev` / admin@dev.local / devpassword.
+# ----------------------------------------------------------------------------
+
+## dev-up: full app backend — slice (infra+ingest+processor+query) + control-plane
+dev-up: slice-up
+	@bash scripts/dev-control-plane.sh start
+	@echo ""
+	@echo "app backend up:"
+	@echo "  control-plane -> http://localhost:$(CONTROL_PLANE_PORT)   (login/admin/alerts)"
+	@echo "  query-service -> http://localhost:$(QUERY_PORT)   (search + live tail)"
+	@echo "  ingest        -> http://localhost:$(INGEST_PORT)"
+	@echo "next: pnpm --filter @logalot/web dev   then open http://localhost:3000"
+	@echo "login: workspace 'dev' / admin@dev.local / devpassword"
+
+## dev-down: stop the control-plane and the slice + infra
+dev-down:
+	@bash scripts/dev-control-plane.sh stop
+	$(MAKE) slice-down
+
+## dev-logs: follow the control-plane log
+dev-logs:
+	@bash scripts/dev-control-plane.sh logs
 
 ## cold-tier-spike: run the cold-tier Firehose+Glue fidelity spike against compose floci (issue #13)
 # Requires: make up (floci must be healthy at FLOCI_ENDPOINT / localhost:4566).
