@@ -29,9 +29,9 @@ describe('boundary validation (shared @logalot/contracts schemas)', () => {
     // Default remains ingest:write (common case).
     expect(parse(createApiKeyRequestSchema, { name: 'ci' }).scopes).toEqual(['ingest:write']);
     // logs:read is now a valid scope (#82).
-    expect(parse(createApiKeyRequestSchema, { name: 'reader', scopes: ['logs:read'] }).scopes).toEqual([
-      'logs:read',
-    ]);
+    expect(
+      parse(createApiKeyRequestSchema, { name: 'reader', scopes: ['logs:read'] }).scopes,
+    ).toEqual(['logs:read']);
     // Arbitrary scopes not in the enum are still rejected.
     expect(() => parse(createApiKeyRequestSchema, { name: 'ci', scopes: ['admin:all'] })).toThrow(
       ValidationError,
