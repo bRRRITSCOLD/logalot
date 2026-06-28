@@ -40,7 +40,7 @@ MIGRATE_RUN          := docker run --rm --network logalot -v $(CURDIR)/migration
 .PHONY: help up down logs ps reset seed \
 	migrate-up migrate-down migrate-version migrate-create \
 	slice-up slice-down slice-logs slice-demo slice-test \
-	dev-up dev-down dev-logs \
+	dev dev-up dev-down dev-logs \
 	cold-tier-spike cold-tier-spike-athena \
 	go-sync go-build go-test go-fmt go-lint \
 	node-install node-test node-lint \
@@ -148,6 +148,13 @@ slice-test:
 #
 # Dev login (from `make seed`): workspace `dev` / admin@dev.local / devpassword.
 # ----------------------------------------------------------------------------
+
+## dev: start the whole app — backend (dev-up) + web UI in the foreground
+dev: dev-up
+	@echo ""
+	@echo "starting web UI -> http://localhost:3000"
+	@echo "(Ctrl-C stops the web UI; the backend keeps running — 'make dev-down' stops it)"
+	pnpm --filter @logalot/web dev
 
 ## dev-up: full app backend — slice (infra+ingest+processor+query) + control-plane
 dev-up: slice-up
