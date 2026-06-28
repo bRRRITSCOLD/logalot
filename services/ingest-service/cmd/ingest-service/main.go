@@ -69,9 +69,11 @@ func run(log *slog.Logger) error {
 	)
 
 	authr := auth.New(pool, rc, auth.WithLogger(log))
-	// Bounded publish timeout (issue #35-I1): a stalled broker connection blocks
-	// publish up to DefaultPublishTimeout (10 s) before returning a context error
-	// that maps to the existing 503 path. Keep under http.Server.WriteTimeout.
+	// Per-Ingest-call (whole-batch) publish timeout (issue #35-I1): the deadline
+	// wraps the entire Ingest call (not per-envelope), so a stalled broker
+	// connection blocks at most DefaultPublishTimeout (10 s) before returning a
+	// context error that maps to the existing 503 path. Keep under
+	// http.Server.WriteTimeout.
 	svc := app.New(b, app.WithLogger(log), app.WithPublishTimeout(app.DefaultPublishTimeout))
 	handler := httpx.NewHandler(svc, readiness(b, pool, rc), log)
 
