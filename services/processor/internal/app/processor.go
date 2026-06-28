@@ -2,12 +2,17 @@
 // one pipeline rule of the Log Processing context: consume an Envelope, normalize
 // it to a LogEvent, persist it under the tenant's RLS context, then fan it out to
 // the live-tail bus (overview.md §5.2, ADR-0006). It depends only on the
-// kernel.LogStore and kernel.TailBus ports, so Postgres/Redis/RabbitMQ are
-// swappable adapters around it.
+// kernel.LogStore, kernel.TailBus, and (optionally) kernel.ColdArchive ports,
+// so Postgres/Redis/RabbitMQ/S3 are swappable adapters around it.
 //
 // Tenancy is load-bearing: the TenantContext is the one rebuilt by the broker
 // from the envelope's authoritative tenant_id, and it is the sole source of the
 // persisted tenant_id and the tail channel — never the event body (ADR-0002).
+//
+// Cold-tier tee (ADR-0005, cold-tier.md §5.1): after every successful hot
+// persist, Archive is called with the event as a best-effort side-effect.
+// Archive failure is logged but does NOT fail the message ACK — the hot row is
+// already committed and re-delivery would duplicate the hot insert.
 //
 // Graceful-shutdown drain (issue #37): persist uses context.WithoutCancel so a
 // SIGTERM that cancels the lifecycle context does not abort an in-flight DB write.
@@ -30,6 +35,7 @@ import (
 type Service struct {
 	store kernel.LogStore
 	tail  kernel.TailBus
+	cold  kernel.ColdArchive // optional; nil = cold tee disabled (feature flag off)
 	now   func() time.Time
 	log   *slog.Logger
 
@@ -72,6 +78,15 @@ func WithDrainTimeout(d time.Duration) Option {
 			s.drainTimeout = d
 		}
 	}
+}
+
+// WithColdArchive wires the optional cold-tier tee (ADR-0005, cold-tier.md
+// §5.1). When set, every successful hot persist is also tee'd to the cold
+// archive as a best-effort side-effect (failure is logged, not propagated —
+// the hot ACK is never blocked by a cold failure). When nil or not called,
+// the cold tee is silently skipped (feature-flag default-off per decision 016).
+func WithColdArchive(cold kernel.ColdArchive) Option {
+	return func(s *Service) { s.cold = cold }
 }
 
 // withSleeper overrides the backoff sleeper (test seam).
@@ -141,6 +156,17 @@ func (s *Service) Handle(tc kernel.TenantContext, ctx context.Context, env kerne
 		return err
 	}
 
+	// Best-effort cold tee (day-0 archive, cold-tier.md §5.1 / ADR-0005).
+	// The hot row is already committed; a cold failure must never block the ACK
+	// or trigger re-delivery (that would duplicate the hot insert). We log the
+	// failure and move on. The cold port is nil when the feature flag is off.
+	if s.cold != nil {
+		if err := s.archiveCold(tc, ctx, ev); err != nil {
+			s.log.WarnContext(ctx, "processor: cold archive failed (hot committed; ack proceeds)",
+				"tenant_id", tc.TenantID, "service", ev.Service, "err", err)
+		}
+	}
+
 	// Best-effort fan-out. The durable work (persist) is done; never fail the
 	// message on a tail hiccup (would re-deliver and duplicate the row).
 	if err := s.tail.Publish(tc, ctx, ev); err != nil {
@@ -148,6 +174,38 @@ func (s *Service) Handle(tc kernel.TenantContext, ctx context.Context, env kerne
 			"tenant_id", tc.TenantID, "err", err)
 	}
 	return nil
+}
+
+// archiveCold tees the event to the cold archive with bounded retries. It uses
+// a context derived from context.WithoutCancel (same drain logic as persist) so
+// a shutdown signal does not abort an in-flight S3 write that is already on its
+// first attempt. Archive failure after the retry budget is returned to the
+// caller (Handle), which logs it as a warning and continues with ACK.
+func (s *Service) archiveCold(tc kernel.TenantContext, ctx context.Context, ev kernel.LogEvent) error {
+	archCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.drainTimeout)
+	defer cancel()
+
+	attempts := s.maxRetries + 1
+	if attempts < 1 {
+		attempts = 1
+	}
+	var lastErr error
+	for attempt := 0; attempt < attempts; attempt++ {
+		if attempt > 0 {
+			if err := ctx.Err(); err != nil {
+				return lastErr
+			}
+			s.log.WarnContext(ctx, "processor: retrying cold archive",
+				"tenant_id", tc.TenantID, "attempt", attempt, "err", lastErr)
+			s.sleep(ctx, s.retryDelay*time.Duration(attempt))
+		}
+		if err := s.cold.Archive(tc, archCtx, ev); err != nil {
+			lastErr = err
+			continue
+		}
+		return nil
+	}
+	return lastErr
 }
 
 // persist appends the event with a bounded retry on transient failure.

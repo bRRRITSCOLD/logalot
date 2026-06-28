@@ -290,3 +290,104 @@ func TestHandle_DrainTimeoutBoundsHungStore(t *testing.T) {
 		t.Error("store.Append was never called (drain must still attempt the persist)")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Cold-tee tests (ADR-0005 §5.1, cold-tier.md §"tee from day 0").
+// ---------------------------------------------------------------------------
+
+// fakeCold is a kernel.ColdArchive test double.
+type fakeCold struct {
+	mu       sync.Mutex
+	archived []kernel.LogEvent
+	archErr  error
+	calls    int
+}
+
+func (f *fakeCold) Archive(tc kernel.TenantContext, _ context.Context, events ...kernel.LogEvent) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	if f.archErr != nil {
+		return f.archErr
+	}
+	f.archived = append(f.archived, events...)
+	return nil
+}
+
+func (f *fakeCold) Search(kernel.TenantContext, context.Context, kernel.SearchQuery) (kernel.SearchPage, error) {
+	return kernel.SearchPage{}, errors.New("unused in processor tests")
+}
+
+// TestHandle_ColdTee_ReceivesEventAfterHotPersist verifies the cold tee
+// receives the event AFTER a successful hot persist (day-0 archive,
+// cold-tier.md §5.1).
+func TestHandle_ColdTee_ReceivesEventAfterHotPersist(t *testing.T) {
+	store := &fakeStore{}
+	tail := &fakeTail{}
+	cold := &fakeCold{}
+	s := New(store, tail, WithColdArchive(cold), noSleep())
+
+	if err := s.Handle(mtc(), context.Background(), env(`{"message":"archive me","level":"info"}`)); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	cold.mu.Lock()
+	defer cold.mu.Unlock()
+	if len(cold.archived) != 1 {
+		t.Fatalf("cold.archived %d events, want 1", len(cold.archived))
+	}
+}
+
+// TestHandle_ColdTeeFailure_DoesNotFailHotAck verifies that a cold archive
+// failure is best-effort: the hot persist has already succeeded so the message
+// must ACK (nil error) regardless (cold-tier.md §5.1 "best-effort tee").
+func TestHandle_ColdTeeFailure_DoesNotFailHotAck(t *testing.T) {
+	store := &fakeStore{}
+	tail := &fakeTail{}
+	cold := &fakeCold{archErr: errors.New("S3 temporarily unavailable")}
+	s := New(store, tail, WithColdArchive(cold), noSleep())
+
+	err := s.Handle(mtc(), context.Background(), env(`{"message":"persisted"}`))
+	if err != nil {
+		t.Fatalf("cold archive failure must not fail the hot ACK, got %v", err)
+	}
+	// Hot store must still have the event.
+	if len(store.appended) != 1 {
+		t.Errorf("hot store appended %d events, want 1", len(store.appended))
+	}
+}
+
+// TestHandle_NoColdArchive_NilIsNoop verifies that when no ColdArchive is
+// wired (WithColdArchive not called) the processor runs without panicking.
+func TestHandle_NoColdArchive_NilIsNoop(t *testing.T) {
+	store := &fakeStore{}
+	tail := &fakeTail{}
+	// No WithColdArchive — cold is nil.
+	s := New(store, tail, noSleep())
+
+	if err := s.Handle(mtc(), context.Background(), env(`{"message":"no cold"}`)); err != nil {
+		t.Fatalf("Handle without ColdArchive must succeed, got %v", err)
+	}
+	if len(store.appended) != 1 {
+		t.Errorf("hot store appended %d events, want 1", len(store.appended))
+	}
+}
+
+// TestHandle_HotPersistFail_NoColdTee verifies the cold tee is NOT called
+// when the hot persist fails (the message dead-letters; cold must not receive
+// a partial event that will be retried anyway).
+func TestHandle_HotPersistFail_NoColdTee(t *testing.T) {
+	store := &fakeStore{failAlways: errors.New("db down")}
+	tail := &fakeTail{}
+	cold := &fakeCold{}
+	s := New(store, tail, WithColdArchive(cold), WithRetry(0, time.Millisecond), noSleep())
+
+	if err := s.Handle(mtc(), context.Background(), env(`{"message":"fail"}`)); err == nil {
+		t.Fatal("expected error from failed hot persist")
+	}
+	cold.mu.Lock()
+	defer cold.mu.Unlock()
+	if cold.calls != 0 {
+		t.Errorf("cold archive must not be called when hot persist fails, got %d calls", cold.calls)
+	}
+}

@@ -32,6 +32,25 @@ type Config struct {
 	// (issue #37). It must be < terminationGracePeriodSeconds so the drain finishes
 	// before the orchestrator escalates to SIGKILL.
 	DrainTimeout time.Duration
+
+	// Cold-tier configuration (ADR-0005, decision 016).
+	// ColdEnabled gates the cold-tier tee. Default false (feature-flagged off per
+	// decision 016 §6) until the real-AWS smoke test passes.
+	ColdEnabled bool
+	// ColdBucket is the S3 bucket for Parquet cold objects (e.g. "logalot-cold").
+	ColdBucket string
+	// ColdGlueDB is the Glue database (e.g. "logalot_cold").
+	ColdGlueDB string
+	// ColdAthenaResultBucket is the Athena output S3 location
+	// (e.g. "s3://logalot-cold-results/").
+	ColdAthenaResultBucket string
+	// ColdAthenaWorkgroup is the Athena workgroup (default: "primary").
+	ColdAthenaWorkgroup string
+	// AWSRegion is the AWS region for cold-tier clients.
+	AWSRegion string
+	// FlociEndpoint overrides the AWS endpoint for local floci dev
+	// (FLOCI_ENDPOINT env var). Empty means real AWS.
+	FlociEndpoint string
 }
 
 const (
@@ -66,7 +85,24 @@ func Load() (Config, error) {
 		RetryBackoff:  defaultRetryBackoff,
 		ShutdownGrace: defaultShutdown,
 		DrainTimeout:  defaultDrain,
+
+		// Cold-tier (feature-flagged OFF; flip COLD_ENABLED=true only after the
+		// real-AWS smoke test passes — decision 016 §6).
+		ColdEnabled:            os.Getenv("COLD_ENABLED") == "true",
+		ColdBucket:             envOr("COLD_BUCKET", "logalot-cold"),
+		ColdGlueDB:             envOr("COLD_GLUE_DB", "logalot_cold"),
+		ColdAthenaResultBucket: envOr("COLD_ATHENA_RESULT_BUCKET", "s3://logalot-cold-results/"),
+		ColdAthenaWorkgroup:    envOr("COLD_ATHENA_WORKGROUP", "primary"),
+		AWSRegion:              envOr("AWS_REGION", "us-east-1"),
+		FlociEndpoint:          os.Getenv("FLOCI_ENDPOINT"),
 	}, nil
+}
+
+func envOr(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
 }
 
 func envInt(key string, def int) int {
