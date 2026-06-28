@@ -18,6 +18,15 @@ export interface IssuedApiKey {
   record: ApiKeyRecord;
 }
 
+// DEFAULT_SCOPES is the scope set applied when no scopes are provided.
+// ingest:write is the common case — most callers just want to push logs.
+//
+// Read-only consumers (dashboards, CI log viewers, etc.) should be issued
+// ['logs:read'] explicitly. Since #82, ingest:write alone no longer grants
+// log reads; keys that need both ingest and read must carry both scopes.
+// The request contract accepts logs:read, so this service can already mint
+// such keys; the admin web UI has no scope selector yet (tracked follow-up),
+// so today logs:read keys are minted via the API directly.
 const DEFAULT_SCOPES = ['ingest:write'];
 
 // ApiKeyService issues / lists / revokes tenant API keys (tenant_admin only). The

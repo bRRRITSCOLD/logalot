@@ -23,8 +23,10 @@ import (
 //     boundary (JWTAuthenticator) with 401; this 403 is defense-in-depth.
 //
 //   - API key (lgk_): tc.Role is empty; tc.Scopes is set.
-//     Allow: ingest:write (backward-compatible: all existing keys have this)
-//     and logs:read (the forward-compatible explicit read scope, #76).
+//     Allow: logs:read (the required explicit read scope, #82).
+//     ingest:write alone is NO LONGER sufficient for log reads (#82 retires
+//     the back-compat grant introduced in #76). Keys that need both ingest
+//     and read must carry both scopes.
 //     Any other combination of scopes → 403.
 //
 // A tc with neither Role nor Scopes (can only arise in tests or future
@@ -56,10 +58,11 @@ func canReadLogs(tc kernel.TenantContext) bool {
 		// authn-level structural bar that already rejects it with 401).
 		return tc.Role == kernel.RoleMember || tc.Role == kernel.RoleTenantAdmin
 	}
-	// API-key path — scope-based gate. ingest:write preserves the existing
-	// semantic (all historically-issued keys carry this and can already read
-	// logs). logs:read is the forward-compatible explicit read scope (#76).
-	return tc.HasScope(kernel.ScopeIngestWrite) || tc.HasScope(kernel.ScopeLogsRead)
+	// API-key path — scope-based gate. As of #82, ingest:write alone no longer
+	// satisfies the log-read gate (the back-compat grant from #76 is retired).
+	// Keys issued for read consumers must carry logs:read explicitly. Keys
+	// issued for both ingest and read should carry both scopes.
+	return tc.HasScope(kernel.ScopeLogsRead)
 }
 
 func abortForbidden(c *gin.Context) {

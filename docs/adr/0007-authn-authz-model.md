@@ -44,6 +44,10 @@ Two distinct authentication surfaces with different needs:
 - Authorization is checked at the edge (route guard by role/scope) and **re-asserted in the domain** for
   sensitive commands (e.g. key creation, retention change). Authorization never substitutes for tenant
   scoping — both apply.
+- **Scopes (API keys).** `ingest:write` is write-only (POST /v1/ingest). The log-read surface
+  (`query-service` /v1/search, /v1/tail, /v1/panel-data) requires the **`logs:read`** scope; as of #82
+  `ingest:write` no longer satisfies the read gate (the back-compat grant from #76 has been retired).
+  Read-only consumers are issued `logs:read`; keys that both ingest and read carry both scopes.
 
 ### Extensibility
 - Identity lives in the **Identity & Access** bounded context behind `Principal` / `TenantContext`

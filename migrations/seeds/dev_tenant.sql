@@ -47,15 +47,19 @@ VALUES (
 ) ON CONFLICT (tenant_id, user_id) DO NOTHING;
 
 -- API key: store only the SHA-256 of the secret (pgcrypto digest()).
+-- devkey001 is used by slice-e2e and the local dev loop for BOTH ingest
+-- (POST /v1/ingest requires ingest:write) AND log reads (GET /v1/search,
+-- /v1/tail, /v1/panel-data require logs:read since #82). It therefore carries
+-- both scopes. Pure read-only consumers should be issued ['logs:read'] only.
 INSERT INTO api_keys (id, tenant_id, name, key_hash, scopes, created_by)
 VALUES (
   'devkey001',
   '00000000-0000-0000-0000-0000000000d1',
   'dev slice key',
   digest('devsecret0123456789', 'sha256'),
-  ARRAY['ingest:write'],
+  ARRAY['ingest:write', 'logs:read'],
   '00000000-0000-0000-0000-0000000000a1'
-) ON CONFLICT (id) DO NOTHING;
+) ON CONFLICT (id) DO UPDATE SET scopes = EXCLUDED.scopes;
 
 INSERT INTO retention_policies (tenant_id, hot_days, cold_days, updated_by)
 VALUES (

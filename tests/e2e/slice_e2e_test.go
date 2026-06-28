@@ -315,14 +315,20 @@ func seedTenant(t *testing.T, admin *pgxpool.Pool, id, slug string) {
 	}
 }
 
-// issueKey mints an ingest API key for the tenant via the real auth path and
-// returns the one-time plaintext (lgk_<slug>_<keyId>_<secret>).
+// issueKey mints a combined ingest+read API key for the tenant via the real
+// auth path and returns the one-time plaintext (lgk_<slug>_<keyId>_<secret>).
+//
+// The e2e test uses the same key for both ingest (POST /v1/ingest, requires
+// ingest:write) and tail reads (GET /v1/tail, requires logs:read since #82).
+// Both scopes are therefore included. A production read-only consumer would
+// carry only ['logs:read'].
 func issueKey(t *testing.T, appPool *pgxpool.Pool, id, slug string) string {
 	t.Helper()
 	m, err := auth.IssueKey(context.Background(), appPool, auth.IssueParams{
 		TenantID: kernel.TenantID(id),
 		PublicID: slug,
 		Name:     "e2e key",
+		Scopes:   []kernel.Scope{kernel.ScopeIngestWrite, kernel.ScopeLogsRead},
 	})
 	if err != nil {
 		t.Fatalf("IssueKey %s: %v", slug, err)
