@@ -1,0 +1,29 @@
+@import "tailwindcss";
+/* tokens.css is GENERATED from @logalot/design-tokens — it provides the
+   `@theme inline` token map plus the raw :root custom properties (dark default,
+   light override under [data-theme='light']). See scripts/build-tokens.mjs. */
+@import "./tokens.css";
+
+/* Dark is the canonical theme for a log viewer; light is opt-in via the
+   data-theme attribute on <html> (see ThemeProvider). */
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+  }
+  html,
+  body {
+    background-color: var(--lg-color-bg-base);
+    color: var(--lg-color-fg-default);
+    font-family: var(--lg-font-sans);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  *,
+  *::before,
+  *::after {
+    border-color: var(--lg-color-border-default);
+  }
+}

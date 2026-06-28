@@ -1,0 +1,12 @@
+# Build output
+dist/
+.output/
+.nitro/
+.tanstack/
+.vite/
+
+# Generated from sources — regenerated on predev/prebuild, never edited by hand:
+#   src/styles/tokens.css   <- scripts/build-tokens.mjs (from @logalot/design-tokens)
+#   src/routeTree.gen.ts    <- TanStack Router plugin (from src/routes/*)
+src/styles/tokens.css
+src/routeTree.gen.ts
