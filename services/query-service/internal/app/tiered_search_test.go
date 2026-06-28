@@ -174,7 +174,7 @@ func TestTieredSearcher_FlagOff_AlwaysHot(t *testing.T) {
 	hot := &fakeLogStore{page: kernel.SearchPage{Events: []kernel.LogEvent{makeEvent("e1", fixedNow)}}}
 	cold := &fakeColdArchive{}
 
-	ts := NewTieredSearcher(hot, cold, 30, false /* flag OFF */,
+	ts := NewTieredSearcher(hot, cold, 30, false, /* flag OFF */
 		WithTieredClock(func() time.Time { return fixedNow }),
 	)
 

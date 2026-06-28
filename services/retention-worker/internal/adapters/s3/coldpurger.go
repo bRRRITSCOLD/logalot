@@ -3,13 +3,13 @@
 //
 // TENANT ISOLATION INVARIANT (ADR-0002, cold-tier.md §1):
 //
-//   The S3 prefix is ALWAYS constructed as
-//       logs/tenant_id=<tenantID>/
-//   where tenantID comes from retention_policies.tenant_id in the DB — a
-//   verified UUID, never from user input. The leading "logs/tenant_id=<uuid>/"
-//   segment is the structural cold-isolation boundary: a bug in one tenant's
-//   cold_days cannot reach another tenant's objects because the object key is
-//   compared against the prefix AFTER the tenant segment is set.
+//	The S3 prefix is ALWAYS constructed as
+//	    logs/tenant_id=<tenantID>/
+//	where tenantID comes from retention_policies.tenant_id in the DB — a
+//	verified UUID, never from user input. The leading "logs/tenant_id=<uuid>/"
+//	segment is the structural cold-isolation boundary: a bug in one tenant's
+//	cold_days cannot reach another tenant's objects because the object key is
+//	compared against the prefix AFTER the tenant segment is set.
 package s3
 
 import (

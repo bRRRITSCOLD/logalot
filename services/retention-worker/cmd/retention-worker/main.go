@@ -66,7 +66,7 @@ func run(log *slog.Logger) error {
 	})
 
 	// Wire adapters → ports.
-	retStore := pgadapter.New(pool)    // PolicyStore + HotDropper
+	retStore := pgadapter.New(pool) // PolicyStore + HotDropper
 	purger := s3adapter.New(s3Client, cfg.ColdBucket)
 
 	worker := app.New(retStore, retStore, purger,
