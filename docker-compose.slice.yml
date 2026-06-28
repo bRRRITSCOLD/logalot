@@ -96,6 +96,9 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: "6379"
       REDIS_PASSWORD: ${REDIS_PASSWORD}
+      # Shared with control-plane: query-service VERIFIES UI session JWTs with the
+      # same secret control-plane signs them with (#74). Must match or UI 401s.
+      JWT_SECRET: ${JWT_SECRET}
       QUERY_HTTP_ADDR: ":8081"
     ports:
       - "${QUERY_PORT:-8081}:8081"
