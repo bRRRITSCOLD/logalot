@@ -97,6 +97,11 @@ func TestCanReadLogs_APIKeyPath(t *testing.T) {
 
 		// Deny: a scope that confers no log-read right.
 		{"unknown scope denied", []kernel.Scope{kernel.Scope("metrics:read")}, false},
+
+		// Deny (#82): a non-empty set of non-read scopes (ingest:write plus another
+		// non-read scope) still denies — only logs:read opens the gate, distinct
+		// from the empty-scopes case above.
+		{"non-read scopes only denied", []kernel.Scope{kernel.ScopeIngestWrite, kernel.Scope("metrics:read")}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -359,6 +364,14 @@ func authzMatrix(_ *testing.T) []authzCase {
 		{
 			name:       "apikey/unknown_scope→deny",
 			principal:  tcAPIKey(kernel.Scope("metrics:read")),
+			wantStatus: http.StatusForbidden,
+		},
+		// DENY (#82): a non-empty set of non-read scopes (ingest:write plus
+		// another non-read scope) still denies — only logs:read opens the gate,
+		// and no combination of other scopes substitutes for it.
+		{
+			name:       "apikey/non_read_scopes_only→deny",
+			principal:  tcAPIKey(kernel.ScopeIngestWrite, kernel.Scope("metrics:read")),
 			wantStatus: http.StatusForbidden,
 		},
 
