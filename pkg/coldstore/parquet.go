@@ -12,10 +12,12 @@ import (
 
 // coldLogRecord mirrors the cold-tier.md §2 Parquet schema.
 //
-// TS is stored as Unix milliseconds (int64) so Athena can compare timestamps
-// without conversion. Labels and Raw are stored as JSON strings (not Parquet
-// structs) so a fluid label schema does not force Parquet schema evolution per
-// tenant; Athena's json_extract_scalar handles predicates.
+// TS is stored as Unix epoch milliseconds (int64), surfaced as Glue/Athena
+// `bigint` (cold-tier.md §2/§3, reconciled 2026-06-27) — NOT a SQL timestamp —
+// so Athena compares without conversion (render with from_unixtime(ts/1000)).
+// Labels and Raw are stored as JSON strings (not Parquet structs) so a fluid
+// label schema does not force Parquet schema evolution per tenant; Athena's
+// json_extract_scalar handles predicates.
 //
 // This type is intentionally identical in structure to the spike's
 // coldLogRecord (tests/cold-tier-spike/athena_projection_spike_test.go) to

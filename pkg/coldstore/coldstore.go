@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"sort"
 	"strings"
 	"time"
 
@@ -151,12 +152,20 @@ func New(
 //   - S3 key begins with logs/tenant_id=<tc.TenantID>/ — the structural cold
 //     isolation boundary. No other tenant's prefix is ever written.
 //
+// Batching (M1 fix): events are grouped by their (dt, hour) partition derived
+// from each event's own timestamp, and each group is written as its own Parquet
+// object under the correct partition prefix. A single Archive call carrying a
+// heterogeneous-timestamp batch therefore produces one object per (dt, hour)
+// rather than mis-filing the whole batch under events[0]'s partition.
+//
 // Failure semantics:
-//   - S3 PutObject failure → error returned (data not written; caller retries).
-//   - Glue CreatePartition failure → warning logged, nil returned (data is
-//     already in S3 and partition projection handles discovery for queries;
-//     non-fatal per decision 016 §1 and cold-tier.md §3 partition-projection
-//     note). The processor treats Archive as best-effort tee (§5.1).
+//   - S3 PutObject failure → error returned (data not written; caller retries
+//     the whole batch). Groups are written in deterministic partition order; a
+//     failure on any group aborts and propagates so the processor retries.
+//   - Glue CreatePartition failure → warning logged, non-fatal (data is already
+//     in S3 and partition projection handles discovery for queries; decision
+//     016 §1 and cold-tier.md §3 partition-projection note). The processor
+//     treats Archive as a best-effort tee (§5.1).
 func (s *Store) Archive(tc kernel.TenantContext, ctx context.Context, events ...kernel.LogEvent) error {
 	if err := tc.Valid(); err != nil {
 		return err
@@ -165,42 +174,81 @@ func (s *Store) Archive(tc kernel.TenantContext, ctx context.Context, events ...
 		return nil
 	}
 
-	// Encode as Parquet. tenant_id is bound from tc inside encodeParquet.
-	data, err := encodeParquet(tc, events)
-	if err != nil {
-		return fmt.Errorf("coldstore: encode: %w", err)
-	}
+	// Group events by their (dt, hour) partition so a heterogeneous-timestamp
+	// batch is filed correctly (M1). The partition is derived from each event's
+	// own TS (zero TS → s.now()), never from events[0].
+	groups := s.partitionEvents(events)
 
-	// Use the first event's timestamp (or now) to compute the partition key.
-	batchTime := s.now()
-	if !events[0].TS.IsZero() {
-		batchTime = events[0].TS
-	}
+	for _, g := range groups {
+		// Encode this partition's events as Parquet. tenant_id is bound from tc
+		// inside encodeParquet (never from any event body).
+		data, err := encodeParquet(tc, g.events)
+		if err != nil {
+			return fmt.Errorf("coldstore: encode: %w", err)
+		}
 
-	batchID := uuid.New().String()
-	key := coldKey(string(tc.TenantID), batchID, batchTime)
+		batchID := uuid.New().String()
+		key := coldKey(string(tc.TenantID), batchID, g.t)
 
-	// S3 PutObject — failure is propagated (data must land in S3 for the
-	// archive to be durable; the processor will retry).
-	if err := s.s3Putter(ctx, s.bucket, key, data); err != nil {
-		return fmt.Errorf("coldstore: s3 put %q: %w", key, err)
-	}
+		// S3 PutObject — failure is propagated (data must land in S3 for the
+		// archive to be durable; the processor will retry the whole batch).
+		if err := s.s3Putter(ctx, s.bucket, key, data); err != nil {
+			return fmt.Errorf("coldstore: s3 put %q: %w", key, err)
+		}
 
-	// Glue CreatePartition — non-fatal; partition projection discovers the
-	// prefix anyway, and a failed registration can be retried independently.
-	part := gluePartition{
-		tenantID: string(tc.TenantID),
-		dt:       batchTime.UTC().Format("2006-01-02"),
-		hour:     fmt.Sprintf("%02d", batchTime.UTC().Hour()),
-	}
-	if err := s.gluePart(ctx, s.glueDB, part); err != nil {
-		s.log.WarnContext(ctx, "coldstore: glue partition registration failed (data in S3)",
-			"tenant_id", tc.TenantID,
-			"partition", fmt.Sprintf("dt=%s/hour=%s", part.dt, part.hour),
-			"err", err)
-		// Non-fatal: return nil so the processor doesn't retry the whole tee.
+		// Glue CreatePartition — non-fatal; partition projection discovers the
+		// prefix anyway, and a failed registration can be retried independently.
+		part := gluePartition{
+			tenantID: string(tc.TenantID),
+			dt:       g.t.UTC().Format("2006-01-02"),
+			hour:     fmt.Sprintf("%02d", g.t.UTC().Hour()),
+		}
+		if err := s.gluePart(ctx, s.glueDB, part); err != nil {
+			s.log.WarnContext(ctx, "coldstore: glue partition registration failed (data in S3)",
+				"tenant_id", tc.TenantID,
+				"partition", fmt.Sprintf("dt=%s/hour=%s", part.dt, part.hour),
+				"err", err)
+			// Non-fatal: continue so the processor doesn't retry the whole tee.
+		}
 	}
 	return nil
+}
+
+// eventGroup is a set of events that share a single (dt, hour) partition,
+// together with a representative time t used to compute the S3 key + partition.
+type eventGroup struct {
+	t      time.Time
+	events []kernel.LogEvent
+}
+
+// partitionEvents buckets events by their UTC (date, hour) partition. The
+// representative time t of each group is the first event's resolved timestamp,
+// which shares the group's dt/hour by construction. Groups are returned in
+// ascending partition order for deterministic write sequencing.
+func (s *Store) partitionEvents(events []kernel.LogEvent) []eventGroup {
+	byPart := make(map[string]*eventGroup)
+	order := make([]string, 0, 4)
+	for _, ev := range events {
+		t := ev.TS
+		if t.IsZero() {
+			t = s.now()
+		}
+		t = t.UTC()
+		pk := t.Format("2006-01-02-15") // dt+hour bucket key
+		g, ok := byPart[pk]
+		if !ok {
+			g = &eventGroup{t: t}
+			byPart[pk] = g
+			order = append(order, pk)
+		}
+		g.events = append(g.events, ev)
+	}
+	sort.Strings(order)
+	out := make([]eventGroup, 0, len(order))
+	for _, pk := range order {
+		out = append(out, *byPart[pk])
+	}
+	return out
 }
 
 // ---------------------------------------------------------------------------

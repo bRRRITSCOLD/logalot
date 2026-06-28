@@ -1,126 +1,123 @@
-# Cold-query compose overlay: Trino + Hive Metastore (HMS) + PostgreSQL (HMS
-# backing) + MinIO. Extends the base logalot stack so that cold-query
-# integration tests (build tag cold_query) can run Trino SQL against Parquet
-# files stored in MinIO using partition projection — faithfully replicating
-# real AWS Athena behaviour in CI (decision 016 §2).
+# Cold-query compose stack: Trino + Hive Metastore (HMS) + PostgreSQL (HMS
+# backing) + MinIO. This is the faithful local stand-in for managed AWS Athena
+# (Athena IS managed Trino) used by the cold-query integration tests
+# (build tag cold_query) — decision 016 §2.
 #
-# Usage:
-#   docker compose -f docker-compose.yml -f docker-compose.cold-query.yml up
-#   go test -tags=cold_query -v -timeout 300s ./pkg/coldstore/...
+# It is self-contained (its own project + network) so it can be brought up on
+# its own without the base logalot stack:
 #
-# Services added:
-#   minio        — S3-compatible object store (replaces floci for cold-query)
-#   hms          — Hive Metastore (thrift :9083, REST :9080)
-#   hms-postgres — PostgreSQL backing the HMS metastore DB
-#   trino        — Trino coordinator (HTTP :8080; hive + HMS config in /etc/trino)
+#   docker compose -f docker-compose.cold-query.yml up -d
+#   # wait for trino healthy, then:
+#   go test -tags=cold_query -v -timeout 600s ./pkg/coldstore/...
+#   docker compose -f docker-compose.cold-query.yml down -v
 #
-# Network: logalot (shared with base stack).
-# Health: each service has a healthcheck; tests wait for /v1/info RUNNING.
+# Services:
+#   minio        — S3-compatible object store (the cold Parquet bucket)
+#   minio-init   — one-shot: creates the cold bucket
+#   hms          — Apache Hive standalone metastore (thrift :9083)
+#   trino        — Trino coordinator (HTTP :8080); hive catalog in ./infra/trino
+#
+# HMS backing store: the apache/hive:4.1.0 image does NOT bundle an external
+# JDBC driver, so the metastore uses its built-in embedded Derby DB (the image's
+# documented default). This is ephemeral and recreated on every `up` — exactly
+# right for a throwaway cold-query CI fixture (no durable metadata is needed).
+#
+# Network: logalot-coldq (self-contained).
 
-name: logalot
+name: logalot-coldq
 
 services:
   minio:
-    image: quay.io/minio/minio:RELEASE.2025-05-01T00-00-00.000Z
-    container_name: logalot-minio
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+    container_name: coldq-minio
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
     ports:
-      - "9000:9000"   # S3 API
-      - "9001:9001"   # MinIO Console
-    volumes:
-      - minio-data:/data
+      - "9000:9000"
+      - "9001:9001"
     networks:
-      - logalot
+      - coldq
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-      interval: 10s
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
       timeout: 5s
-      retries: 10
-      start_period: 15s
-
-  hms-postgres:
-    image: postgres:16-alpine
-    container_name: logalot-hms-postgres
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: hms
-      POSTGRES_PASSWORD: hms
-      POSTGRES_DB: metastore
-    volumes:
-      - hms-postgres-data:/var/lib/postgresql/data
-    networks:
-      - logalot
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U hms -d metastore"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+      retries: 20
       start_period: 10s
 
-  hms:
-    # Apache Hive standalone metastore 4.0 with S3/MinIO configured via env.
-    # Uses SCHEMA_COMMAND=initSchema on first boot, then thrift :9083.
-    image: apache/hive:4.0.1
-    container_name: logalot-hms
+  minio-init:
+    image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z
+    container_name: coldq-minio-init
     depends_on:
-      hms-postgres:
+      minio:
         condition: service_healthy
+    entrypoint: >-
+      /bin/sh -c "
+      mc alias set local http://minio:9000 minioadmin minioadmin &&
+      mc mb -p local/logalot-cold-cq &&
+      echo 'cold bucket ready'
+      "
+    networks:
+      - coldq
+
+  hms:
+    # Apache Hive 4.1.0 standalone metastore on embedded Derby. External tables
+    # are created by Trino; HMS only stores metadata + serves the thrift API, so
+    # its own S3A config is best-effort (the S3 reads happen in Trino).
+    image: apache/hive:4.1.0
+    container_name: coldq-hms
+    depends_on:
       minio:
         condition: service_healthy
     environment:
       SERVICE_NAME: metastore
-      DB_DRIVER: postgres
+      DB_DRIVER: derby
+      # hadoop-aws + the AWS SDK bundle ship in the image's tools/lib but are off
+      # the HMS classpath by default; add them so HMS can resolve the s3a:// FS
+      # when it validates the external table location at create_table time.
+      HIVE_AUX_JARS_PATH: /opt/hadoop/share/hadoop/tools/lib/hadoop-aws-3.4.1.jar:/opt/hadoop/share/hadoop/tools/lib/bundle-2.24.6.jar
+      # Keep the warehouse dir LOCAL (schema mkdir stays off S3); the external
+      # table carries its own s3a:// location, which both HMS (for validation)
+      # and Trino (for reads) resolve via the S3A/native-S3 filesystems. The
+      # actual S3A endpoint/credentials come from the mounted core-site.xml
+      # (JVM -D props do not populate the Hadoop Configuration).
       SERVICE_OPTS: >-
-        -Djavax.jdo.option.ConnectionDriverName=org.postgresql.Driver
-        -Djavax.jdo.option.ConnectionURL=jdbc:postgresql://hms-postgres:5432/metastore
-        -Djavax.jdo.option.ConnectionUserName=hms
-        -Djavax.jdo.option.ConnectionPassword=hms
-        -Dfs.s3a.endpoint=http://minio:9000
-        -Dfs.s3a.access.key=minioadmin
-        -Dfs.s3a.secret.key=minioadmin
-        -Dfs.s3a.path.style.access=true
-        -Dfs.s3a.impl=org.apache.hadoop.fs.s3a.S3AFileSystem
+        -Dhive.metastore.warehouse.dir=file:///opt/hive/data/warehouse
+    volumes:
+      - ./infra/hive/conf/core-site.xml:/opt/hive/conf/core-site.xml:ro
     ports:
-      - "9083:9083"   # HMS thrift
-      - "9080:9080"   # HMS REST (optional)
+      - "9083:9083"
     networks:
-      - logalot
+      - coldq
     healthcheck:
-      test: ["CMD-SHELL", "nc -z localhost 9083 || exit 1"]
-      interval: 15s
+      test: ["CMD-SHELL", "bash -c 'cat < /dev/null > /dev/tcp/localhost/9083' || exit 1"]
+      interval: 10s
       timeout: 10s
-      retries: 10
-      start_period: 60s
+      retries: 15
+      start_period: 30s
 
   trino:
-    # Trino 464 — same engine as managed Athena (both are Trino forks at parity).
-    # Config files are bind-mounted from ./infra/trino/.
-    image: trinodb/trino:464
-    container_name: logalot-trino
+    # Trino 482 — same engine as managed Athena (both Trino forks at parity).
+    # Config files are bind-mounted from ./infra/trino/etc.
+    image: trinodb/trino:482
+    container_name: coldq-trino
     depends_on:
       hms:
         condition: service_healthy
     ports:
-      - "8080:8080"   # Trino HTTP API
+      - "8080:8080"
     volumes:
       - ./infra/trino/etc:/etc/trino:ro
     networks:
-      - logalot
+      - coldq
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8080/v1/info"]
-      interval: 15s
+      interval: 10s
       timeout: 10s
-      retries: 20
-      start_period: 60s
-
-volumes:
-  minio-data:
-  hms-postgres-data:
+      retries: 30
+      start_period: 30s
 
 networks:
-  logalot:
-    name: logalot
-    external: true
+  coldq:
+    name: logalot-coldq

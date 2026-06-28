@@ -160,8 +160,19 @@ func (s *Service) Handle(tc kernel.TenantContext, ctx context.Context, env kerne
 	// The hot row is already committed; a cold failure must never block the ACK
 	// or trigger re-delivery (that would duplicate the hot insert). We log the
 	// failure and move on. The cold port is nil when the feature flag is off.
+	//
+	// Shutdown-drain budget (M2): persist and the cold tee each run on a
+	// WithoutCancel context bounded by drainTimeout. Running them sequentially
+	// on a drain could approach 2×drainTimeout and risk exceeding ShutdownGrace.
+	// Because the cold tee is best-effort and the hot row is already durable, we
+	// SKIP it once the lifecycle context is already cancelled — shutdown then
+	// stays bounded by a single drainTimeout (the persist drain). In steady
+	// state ctx is live and the tee runs normally.
 	if s.cold != nil {
-		if err := s.archiveCold(tc, ctx, ev); err != nil {
+		if err := ctx.Err(); err != nil {
+			s.log.WarnContext(ctx, "processor: cold archive skipped (shutting down; hot committed)",
+				"tenant_id", tc.TenantID, "service", ev.Service)
+		} else if err := s.archiveCold(tc, ctx, ev); err != nil {
 			s.log.WarnContext(ctx, "processor: cold archive failed (hot committed; ack proceeds)",
 				"tenant_id", tc.TenantID, "service", ev.Service, "err", err)
 		}

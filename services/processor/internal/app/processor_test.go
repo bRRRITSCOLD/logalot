@@ -391,3 +391,33 @@ func TestHandle_HotPersistFail_NoColdTee(t *testing.T) {
 		t.Errorf("cold archive must not be called when hot persist fails, got %d calls", cold.calls)
 	}
 }
+
+// TestHandle_ColdTeeSkippedOnShutdown verifies the M2 drain-budget fix: when the
+// lifecycle context is already cancelled (shutdown in progress), the best-effort
+// cold tee is SKIPPED so shutdown stays bounded by a single drainTimeout (the
+// persist drain) rather than approaching 2×drainTimeout. The hot persist still
+// runs to completion (drain guarantee via WithoutCancel) and the message ACKs.
+func TestHandle_ColdTeeSkippedOnShutdown(t *testing.T) {
+	store := &fakeStore{}
+	tail := &fakeTail{}
+	cold := &fakeCold{}
+	s := New(store, tail, WithColdArchive(cold), noSleep())
+
+	// Cancel the lifecycle context up-front to simulate an in-flight shutdown.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if err := s.Handle(mtc(), ctx, env(`{"message":"shutting down"}`)); err != nil {
+		t.Fatalf("Handle on a cancelled ctx must still ACK (hot drain), got %v", err)
+	}
+	// Hot persist must still have committed (drain guarantee).
+	if len(store.appended) != 1 {
+		t.Errorf("hot store appended %d events, want 1 (drain must persist)", len(store.appended))
+	}
+	// Cold tee must have been skipped (best-effort, shutting down).
+	cold.mu.Lock()
+	defer cold.mu.Unlock()
+	if cold.calls != 0 {
+		t.Errorf("cold archive must be SKIPPED on shutdown, got %d calls", cold.calls)
+	}
+}

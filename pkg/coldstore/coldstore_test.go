@@ -287,6 +287,66 @@ func TestStore_Archive_GlueFailureIsLogged_NoError(t *testing.T) {
 	}
 }
 
+func TestStore_Archive_HeterogeneousBatch_SplitsByPartition(t *testing.T) {
+	// M1: a batch whose events span different (dt, hour) partitions must be
+	// written as one Parquet object per partition under the correct prefix —
+	// NOT all under events[0]'s partition.
+	fs3 := newFakeS3()
+	fg := &fakeGlue{}
+	store := newTestStore(fs3, fg, nil)
+
+	tc := mtcA()
+	h14 := time.Date(2026, 6, 27, 14, 5, 0, 0, time.UTC)
+	h15 := time.Date(2026, 6, 27, 15, 5, 0, 0, time.UTC)
+	nextDay := time.Date(2026, 6, 28, 1, 0, 0, 0, time.UTC)
+
+	evs := []kernel.LogEvent{
+		{TenantID: tenantA, TS: h14, ID: "a", Service: "s", Level: kernel.LevelInfo, Message: "m1"},
+		{TenantID: tenantA, TS: h15, ID: "b", Service: "s", Level: kernel.LevelInfo, Message: "m2"},
+		{TenantID: tenantA, TS: h14, ID: "c", Service: "s", Level: kernel.LevelInfo, Message: "m3"}, // same partition as first
+		{TenantID: tenantA, TS: nextDay, ID: "d", Service: "s", Level: kernel.LevelInfo, Message: "m4"},
+	}
+
+	if err := store.Archive(tc, context.Background(), evs...); err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+
+	// Three distinct (dt,hour) partitions → three S3 objects + three Glue parts.
+	if len(fs3.objects) != 3 {
+		t.Fatalf("expected 3 S3 objects (one per partition), got %d: %v", len(fs3.objects), keysOf(fs3.objects))
+	}
+	if len(fg.partitions) != 3 {
+		t.Fatalf("expected 3 Glue partitions, got %d", len(fg.partitions))
+	}
+
+	// Every object must be filed under the partition matching its events' TS.
+	wantPrefixes := []string{
+		"logs/tenant_id=" + string(tenantA) + "/dt=2026-06-27/hour=14/",
+		"logs/tenant_id=" + string(tenantA) + "/dt=2026-06-27/hour=15/",
+		"logs/tenant_id=" + string(tenantA) + "/dt=2026-06-28/hour=01/",
+	}
+	for _, want := range wantPrefixes {
+		found := false
+		for k := range fs3.objects {
+			if strings.Contains(k, want) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("no S3 object filed under partition %q; have %v", want, keysOf(fs3.objects))
+		}
+	}
+}
+
+func keysOf(m map[string][]byte) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
 // ---------------------------------------------------------------------------
 // Search / fitness gate unit tests
 // ---------------------------------------------------------------------------
