@@ -8,7 +8,9 @@ COMPOSE := docker compose --env-file .env
 COMPOSE_SLICE := docker compose --env-file .env -f docker-compose.yml -f docker-compose.slice.yml
 
 # The slice services that COMPOSE_SLICE adds on top of the infra stack.
-SLICE_SERVICES := ingest-service processor query-service
+# alert-evaluator joins so UI alert rules actually evaluate (OK<->firing) in the
+# local loop — it's a background worker (no HTTP port), not part of the #9 demo path.
+SLICE_SERVICES := ingest-service processor query-service alert-evaluator
 
 # Host-published ports for the slice services (mirror .env.example defaults so the
 # help text/echo is correct even before these are added to .env).

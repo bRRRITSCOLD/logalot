@@ -115,3 +115,30 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+
+  # Alerting context's evaluation worker (ADR-0001): on a schedule it finds due
+  # alert rules across all tenants (BYPASSRLS logalot_evaluator metadata role),
+  # counts each rule's matching log_events under the rule's per-tenant RLS context
+  # (logalot_app role), transitions OK<->firing, and emits one notification per
+  # transition. Without this the UI's alert rules never leave "OK". No HTTP port —
+  # it's a background worker; notifier=logsink writes transitions to stdout (auditable,
+  # no external dep). Two DB roles = the tenant-isolation boundary (model.md §4.5).
+  alert-evaluator:
+    image: logalot/alert-evaluator:dev
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: alert-evaluator
+    container_name: logalot-alert-evaluator
+    restart: unless-stopped
+    environment:
+      LOGALOT_APP_DATABASE_URL: postgres://logalot_app:logalot_app@postgres:5432/${POSTGRES_DB}?sslmode=disable
+      LOGALOT_EVALUATOR_DATABASE_URL: postgres://logalot_evaluator:logalot_evaluator@postgres:5432/${POSTGRES_DB}?sslmode=disable
+      ALERT_NOTIFIER: logsink
+      ALERT_EVAL_INTERVAL: 10s
+    networks:
+      - logalot
+    depends_on:
+      postgres:
+        condition: service_healthy
