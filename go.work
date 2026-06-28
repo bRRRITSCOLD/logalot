@@ -30,5 +30,6 @@ use (
 	./services/ingest-service
 	./services/processor
 	./services/query-service
+	./tests/cold-tier-spike
 	./tests/e2e
 )

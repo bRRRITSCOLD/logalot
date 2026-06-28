@@ -39,6 +39,7 @@ MIGRATE_RUN          := docker run --rm --network logalot -v $(CURDIR)/migration
 .PHONY: help up down logs ps reset seed \
 	migrate-up migrate-down migrate-version migrate-create \
 	slice-up slice-down slice-logs slice-demo slice-test \
+	cold-tier-spike \
 	go-sync go-build go-test go-fmt go-lint \
 	node-install node-test node-lint \
 	test lint
@@ -134,6 +135,13 @@ slice-demo:
 ## slice-test: run the hermetic e2e isolation test (testcontainers; needs Docker)
 slice-test:
 	cd tests/e2e && go test -tags=e2e -run TestSliceE2E -v -timeout 300s ./...
+
+## cold-tier-spike: run the cold-tier Firehose+Glue fidelity spike against compose floci
+# Requires: make up (floci must be healthy at FLOCI_ENDPOINT / localhost:4566).
+# Expected result: GlueCatalogFidelity/DirectS3WriteKeyLayout/GlueExplicitPartitionRegistration PASS;
+# FirehoseS3Delivery FAIL (confirmed stub in floci 1.5.28 community — see docs/data/spikes/013-).
+cold-tier-spike: .env
+	go test -tags=floci_spike -run TestColdTierFidelity -v -timeout 300s ./tests/cold-tier-spike/...
 
 # ----------------------------------------------------------------------------
 # Monorepo CI helpers. CI (.github/workflows/ci.yml) calls these same targets,
