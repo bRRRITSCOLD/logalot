@@ -194,6 +194,11 @@ func TestJWT_RejectsBadTokens(t *testing.T) {
 			s.role = "superuser"
 			return s.sign(t)
 		}},
+		{"platform_operator barred from tenant logs", func() string {
+			s := defaultSpec()
+			s.role = string(kernel.RolePlatformOperator)
+			return s.sign(t)
+		}},
 		{"empty subject", func() string {
 			s := defaultSpec()
 			s.subject = ""
@@ -219,15 +224,38 @@ func TestJWT_RejectsBadTokens(t *testing.T) {
 	}
 }
 
-// An HS-signed token whose alg header is swapped to a non-HMAC family must be
-// rejected by the alg-confusion guard rather than verified with the HMAC key.
+// member and tenant_admin legitimately read logs, so both roles must be ACCEPTED
+// (only platform_operator is barred — see TestJWT_RejectsBadTokens). This pins
+// that the structural bar does not over-reach onto the log-reading roles.
+func TestJWT_AcceptsLogReadingRoles(t *testing.T) {
+	a := newJWT(t)
+	for _, role := range []kernel.Role{kernel.RoleMember, kernel.RoleTenantAdmin} {
+		t.Run(string(role), func(t *testing.T) {
+			s := defaultSpec()
+			s.role = string(role)
+			tc, err := a.Authenticate(context.Background(), kernel.Credential{BearerToken: s.sign(t)})
+			if err != nil {
+				t.Fatalf("Authenticate role=%s: %v (must be accepted)", role, err)
+			}
+			if tc.Role != role {
+				t.Fatalf("Role = %q, want %q", tc.Role, role)
+			}
+		})
+	}
+}
+
+// A token whose alg is NOT HS256 must be rejected by the verifier rather than
+// verified with the HMAC key. RS256->HS256 alg confusion is structurally
+// inapplicable here (this verifier holds no asymmetric key — it cannot be
+// tricked into MAC-verifying with a public key), so the real surface is alg=none
+// and other HMAC variants. WithValidMethods allows ONLY HS256, so a token MAC'd
+// with HS512 (a non-allowed HMAC variant standing in for "any other alg") is
+// rejected before the key is ever used. (alg=none is also covered in the reject
+// matrix above.)
 func TestJWT_RejectsAlgConfusionForgery(t *testing.T) {
 	a := newJWT(t)
-	// Hand-craft a token header claiming RS256 but actually MAC'd with our secret.
-	// golang-jwt will refuse to even parse it for HMAC because WithValidMethods
-	// only allows HS256; assert rejection.
 	s := defaultSpec()
-	s.method = jwt.SigningMethodHS512 // a non-allowed HMAC variant stands in
+	s.method = jwt.SigningMethodHS512
 	tok := s.sign(t)
 	if _, err := a.Authenticate(context.Background(), kernel.Credential{BearerToken: tok}); err == nil {
 		t.Fatal("a non-HS256 algorithm must be rejected (alg-confusion guard)")

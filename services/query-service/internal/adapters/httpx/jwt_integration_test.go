@@ -265,17 +265,59 @@ func TestIntegration_JWT_TailAuthorizes(t *testing.T) {
 	t.Logf("TAIL PROOF: control-plane JWT authorizes /v1/tail -> 200")
 }
 
-func TestIntegration_JWT_RejectsTamperedToken(t *testing.T) {
+// signCustomJWT mints a token with caller-chosen method/audience/expiry so the
+// edge reject cases (expired, alg=none, wrong aud) can be driven end to end.
+func signCustomJWT(t *testing.T, method jwt.SigningMethod, secret, audience string, exp time.Time, role kernel.Role) string {
+	t.Helper()
+	tok := jwt.NewWithClaims(method, jwt.MapClaims{
+		"iss":       jwtIssuer,
+		"aud":       audience,
+		"sub":       "55555555-5555-5555-5555-555555555555",
+		"tenant_id": string(jwtTenantA),
+		"role":      string(role),
+		"iat":       jwt.NewNumericDate(time.Now()),
+		"exp":       jwt.NewNumericDate(exp),
+	})
+	var key any = []byte(secret)
+	if method == jwt.SigningMethodNone {
+		key = jwt.UnsafeAllowNoneSignatureType
+	}
+	str, err := tok.SignedString(key)
+	if err != nil {
+		t.Fatalf("sign custom JWT: %v", err)
+	}
+	return str
+}
+
+// TestIntegration_JWT_RejectsBadTokensAtEdge drives the rejection matrix all the
+// way through the edge (composite -> AuthMiddleware -> 401), so the issue's
+// accept/reject claims are proven at the HTTP boundary, not just in unit tests.
+func TestIntegration_JWT_RejectsBadTokensAtEdge(t *testing.T) {
 	env := setupJWTEnv(t)
 	env.seedTenant(t, jwtTenantA, "alpha")
 	env.seedLog(t, jwtTenantA, "TENANT-A-SECRET")
 
-	// A token signed with the WRONG secret must 401 (no foreign signer is trusted).
-	forged := signControlPlaneJWT(t, "totally-wrong-secret-0123456789", jwtTenantA, kernel.RoleMember)
-	if status, _ := env.searchMessages(t, "Bearer "+forged); status != http.StatusUnauthorized {
-		t.Fatalf("foreign-signed JWT: status=%d, want 401", status)
+	now := time.Now()
+	cases := []struct {
+		name  string
+		token string
+	}{
+		{"foreign-signed", signControlPlaneJWT(t, "totally-wrong-secret-0123456789", jwtTenantA, kernel.RoleMember)},
+		{"expired", signCustomJWT(t, jwt.SigningMethodHS256, jwtTestSecret, jwtAudience, now.Add(-time.Hour), kernel.RoleMember)},
+		{"alg=none", signCustomJWT(t, jwt.SigningMethodNone, jwtTestSecret, jwtAudience, now.Add(time.Hour), kernel.RoleMember)},
+		{"wrong audience", signCustomJWT(t, jwt.SigningMethodHS256, jwtTestSecret, "some-other-app", now.Add(time.Hour), kernel.RoleMember)},
+		// platform_operator is structurally barred from tenant log content
+		// (kernel/tenant.go); even a perfectly valid token for it must 401 here.
+		{"platform_operator barred", signControlPlaneJWT(t, jwtTestSecret, jwtTenantA, kernel.RolePlatformOperator)},
 	}
-	t.Logf("REJECTION PROOF: foreign-signed token -> 401")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if status, _ := env.searchMessages(t, "Bearer "+tc.token); status != http.StatusUnauthorized {
+				t.Fatalf("%s: /v1/search status=%d, want 401", tc.name, status)
+			}
+		})
+	}
+	t.Logf("REJECTION PROOF: foreign-signed / expired / alg=none / wrong-aud / platform_operator -> 401 at the edge")
 }
 
 // The composite must still authorize the legacy `lgk_` API-key path unchanged.

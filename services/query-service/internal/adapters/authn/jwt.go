@@ -111,6 +111,16 @@ func (a *JWTAuthenticator) Authenticate(_ context.Context, cred kernel.Credentia
 	if !role.Valid() {
 		return kernel.TenantContext{}, fmt.Errorf("%w: unknown role", ErrInvalidToken)
 	}
+	// Keep the platform_operator bar STRUCTURAL at this boundary. That role is
+	// "structurally barred from tenant log content" (kernel/tenant.go), yet
+	// query-service's /v1/* read endpoints carry no role gate. Admitting session
+	// tokens here (this is the change that does) would otherwise newly make a
+	// tenant's log content reachable for an operator principal — so reject it,
+	// fail closed and opaque. member and tenant_admin legitimately read logs and
+	// are still accepted.
+	if role == kernel.RolePlatformOperator {
+		return kernel.TenantContext{}, fmt.Errorf("%w: platform_operator may not read tenant log content", ErrInvalidToken)
+	}
 	if claims.Subject == "" {
 		return kernel.TenantContext{}, fmt.Errorf("%w: empty subject", ErrInvalidToken)
 	}
