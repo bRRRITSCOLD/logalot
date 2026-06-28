@@ -1,5 +1,6 @@
 /// <reference types="vite/client" />
 import { createRootRoute, HeadContent, Outlet, Scripts } from '@tanstack/react-router';
+import { NuqsAdapter } from 'nuqs/adapters/tanstack-router';
 import { DefaultCatchBoundary, NotFound } from '../components/states';
 import appCss from '../styles/app.css?url';
 
@@ -26,7 +27,11 @@ function RootDocument() {
         <HeadContent />
       </head>
       <body className="min-h-svh bg-bg-base text-fg-default antialiased">
-        <Outlet />
+        {/* nuqs URL-state adapter (the deferred-from-#20 dependency the Log Explorer
+            page uses for shareable filter state); bound to the TanStack Router. */}
+        <NuqsAdapter>
+          <Outlet />
+        </NuqsAdapter>
         <Scripts />
       </body>
     </html>

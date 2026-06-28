@@ -45,8 +45,16 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
         <OverviewIcon />
         Overview
       </Link>
-      {/* Placeholders for the feature pages built in #21-#23. */}
-      <NavPlaceholder icon={<LogsIcon />} label="Log Explorer" />
+      <Link
+        to="/explorer"
+        onClick={onNavigate}
+        className={cn(linkBase, idleLink)}
+        activeProps={{ className: cn(linkBase, activeLink) }}
+      >
+        <LogsIcon />
+        Log Explorer
+      </Link>
+      {/* Placeholders for the feature pages built in #22-#23. */}
       <NavPlaceholder icon={<SearchIcon />} label="Search" />
       <NavPlaceholder icon={<BellIcon />} label="Alerts" />
       <NavPlaceholder icon={<AdminIcon />} label="Admin" />
