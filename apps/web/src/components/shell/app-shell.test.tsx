@@ -46,14 +46,20 @@ describe('AppShell', () => {
   it('renders the primary navigation, brand, and page content', async () => {
     await renderShell();
     expect(screen.getAllByRole('navigation', { name: 'Primary' }).length).toBeGreaterThan(0);
-    // Overview and Log Explorer (#21) are live nav links; Search/Admin remain
-    // disabled placeholders until #22-#23 land.
+    // Overview, Log Explorer (#21) and Search (#22, the explorer's search mode)
+    // are live nav links; Admin remains a disabled placeholder until #23 lands.
     expect(screen.getAllByText('Overview').length).toBeGreaterThan(0);
     expect(screen.getAllByRole('link', { name: 'Log Explorer' })[0]).toHaveAttribute(
       'href',
       '/explorer',
     );
-    expect(screen.getAllByText('Search')[0]?.closest('[aria-disabled]')).toHaveAttribute(
+    // Search links to the explorer surface with the search mode selected.
+    expect(screen.getAllByRole('link', { name: 'Search' })[0]).toHaveAttribute(
+      'href',
+      expect.stringContaining('/explorer'),
+    );
+    expect(screen.getAllByText('Search')[0]?.closest('[aria-disabled]')).toBeNull();
+    expect(screen.getAllByText('Admin')[0]?.closest('[aria-disabled]')).toHaveAttribute(
       'aria-disabled',
       'true',
     );

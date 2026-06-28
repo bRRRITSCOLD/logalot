@@ -54,8 +54,20 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
         <LogsIcon />
         Log Explorer
       </Link>
-      {/* Placeholders for the feature pages built in #22-#23. */}
-      <NavPlaceholder icon={<SearchIcon />} label="Search" />
+      {/* Search is the second mode of the explorer surface (#22): same route, the
+          `mode=search` query param selects the historical-search view. */}
+      <Link
+        to="/explorer"
+        search={{ mode: 'search' }}
+        onClick={onNavigate}
+        className={cn(linkBase, idleLink)}
+        activeProps={{ className: cn(linkBase, activeLink) }}
+        activeOptions={{ includeSearch: true }}
+      >
+        <SearchIcon />
+        Search
+      </Link>
+      {/* Placeholders for the feature pages built in #23. */}
       <NavPlaceholder icon={<BellIcon />} label="Alerts" />
       <NavPlaceholder icon={<AdminIcon />} label="Admin" />
     </nav>
