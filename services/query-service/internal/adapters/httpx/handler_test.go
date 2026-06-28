@@ -17,10 +17,7 @@ import (
 	"github.com/bRRRITSCOLD/logalot/services/query-service/internal/app"
 )
 
-const (
-	keyTenant     = kernel.TenantID("11111111-1111-1111-1111-111111111111")
-	foreignTenant = kernel.TenantID("99999999-9999-9999-9999-999999999999")
-)
+const keyTenant = kernel.TenantID("11111111-1111-1111-1111-111111111111")
 
 // stubAuth maps a presented credential to a fixed TenantContext, exactly as the
 // real auth package produces one from a key — so the HTTP layer can be proven to

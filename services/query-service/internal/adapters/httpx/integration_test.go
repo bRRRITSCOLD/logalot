@@ -38,6 +38,11 @@ import (
 	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
 )
 
+// foreignTenant is used only in integration tests (two-tenant isolation proof).
+// Declared here (gated by the integration build tag) to avoid a U1000 lint
+// report when staticcheck/gopls runs without -tags=integration.
+const foreignTenant = kernel.TenantID("99999999-9999-9999-9999-999999999999")
+
 func startRedis(t *testing.T) *redis.Client {
 	t.Helper()
 	ctx := context.Background()

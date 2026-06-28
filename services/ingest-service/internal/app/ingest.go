@@ -15,11 +15,13 @@ import (
 	"github.com/bRRRITSCOLD/logalot/pkg/kernel"
 )
 
-// DefaultPublishTimeout is the per-envelope publish deadline applied when no
-// explicit timeout is configured. It bounds how long a stalled-but-open broker
-// connection can block a request goroutine (issue #35-I1). A context.WithTimeout
-// wrapping the request ctx means an expired deadline becomes a broker error that
-// maps to the existing 503 path — no new error handling needed.
+// DefaultPublishTimeout is the per-Ingest-call (whole-batch) deadline applied
+// when no explicit timeout is configured. The context.WithTimeout wraps the
+// caller's ctx ONCE, outside the publish loop, so it bounds the entire Ingest
+// call rather than each individual envelope. A stalled-but-open broker
+// connection is therefore limited to DefaultPublishTimeout regardless of batch
+// size (issue #35-I1). An expired deadline becomes a broker error that maps to
+// the existing 503 path — no new error handling needed.
 const DefaultPublishTimeout = 10 * time.Second
 
 // Service is the ingest application service. It turns already-validated raw event
@@ -40,9 +42,9 @@ func WithClock(now func() time.Time) Option { return func(s *Service) { s.now = 
 // WithLogger sets the structured logger (defaults to a discard logger).
 func WithLogger(l *slog.Logger) Option { return func(s *Service) { s.log = l } }
 
-// WithPublishTimeout overrides the per-publish context deadline (default
-// DefaultPublishTimeout). Set to 0 to disable the timeout (not recommended in
-// production — a stalled broker will then block indefinitely).
+// WithPublishTimeout overrides the per-Ingest-call (whole-batch) deadline
+// (default DefaultPublishTimeout). Set to 0 to disable the timeout (not
+// recommended in production — a stalled broker will then block indefinitely).
 func WithPublishTimeout(d time.Duration) Option {
 	return func(s *Service) { s.publishTimeout = d }
 }
@@ -78,16 +80,18 @@ func New(broker kernel.Broker, opts ...Option) *Service {
 // envelope is individually confirmed, `published` reflects exactly how many are
 // durably enqueued — the caller decides how to report a partial bulk failure.
 //
-// A per-publish context deadline (publishTimeout) is applied so a stalled-but-open
-// broker connection cannot block the request goroutine indefinitely (issue #35-I1).
-// When the deadline fires, the broker returns a context.DeadlineExceeded error
-// which the transport maps to the existing 503 path.
+// A per-Ingest-call (whole-batch) deadline (publishTimeout) is applied so a
+// stalled-but-open broker connection cannot block the request goroutine
+// indefinitely (issue #35-I1). The timeout wraps the entire call once, outside
+// the publish loop. When the deadline fires, the broker returns a
+// context.DeadlineExceeded error which the transport maps to the existing 503 path.
 func (s *Service) Ingest(tc kernel.TenantContext, ctx context.Context, raws []json.RawMessage) (published int, err error) {
 	if err := tc.Valid(); err != nil {
 		return 0, err
 	}
-	// Apply a bounded publish deadline if configured (default 10 s). The timeout
-	// wraps the caller's ctx so cancellation from either direction is respected.
+	// Apply a per-Ingest-call (whole-batch) deadline if configured (default 10 s).
+	// The timeout wraps the caller's ctx once, outside the loop, so it bounds the
+	// entire batch; cancellation from either direction is respected.
 	if s.publishTimeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, s.publishTimeout)

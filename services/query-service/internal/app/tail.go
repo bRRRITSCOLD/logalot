@@ -229,5 +229,10 @@ func (s *Streamer) Stream(tc kernel.TenantContext, ctx context.Context, f Filter
 	if err != nil {
 		return err
 	}
+	// Enrich ctx with the tenant so StreamEvents can read it for structured
+	// logging (e.g. the "tail slow consumer; dropped events" warning). The
+	// production handler path enriches ctx in AuthMiddleware; here the
+	// convenience method must do it explicitly so tenant_id is never empty.
+	ctx = kernel.WithTenant(ctx, tc)
 	return s.StreamEvents(events, ctx, f, sink)
 }
