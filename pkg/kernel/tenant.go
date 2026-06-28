@@ -46,6 +46,13 @@ type Scope string
 // ScopeIngestWrite is the scope an ingest API key resolves to (ADR-0007).
 const ScopeIngestWrite Scope = "ingest:write"
 
+// ScopeLogsRead is the scope that explicitly grants read access to tenant log
+// content (search, live-tail, panel-data). It is the forward-compatible scope
+// for API keys whose sole purpose is log querying (no ingest). Existing keys
+// that carry ScopeIngestWrite continue to satisfy the log-read gate (see
+// httpx.canReadLogs) so no backward-incompatible migration is required.
+const ScopeLogsRead Scope = "logs:read"
+
 // TenantContext is the immutable tenant + principal scope that every
 // tenant-scoped operation runs under. It is constructed once, at the edge, from
 // a verified credential (ADR-0007) and is the single input to the four-layer
