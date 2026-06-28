@@ -82,6 +82,81 @@ describe('ApiKeysSection — issue (secret shown exactly once)', () => {
   });
 });
 
+describe('ApiKeysSection — scope selector', () => {
+  it('defaults to ingest:write checked and logs:read unchecked', async () => {
+    const u = userEvent.setup();
+    renderWithRole('tenant_admin', <ApiKeysSection apiKeys={[]} {...makeProps()} />);
+
+    await u.click(screen.getByRole('button', { name: 'Issue key' }));
+    const dialog = await screen.findByRole('dialog');
+
+    expect(within(dialog).getByRole('checkbox', { name: /ingest:write/ })).toBeChecked();
+    expect(within(dialog).getByRole('checkbox', { name: /logs:read/ })).not.toBeChecked();
+  });
+
+  it('sends the selected scopes in the create request', async () => {
+    const u = userEvent.setup();
+    const props = makeProps();
+    renderWithRole('tenant_admin', <ApiKeysSection apiKeys={[]} {...props} />);
+
+    await u.click(screen.getByRole('button', { name: 'Issue key' }));
+    const dialog = await screen.findByRole('dialog');
+
+    await u.type(within(dialog).getByLabelText('Name'), 'read-only key');
+    // uncheck ingest:write, check logs:read
+    await u.click(within(dialog).getByRole('checkbox', { name: /ingest:write/ }));
+    await u.click(within(dialog).getByRole('checkbox', { name: /logs:read/ }));
+    await u.click(within(dialog).getByRole('button', { name: 'Issue key' }));
+
+    await waitFor(() => expect(props.issue).toHaveBeenCalled());
+    const [body] = props.issue.mock.calls[0] as [{ name: string; scopes: string[] }];
+    expect(body.scopes).toEqual(['logs:read']);
+  });
+
+  it('blocks submit when no scopes are selected and shows an error', async () => {
+    const u = userEvent.setup();
+    const props = makeProps();
+    renderWithRole('tenant_admin', <ApiKeysSection apiKeys={[]} {...props} />);
+
+    await u.click(screen.getByRole('button', { name: 'Issue key' }));
+    const dialog = await screen.findByRole('dialog');
+
+    await u.type(within(dialog).getByLabelText('Name'), 'empty-scope key');
+    // uncheck the default ingest:write so nothing is selected
+    await u.click(within(dialog).getByRole('checkbox', { name: /ingest:write/ }));
+    await u.click(within(dialog).getByRole('button', { name: 'Issue key' }));
+
+    expect(await within(dialog).findByText(/at least one scope is required/i)).toBeInTheDocument();
+    expect(props.issue).not.toHaveBeenCalled();
+  });
+
+  it('allows both scopes to be selected together', async () => {
+    const u = userEvent.setup();
+    const props = makeProps();
+    renderWithRole('tenant_admin', <ApiKeysSection apiKeys={[]} {...props} />);
+
+    await u.click(screen.getByRole('button', { name: 'Issue key' }));
+    const dialog = await screen.findByRole('dialog');
+
+    await u.type(within(dialog).getByLabelText('Name'), 'full-access key');
+    await u.click(within(dialog).getByRole('checkbox', { name: /logs:read/ }));
+    await u.click(within(dialog).getByRole('button', { name: 'Issue key' }));
+
+    await waitFor(() => expect(props.issue).toHaveBeenCalled());
+    const [body] = props.issue.mock.calls[0] as [{ name: string; scopes: string[] }];
+    expect(body.scopes).toContain('ingest:write');
+    expect(body.scopes).toContain('logs:read');
+  });
+
+  it('surfaces scopes on each key in the list', () => {
+    renderWithRole(
+      'tenant_admin',
+      <ApiKeysSection apiKeys={[key({ scopes: ['logs:read'] })]} {...makeProps()} />,
+    );
+    expect(screen.getByText(/logs:read/)).toBeInTheDocument();
+  });
+});
+
 describe('ApiKeysSection — revoke', () => {
   it('revokes a key after confirmation and refreshes', async () => {
     const u = userEvent.setup();

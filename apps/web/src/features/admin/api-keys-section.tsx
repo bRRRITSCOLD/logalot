@@ -3,6 +3,8 @@ import {
   type ApiKeyResponse,
   type CreateApiKeyRequest,
   createApiKeyRequestSchema,
+  type Scope,
+  scopeSchema,
 } from '@logalot/contracts';
 import { useForm } from '@tanstack/react-form';
 import * as React from 'react';
@@ -15,6 +17,7 @@ import {
   CardContent,
   CardHeader,
   CardTitle,
+  CheckboxField,
   Dialog,
   DialogContent,
   DialogFooter,
@@ -179,6 +182,15 @@ export function ApiKeysSection({ apiKeys, issue, revoke, onChanged }: ApiKeysSec
   );
 }
 
+/** Human-readable labels for each scope value. Derived from scopeSchema.options. */
+const SCOPE_OPTIONS: ReadonlyArray<{ value: Scope; label: string; description: string }> =
+  scopeSchema.options.map((s) => {
+    if (s === 'ingest:write') {
+      return { value: s, label: 'ingest:write', description: 'Send logs to this tenant.' };
+    }
+    return { value: s, label: 'logs:read', description: 'Read logs, search, and live-tail.' };
+  });
+
 function IssueKeyDialog({
   issue,
   onClose,
@@ -190,10 +202,17 @@ function IssueKeyDialog({
 }) {
   const [formError, setFormError] = React.useState<string | null>(null);
   const form = useForm({
-    defaultValues: { name: '', expiresAt: '' },
+    defaultValues: { name: '', expiresAt: '', scopes: ['ingest:write'] as Scope[] },
     onSubmit: async ({ value }) => {
       setFormError(null);
-      const body: Record<string, unknown> = { name: value.name.trim(), scopes: ['ingest:write'] };
+      if (value.scopes.length === 0) {
+        setFormError('At least one scope is required.');
+        return;
+      }
+      const body: Record<string, unknown> = {
+        name: value.name.trim(),
+        scopes: value.scopes,
+      };
       if (value.expiresAt) {
         const ms = new Date(value.expiresAt).getTime();
         if (Number.isNaN(ms)) {
@@ -260,7 +279,27 @@ function IssueKeyDialog({
               />
             )}
           </form.Field>
-          <p className="text-fg-muted text-xs">Scope: ingest:write (send logs only).</p>
+          <form.Field name="scopes">
+            {(field) => (
+              <fieldset className="flex flex-col gap-2">
+                <legend className="mb-1 font-medium text-fg-default text-sm">Scopes</legend>
+                {SCOPE_OPTIONS.map((opt) => (
+                  <CheckboxField
+                    key={opt.value}
+                    label={opt.label}
+                    description={opt.description}
+                    checked={field.state.value.includes(opt.value)}
+                    onChange={(e) => {
+                      const next = e.target.checked
+                        ? [...field.state.value, opt.value]
+                        : field.state.value.filter((s) => s !== opt.value);
+                      field.handleChange(next);
+                    }}
+                  />
+                ))}
+              </fieldset>
+            )}
+          </form.Field>
           <DialogFooter>
             <Button type="button" variant="ghost" onClick={onClose}>
               Cancel
