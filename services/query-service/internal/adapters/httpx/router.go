@@ -22,6 +22,9 @@ func NewRouter(h *Handler, authr kernel.Authenticator, log *slog.Logger) *gin.En
 
 	v1 := r.Group("/v1")
 	v1.Use(AuthMiddleware(authr, log))
+	// Defense-in-depth role/scope gate: member and tenant_admin (JWT) or
+	// ingest:write/logs:read scope (API key) may read log content (#76).
+	v1.Use(LogReadAuthzMiddleware())
 	v1.GET("/tail", h.Tail)
 	v1.GET("/search", h.Search)
 	v1.GET("/panel-data", h.PanelData)
