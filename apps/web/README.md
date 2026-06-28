@@ -185,6 +185,35 @@ the stream goes through a **same-origin BFF route**:
 - The streamed log-event shape is pinned in `tail-event.ts` (mirrors `kernel.LogEvent`'s json tags);
   there is no shared `@logalot/contracts` log-event DTO yet — lift it there when #22 shares it.
 
+## Historical search (the BFF request/response pattern, #22)
+
+`/explorer` has two modes, selected by a `mode` URL param and a header toggle: the **live tail**
+(above) and **historical search** (`mode=search`). Search is the REST sibling of the tail — same
+chrome, same `LogRow`/`LogList`, same `kernel.LogEvent` shape — over query-service
+`GET /v1/search` (FTS + structured filters + time range + keyset pagination).
+
+- `src/features/log-search/` — the search surface: `SearchBar` (a filter builder mapping to the
+  handler's exact params — a **single** `level`, repeated `key=value` `label`s, a `from`/`to`
+  range), `useLogSearch` (the page/append state machine: keyset "Load more" via the opaque
+  `nextCursor`, with latest-request concurrency guarding), and `LogSearch` which renders results
+  through the shared explorer row/list. `search-query.ts` owns the contract mapping
+  (`buildSearchParams`) and composes the response schema from the #21 `tailLogEventSchema` — the
+  **single source of truth** for the search querystring, reused by the BFF and its tests.
+- `src/server/search.ts` — the BFF request/response analogue of `tail-proxy.ts`. `searchUpstream`
+  (pure, dependency-injected, unit-tested) reads the httpOnly access token, **fails closed** to a
+  401 when there is no session, proxies to query-service with `Authorization: Bearer …`, parses the
+  body with the shared contract, and maps a 400 to its (user-safe) validation message and every
+  other failure to a generic notice. `searchFn` is the thin `createServerFn` wrapper that redirects
+  to `/login` on no/expired session. Tenancy is server-derived from the JWT; `QUERY_SERVICE_URL` is
+  server-only and never bundled to the client.
+- **Filters are URL-synced via nuqs** (`q`/`service`/`level`/`labels`/`from`/`to`), so a search is
+  shareable and a shared link auto-runs on mount. Search keys are chosen to not collide with the
+  tail's (`q` vs `text`, `level` vs `levels`, `labels` vs `label`); `service` is intentionally
+  shared so that filter carries across a mode switch.
+- **Shared log-event schema:** with two consumers (tail, search) both inside `apps/web`,
+  `tailLogEventSchema` is **reused in place** rather than lifted to `@logalot/contracts` yet
+  (rule-of-three not met). The lift remains mechanical for a future third, cross-package consumer.
+
 ## Layout
 
 ```
@@ -196,7 +225,8 @@ apps/web/
     routes/api/tail.ts         same-origin BFF SSE proxy route (#21 live tail)
     components/{ui,states,shell}
     features/log-explorer/     live-tail surface: useLogTail, FilterBar, LogRow/GapRow/LogList, toolbar
-    server/                    BFF: auth.ts (server fns), control-plane.ts, session.ts, tail-proxy.ts
+    features/log-search/       search surface: SearchBar, useLogSearch, LogSearch (reuses LogRow/List)
+    server/                    BFF: auth.ts (server fns), control-plane.ts, session.ts, tail-proxy.ts, search.ts
     hooks/use-session.tsx      read-only session context
     lib/cn.ts                  Tailwind-aware class merge
     styles/app.css             Tailwind entry + generated tokens
