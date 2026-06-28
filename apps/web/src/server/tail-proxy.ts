@@ -1,6 +1,12 @@
 import type { TokenPair } from '@logalot/contracts';
 import { cpRefresh } from './control-plane';
-import { ACCESS_COOKIE, decodeAccessClaims, isExpired, REFRESH_COOKIE } from './session';
+import {
+  ACCESS_COOKIE,
+  decodeAccessClaims,
+  isExpired,
+  REFRESH_COOKIE,
+  serializeSessionCookie,
+} from './session';
 
 // ── BFF live-tail SSE proxy ─────────────────────────────────────────────────
 //
@@ -31,24 +37,17 @@ function queryServiceUrl(): string {
   return process.env.QUERY_SERVICE_URL?.replace(/\/$/, '') ?? 'http://localhost:8081';
 }
 
-/** Mirror of auth.ts cookie security: default ON, only plain-http local dev opts out. */
-function cookieSecure(): boolean {
-  const explicit = process.env.COOKIE_SECURE;
-  if (explicit === 'true') return true;
-  if (explicit === 'false') return false;
-  return process.env.NODE_ENV !== 'development';
-}
-
-const COOKIE_MAX_AGE = 60 * 60 * 24 * 7;
-
-/** Build Set-Cookie header values for a rotated token pair (matches auth.ts options). */
+/**
+ * Build raw `Set-Cookie` header values for a rotated token pair. The streaming SSE
+ * Response can't use the framework `setCookie` helper, so it emits raw headers — but
+ * via the SHARED `serializeSessionCookie()` so the Secure/SameSite/HttpOnly/Max-Age
+ * policy is identical to the normal login/refresh write path (single source of truth
+ * in session.ts).
+ */
 function sessionSetCookies(pair: TokenPair): string[] {
-  const flags = `Path=/; HttpOnly; SameSite=Lax; Max-Age=${COOKIE_MAX_AGE}${
-    cookieSecure() ? '; Secure' : ''
-  }`;
   return [
-    `${ACCESS_COOKIE}=${pair.accessToken}; ${flags}`,
-    `${REFRESH_COOKIE}=${pair.refreshToken}; ${flags}`,
+    serializeSessionCookie(ACCESS_COOKIE, pair.accessToken),
+    serializeSessionCookie(REFRESH_COOKIE, pair.refreshToken),
   ];
 }
 

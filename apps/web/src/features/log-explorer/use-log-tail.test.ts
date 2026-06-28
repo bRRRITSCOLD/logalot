@@ -173,6 +173,56 @@ describe('useLogTail', () => {
     expect(result.current.reconnectCount).toBe(1);
   });
 
+  it('gives up after maxReconnectAttempts → terminal offline + onReconnectExhausted (I1)', () => {
+    const onReconnectExhausted = vi.fn();
+    const { result } = renderHook(() =>
+      useLogTail({ ...opts, maxReconnectAttempts: 2, onReconnectExhausted }),
+    );
+
+    // 1st error: schedule retry #1. 2nd error after backoff: schedule retry #2.
+    act(() => MockEventSource.latest()?.emit('error'));
+    expect(result.current.status).toBe('reconnecting');
+    act(() => vi.advanceTimersByTime(500));
+    act(() => MockEventSource.latest()?.emit('error'));
+    expect(result.current.status).toBe('reconnecting');
+    act(() => vi.advanceTimersByTime(1000));
+
+    // 3rd error: attempts (2) >= max (2) → terminal offline, no further sources, and
+    // the owner is notified exactly once (the dead-session / hard-outage handoff).
+    const sourcesBefore = MockEventSource.instances.length;
+    act(() => MockEventSource.latest()?.emit('error'));
+    expect(result.current.status).toBe('offline');
+    expect(onReconnectExhausted).toHaveBeenCalledOnce();
+
+    // It must STOP looping — advancing time spins up no new EventSource.
+    act(() => vi.advanceTimersByTime(60_000));
+    expect(MockEventSource.instances.length).toBe(sourcesBefore);
+  });
+
+  it('reconnect() re-arms the stream from offline and marks a reconnect gap', () => {
+    const { result } = renderHook(() => useLogTail({ ...opts, maxReconnectAttempts: 1 }));
+    // First open so a later reconnect is a genuine gap; then exhaust to offline.
+    act(() => MockEventSource.latest()?.emit('open'));
+    act(() => MockEventSource.latest()?.emit('error')); // attempt 0 -> schedule
+    act(() => vi.advanceTimersByTime(500));
+    act(() => MockEventSource.latest()?.emit('error')); // attempts(1) >= max(1) -> offline
+    expect(result.current.status).toBe('offline');
+
+    const sourcesBefore = MockEventSource.instances.length;
+    act(() => {
+      result.current.reconnect();
+    });
+    expect(MockEventSource.instances.length).toBe(sourcesBefore + 1);
+    expect(result.current.status).toBe('reconnecting');
+
+    act(() => {
+      MockEventSource.latest()?.emit('open');
+      vi.advanceTimersByTime(FLUSH);
+    });
+    expect(result.current.status).toBe('streaming');
+    expect(gapItems(result.current.items).some((g) => g.reason === 'reconnect')).toBe(true);
+  });
+
   it('pause closes the stream; resume reopens and marks a reconnect gap', () => {
     const { result } = renderHook(() => useLogTail(opts));
     const es1 = MockEventSource.latest();

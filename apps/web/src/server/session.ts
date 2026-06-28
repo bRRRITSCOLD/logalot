@@ -66,3 +66,63 @@ export function sessionFromClaims(claims: AccessClaims): ClientSession {
     expiresAt: claims.exp,
   };
 }
+
+// ── Session-cookie policy: the SINGLE source of truth ───────────────────────
+// Both the normal write path (auth.ts via the framework `setCookie` helper) AND
+// the streaming-response path (tail-proxy.ts, which must emit a RAW `Set-Cookie`
+// header because an SSE Response can't use `setCookie`) consume these. Keeping the
+// Secure / SameSite / HttpOnly / Max-Age policy in one place removes the
+// silent-divergence risk of defining a security control twice.
+
+/** Cookie lifetime; tracks the refresh-token window (control-plane default 7d). */
+export const SESSION_COOKIE_MAX_AGE = 60 * 60 * 24 * 7;
+
+/**
+ * Whether to set the `Secure` cookie flag. Defaults ON (fail safe) and is driven by
+ * an explicit transport signal, NOT solely `NODE_ENV`: an HTTPS staging deploy may
+ * run with `NODE_ENV` unset/`staging` yet must still receive `Secure` cookies.
+ * `COOKIE_SECURE=true|false` overrides explicitly; otherwise only plain-http local
+ * dev (`NODE_ENV=development`) opts out so dev cookies send over http://localhost.
+ */
+export function sessionCookieSecure(): boolean {
+  const explicit = process.env.COOKIE_SECURE;
+  if (explicit === 'true') return true;
+  if (explicit === 'false') return false;
+  return process.env.NODE_ENV !== 'development';
+}
+
+export interface SessionCookieAttributes {
+  httpOnly: true;
+  secure: boolean;
+  sameSite: 'lax';
+  path: '/';
+  maxAge: number;
+}
+
+/** The attribute set for a session cookie, for the framework `setCookie` helper. */
+export function sessionCookieAttributes(): SessionCookieAttributes {
+  return {
+    httpOnly: true,
+    secure: sessionCookieSecure(),
+    sameSite: 'lax',
+    path: '/',
+    maxAge: SESSION_COOKIE_MAX_AGE,
+  };
+}
+
+/**
+ * Serialize a session cookie to a raw `Set-Cookie` header value, consistent with
+ * `sessionCookieAttributes()`. Used by the SSE proxy, whose streaming Response
+ * cannot go through the framework `setCookie` helper.
+ */
+export function serializeSessionCookie(name: string, value: string): string {
+  const a = sessionCookieAttributes();
+  return [
+    `${name}=${value}`,
+    `Max-Age=${a.maxAge}`,
+    `Path=${a.path}`,
+    'HttpOnly',
+    'SameSite=Lax',
+    ...(a.secure ? ['Secure'] : []),
+  ].join('; ');
+}

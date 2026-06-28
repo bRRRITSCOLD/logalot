@@ -3,6 +3,7 @@ import { EmptyState } from '../../components/states';
 import { FilterBar } from './filter-bar';
 import { filtersActive, type LogFilters, matchesFilters } from './filtering';
 import { LogList } from './log-list';
+import { isNearBottom, nextAutoscroll } from './scroll';
 import { TailToolbar } from './tail-toolbar';
 import { type EventSourceFactory, type TailItem, useLogTail } from './use-log-tail';
 
@@ -12,11 +13,16 @@ import { type EventSourceFactory, type TailItem, useLogTail } from './use-log-ta
 // so it stays testable and reusable. #22 (historical search) composes the same
 // FilterBar + LogList over its own data source; this file is the live-tail wiring.
 
-const NEAR_BOTTOM_PX = 24;
-
 export interface LogExplorerProps {
   filters: LogFilters;
   onFiltersChange: (next: LogFilters) => void;
+  /**
+   * Fired when the live tail exhausts its bounded reconnect attempts (terminal
+   * `offline`). The route wires this to probe the session and redirect to /login if
+   * it is gone (the dead-session path); a still-valid session is a transport outage,
+   * recoverable via the toolbar's Reconnect button.
+   */
+  onReconnectExhausted?: () => void;
   /** Test seam: inject a mock EventSource (jsdom has none). */
   createEventSource?: EventSourceFactory;
   /** Override the BFF endpoint (defaults to /api/tail). */
@@ -26,10 +32,11 @@ export interface LogExplorerProps {
 export function LogExplorer({
   filters,
   onFiltersChange,
+  onReconnectExhausted,
   createEventSource,
   tailUrl,
 }: LogExplorerProps) {
-  const tail = useLogTail({ createEventSource, url: tailUrl });
+  const tail = useLogTail({ createEventSource, url: tailUrl, onReconnectExhausted });
   const [autoscroll, setAutoscroll] = React.useState(true);
   const scrollRef = React.useRef<HTMLDivElement>(null);
   const autoscrollRef = React.useRef(autoscroll);
@@ -55,9 +62,10 @@ export function LogExplorer({
   const onScroll = React.useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
-    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_PX;
-    // User scrolled up to inspect history → stop yanking them to the bottom.
-    if (!atBottom && autoscrollRef.current) setAutoscroll(false);
+    // Two-way: scroll up to detach (stop yanking to the bottom), scroll back to the
+    // bottom to re-arm (M1). The decision is a pure, unit-tested predicate.
+    const atBottom = isNearBottom(el.scrollTop, el.scrollHeight, el.clientHeight);
+    setAutoscroll((current) => nextAutoscroll(current, atBottom));
   }, []);
 
   const logCount = filtered.filter((i) => i.kind === 'log').length;
@@ -71,6 +79,7 @@ export function LogExplorer({
         paused={tail.paused}
         onPause={tail.pause}
         onResume={tail.resume}
+        onReconnect={tail.reconnect}
         autoscroll={autoscroll}
         onToggleAutoscroll={() => setAutoscroll((v) => !v)}
         onClear={tail.clear}

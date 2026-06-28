@@ -1,8 +1,9 @@
-import { createFileRoute } from '@tanstack/react-router';
+import { createFileRoute, useRouter } from '@tanstack/react-router';
 import { parseAsArrayOf, parseAsString, parseAsStringLiteral, useQueryStates } from 'nuqs';
 import * as React from 'react';
 import { LOG_LEVELS, LogExplorer, type LogFilters } from '../../features/log-explorer';
 import { useSession } from '../../hooks/use-session';
+import { getSession } from '../../server/auth';
 
 // Live log explorer + tail. The route stays thin: it owns only the filter URL-state
 // (via nuqs, the deferred-from-#20 dependency) and renders the LogExplorer surface.
@@ -24,10 +25,23 @@ const filterParsers = {
 
 function ExplorerPage() {
   const session = useSession();
+  const router = useRouter();
   const [query, setQuery] = useQueryStates(filterParsers, {
     history: 'replace',
     throttleMs: 200,
   });
+
+  // When the live tail exhausts its bounded reconnects, decide if it's a DEAD SESSION
+  // (the 401 path EventSource can't see) or a transport outage. `getSession` runs the
+  // same decode-or-silent-refresh the guard uses: null ⇒ truly unauthenticated ⇒
+  // redirect to /login (fail closed). A still-valid session means query-service is
+  // down, not auth — leave the explorer in its `offline` state with a Reconnect button.
+  const onReconnectExhausted = React.useCallback(async () => {
+    const live = await getSession();
+    if (!live) {
+      await router.navigate({ to: '/login' });
+    }
+  }, [router]);
 
   const filters: LogFilters = {
     text: query.text,
@@ -58,7 +72,11 @@ function ExplorerPage() {
         </p>
       </header>
       <div className="min-h-0 flex-1">
-        <LogExplorer filters={filters} onFiltersChange={onFiltersChange} />
+        <LogExplorer
+          filters={filters}
+          onFiltersChange={onFiltersChange}
+          onReconnectExhausted={onReconnectExhausted}
+        />
       </div>
     </div>
   );

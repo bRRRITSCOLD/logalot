@@ -9,6 +9,7 @@ function setup(overrides: Partial<TailToolbarProps> = {}) {
     paused: false,
     onPause: vi.fn(),
     onResume: vi.fn(),
+    onReconnect: vi.fn(),
     autoscroll: true,
     onToggleAutoscroll: vi.fn(),
     onClear: vi.fn(),
@@ -47,6 +48,14 @@ describe('TailToolbar', () => {
     expect(props.onResume).toHaveBeenCalledOnce();
   });
 
+  it('shows a Reconnect button (not Pause) when offline and fires onReconnect', async () => {
+    const props = setup({ status: 'offline' });
+    expect(screen.getByRole('status')).toHaveTextContent(/disconnected/i);
+    expect(screen.queryByRole('button', { name: 'Pause' })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Reconnect' }));
+    expect(props.onReconnect).toHaveBeenCalledOnce();
+  });
+
   it('toggles autoscroll and reflects its pressed state', async () => {
     const props = setup({ autoscroll: true });
     const btn = screen.getByRole('button', { name: /autoscroll on/i });
@@ -68,6 +77,7 @@ describe('TailToolbar', () => {
         paused={false}
         onPause={vi.fn()}
         onResume={vi.fn()}
+        onReconnect={vi.fn()}
         autoscroll
         onToggleAutoscroll={vi.fn()}
         onClear={vi.fn()}
@@ -87,6 +97,7 @@ describe('TailToolbar', () => {
         paused={false}
         onPause={vi.fn()}
         onResume={vi.fn()}
+        onReconnect={vi.fn()}
         autoscroll
         onToggleAutoscroll={vi.fn()}
         onClear={vi.fn()}

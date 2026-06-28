@@ -1,5 +1,14 @@
-import { describe, expect, it } from 'vitest';
-import { type ClientSession, decodeAccessClaims, isExpired, sessionFromClaims } from './session';
+import { afterEach, describe, expect, it } from 'vitest';
+import {
+  ACCESS_COOKIE,
+  type ClientSession,
+  decodeAccessClaims,
+  isExpired,
+  serializeSessionCookie,
+  sessionCookieAttributes,
+  sessionCookieSecure,
+  sessionFromClaims,
+} from './session';
 
 // Build an unsigned JWT-shaped string with the given payload. The BFF decodes
 // (does not verify) claims, so a fake signature is sufficient for these tests.
@@ -62,5 +71,53 @@ describe('sessionFromClaims', () => {
       role: 'tenant_admin',
       expiresAt: claims.exp,
     });
+  });
+});
+
+// The session-cookie policy is a SINGLE source of truth shared by the framework
+// setCookie path (auth.ts) and the SSE proxy's raw Set-Cookie path (tail-proxy.ts).
+describe('session cookie policy', () => {
+  const original = { COOKIE_SECURE: process.env.COOKIE_SECURE, NODE_ENV: process.env.NODE_ENV };
+  afterEach(() => {
+    process.env.COOKIE_SECURE = original.COOKIE_SECURE;
+    process.env.NODE_ENV = original.NODE_ENV;
+  });
+
+  it('defaults Secure ON, and only plain-http local dev opts out', () => {
+    process.env.COOKIE_SECURE = undefined;
+    process.env.NODE_ENV = 'production';
+    expect(sessionCookieSecure()).toBe(true);
+    process.env.NODE_ENV = 'staging';
+    expect(sessionCookieSecure()).toBe(true); // not keyed off NODE_ENV===production
+    process.env.NODE_ENV = 'development';
+    expect(sessionCookieSecure()).toBe(false);
+  });
+
+  it('honours an explicit COOKIE_SECURE override', () => {
+    process.env.NODE_ENV = 'development';
+    process.env.COOKIE_SECURE = 'true';
+    expect(sessionCookieSecure()).toBe(true);
+    process.env.NODE_ENV = 'production';
+    process.env.COOKIE_SECURE = 'false';
+    expect(sessionCookieSecure()).toBe(false);
+  });
+
+  it('attribute set and the raw Set-Cookie string agree (HttpOnly/SameSite/Secure/Max-Age)', () => {
+    process.env.COOKIE_SECURE = 'true';
+    const attrs = sessionCookieAttributes();
+    expect(attrs).toMatchObject({ httpOnly: true, secure: true, sameSite: 'lax', path: '/' });
+
+    const raw = serializeSessionCookie(ACCESS_COOKIE, 'tok');
+    expect(raw).toContain(`${ACCESS_COOKIE}=tok`);
+    expect(raw).toContain('HttpOnly');
+    expect(raw).toContain('SameSite=Lax');
+    expect(raw).toContain('Secure');
+    expect(raw).toContain(`Max-Age=${attrs.maxAge}`);
+    expect(raw).toContain('Path=/');
+  });
+
+  it('omits Secure from the raw cookie when the policy says insecure', () => {
+    process.env.COOKIE_SECURE = 'false';
+    expect(serializeSessionCookie(ACCESS_COOKIE, 'tok')).not.toContain('Secure');
   });
 });

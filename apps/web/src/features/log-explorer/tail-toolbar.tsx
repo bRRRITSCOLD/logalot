@@ -11,6 +11,7 @@ const STATUS_LABEL: Record<TailStatus, string> = {
   streaming: 'Live',
   reconnecting: 'Reconnecting…',
   paused: 'Paused',
+  offline: 'Disconnected',
 };
 
 const STATUS_DOT: Record<TailStatus, string> = {
@@ -18,6 +19,7 @@ const STATUS_DOT: Record<TailStatus, string> = {
   streaming: 'bg-status-success',
   reconnecting: 'bg-status-warning animate-pulse',
   paused: 'bg-fg-subtle',
+  offline: 'bg-status-danger',
 };
 
 export interface TailToolbarProps {
@@ -25,6 +27,8 @@ export interface TailToolbarProps {
   paused: boolean;
   onPause: () => void;
   onResume: () => void;
+  /** Manual re-arm from the terminal `offline` state. */
+  onReconnect: () => void;
   autoscroll: boolean;
   onToggleAutoscroll: () => void;
   onClear: () => void;
@@ -41,6 +45,7 @@ export function TailToolbar({
   paused,
   onPause,
   onResume,
+  onReconnect,
   autoscroll,
   onToggleAutoscroll,
   onClear,
@@ -49,6 +54,7 @@ export function TailToolbar({
   droppedCount,
   reconnectCount,
 }: TailToolbarProps) {
+  const offline = status === 'offline';
   return (
     <div className="flex flex-wrap items-center gap-2 border-border-default border-b bg-bg-surface px-2 py-1.5">
       {/* Status is a polite live region so AT hears connect/reconnect transitions. */}
@@ -93,7 +99,11 @@ export function TailToolbar({
         >
           {autoscroll ? 'Autoscroll on' : 'Autoscroll off'}
         </Button>
-        {paused ? (
+        {offline ? (
+          <Button variant="primary" size="sm" onClick={onReconnect}>
+            Reconnect
+          </Button>
+        ) : paused ? (
           <Button variant="primary" size="sm" onClick={onResume}>
             Resume
           </Button>

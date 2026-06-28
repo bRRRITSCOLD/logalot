@@ -9,6 +9,7 @@ import {
   decodeAccessClaims,
   isExpired,
   REFRESH_COOKIE,
+  sessionCookieAttributes,
   sessionFromClaims,
 } from './session';
 
@@ -17,45 +18,14 @@ import {
 // exposed to client JS (so they are not XSS-exfiltratable) and never put in
 // localStorage. The browser holds opaque cookies; this BFF attaches the access
 // token as a Bearer when proxying to the control-plane (see control-plane.ts).
-
-// Cookie lifetime tracks the refresh-token window (control-plane default 7d). The
-// ACCESS token's real validity is governed by its JWT `exp`, not the cookie.
-const COOKIE_MAX_AGE = 60 * 60 * 24 * 7;
-
-/**
- * Whether to set the `Secure` cookie flag. Defaults ON (fail safe) and is driven
- * by an explicit transport signal, NOT solely `NODE_ENV`: an HTTPS staging deploy
- * may run with `NODE_ENV` unset/`staging` yet must still receive `Secure` cookies
- * — keying off `NODE_ENV === 'production'` alone would silently drop it there.
- * `COOKIE_SECURE=true|false` overrides explicitly; otherwise only plain-http local
- * dev (`NODE_ENV=development`, i.e. http://localhost) opts out so dev cookies send.
- */
-function cookieSecure(): boolean {
-  const explicit = process.env.COOKIE_SECURE;
-  if (explicit === 'true') return true;
-  if (explicit === 'false') return false;
-  return process.env.NODE_ENV !== 'development';
-}
-
-function cookieOptions(): {
-  httpOnly: true;
-  secure: boolean;
-  sameSite: 'lax';
-  path: '/';
-  maxAge: number;
-} {
-  return {
-    httpOnly: true,
-    secure: cookieSecure(),
-    sameSite: 'lax',
-    path: '/',
-    maxAge: COOKIE_MAX_AGE,
-  };
-}
+//
+// The cookie SECURITY POLICY (Secure / SameSite / HttpOnly / Max-Age) lives in ONE
+// place — `sessionCookieAttributes()` in session.ts — shared with the SSE proxy's
+// raw-header path (tail-proxy.ts) so the control can't silently diverge.
 
 function writeSessionCookies(pair: TokenPair): void {
-  setCookie(ACCESS_COOKIE, pair.accessToken, cookieOptions());
-  setCookie(REFRESH_COOKIE, pair.refreshToken, cookieOptions());
+  setCookie(ACCESS_COOKIE, pair.accessToken, sessionCookieAttributes());
+  setCookie(REFRESH_COOKIE, pair.refreshToken, sessionCookieAttributes());
 }
 
 function clearSessionCookies(): void {

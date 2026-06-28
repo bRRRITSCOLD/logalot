@@ -21,11 +21,25 @@ import { parseGapFrame, parseLogFrame, type TailLogEvent } from './tail-event';
 //     testable, and every successful reconnect emits a `reconnect` gap marker —
 //     Redis pub/sub has no replay (ADR-0006), so a reconnect ALWAYS means a
 //     potential hole in the stream and the UI must say so.
+//   • Reconnection is BOUNDED: a dead session surfaces to the browser only as an
+//     EventSource `error` (it can't read the 401 status), which is indistinguishable
+//     from a transient drop. So after `maxReconnectAttempts` consecutive failures
+//     with no successful `open` we STOP looping, go to a terminal `offline` status,
+//     and fire `onReconnectExhausted` — the owner probes the session (server fn) and
+//     redirects to /login if it's gone, or offers a manual `reconnect()`. Without
+//     this the tail would spin forever in "Reconnecting…" against a 401.
 //   • The EventSource is injected (`createEventSource`) so component/integration
 //     tests run against a mock — jsdom has no EventSource and we never want a live
 //     query-service in unit tests.
 
-export type TailStatus = 'connecting' | 'streaming' | 'reconnecting' | 'paused';
+export type TailStatus =
+  | 'connecting'
+  | 'streaming'
+  | 'reconnecting'
+  | 'paused'
+  // Terminal: bounded reconnects exhausted (likely a dead session or hard outage).
+  // The owner decides what happens next (redirect to /login, or manual reconnect()).
+  | 'offline';
 
 /** A row in the tail buffer: either a log event or a gap marker, in stream order. */
 export type TailItem =
@@ -56,6 +70,17 @@ export interface UseLogTailOptions {
   flushIntervalMs?: number;
   /** Reconnect backoff schedule (ms); the last entry is the steady-state interval. */
   backoffMs?: readonly number[];
+  /**
+   * Consecutive failed reconnects (no successful `open`) before the stream gives up
+   * and goes terminal `offline`. Bounds the retry loop so a dead session (401, which
+   * surfaces only as an opaque EventSource error) can't spin forever.
+   */
+  maxReconnectAttempts?: number;
+  /**
+   * Fired once when the stream goes terminal `offline`. The owner should probe the
+   * session and either redirect to /login (session gone) or call `reconnect()`.
+   */
+  onReconnectExhausted?: () => void;
   /** Injectable EventSource constructor (tests pass a mock; default is native). */
   createEventSource?: EventSourceFactory;
 }
@@ -67,6 +92,8 @@ export interface UseLogTail {
   pause(): void;
   resume(): void;
   clear(): void;
+  /** Re-arm the stream from a terminal `offline` state (manual retry). */
+  reconnect(): void;
   /** Lifetime totals — they intentionally survive `clear()`. */
   receivedCount: number;
   droppedCount: number;
@@ -77,6 +104,7 @@ const DEFAULT_URL = '/api/tail';
 const DEFAULT_MAX_ITEMS = 1000;
 const DEFAULT_FLUSH_MS = 60;
 const DEFAULT_BACKOFF: readonly number[] = [500, 1000, 2000, 5000, 10000];
+const DEFAULT_MAX_RECONNECT_ATTEMPTS = 5;
 
 const defaultFactory: EventSourceFactory = (url) =>
   // Same-origin: the httpOnly session cookies ride along automatically, so the BFF
@@ -95,6 +123,8 @@ export function useLogTail(options: UseLogTailOptions = {}): UseLogTail {
     maxItems = DEFAULT_MAX_ITEMS,
     flushIntervalMs = DEFAULT_FLUSH_MS,
     backoffMs = DEFAULT_BACKOFF,
+    maxReconnectAttempts = DEFAULT_MAX_RECONNECT_ATTEMPTS,
+    onReconnectExhausted,
     createEventSource = defaultFactory,
   } = options;
 
@@ -116,8 +146,24 @@ export function useLogTail(options: UseLogTailOptions = {}): UseLogTail {
   const statsRef = React.useRef<Stats>({ received: 0, dropped: 0, reconnects: 0 });
 
   // Keep the latest option values reachable from stable callbacks.
-  const cfgRef = React.useRef({ url, maxItems, flushIntervalMs, backoffMs, createEventSource });
-  cfgRef.current = { url, maxItems, flushIntervalMs, backoffMs, createEventSource };
+  const cfgRef = React.useRef({
+    url,
+    maxItems,
+    flushIntervalMs,
+    backoffMs,
+    maxReconnectAttempts,
+    onReconnectExhausted,
+    createEventSource,
+  });
+  cfgRef.current = {
+    url,
+    maxItems,
+    flushIntervalMs,
+    backoffMs,
+    maxReconnectAttempts,
+    onReconnectExhausted,
+    createEventSource,
+  };
 
   const pushItem = React.useCallback((item: NewTailItem) => {
     pendingRef.current.push({ ...item, seq: seqRef.current++ } as TailItem);
@@ -186,6 +232,16 @@ export function useLogTail(options: UseLogTailOptions = {}): UseLogTail {
       if (stoppedRef.current) return;
       closeSource();
       wantGapOnOpenRef.current = true; // a reopen means missed events → mark a gap
+
+      // Bounded retries: a 401 (dead session) surfaces here as an opaque error, so we
+      // cannot loop forever. Once consecutive failures (no `open` resets attemptRef)
+      // hit the cap, go terminal `offline` and hand off to the owner.
+      if (attemptRef.current >= cfgRef.current.maxReconnectAttempts) {
+        setStatus('offline');
+        cfgRef.current.onReconnectExhausted?.();
+        return;
+      }
+
       setStatus('reconnecting');
       const backoff = cfgRef.current.backoffMs;
       const idx = Math.min(attemptRef.current, backoff.length - 1);
@@ -240,6 +296,23 @@ export function useLogTail(options: UseLogTailOptions = {}): UseLogTail {
   const pause = React.useCallback(() => setPaused(true), []);
   const resume = React.useCallback(() => setPaused(false), []);
 
+  // Manual re-arm out of terminal `offline` (the owner offers this after confirming
+  // the session is still valid — a hard upstream outage rather than a 401).
+  const reconnect = React.useCallback(() => {
+    if (stoppedRef.current) return; // unmounted/paused — the effect owns the lifecycle
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+    attemptRef.current = 0;
+    wantGapOnOpenRef.current = true; // we were disconnected → a hole is possible
+    if (!flushTimerRef.current) {
+      flushTimerRef.current = setInterval(flush, cfgRef.current.flushIntervalMs);
+    }
+    setStatus('reconnecting');
+    connect();
+  }, [connect, flush]);
+
   const clear = React.useCallback(() => {
     // Wipe the visible scrollback; lifetime counters (received/dropped/reconnect)
     // deliberately persist so "cleared the screen" never lies about stream health.
@@ -254,6 +327,7 @@ export function useLogTail(options: UseLogTailOptions = {}): UseLogTail {
     pause,
     resume,
     clear,
+    reconnect,
     receivedCount: stats.received,
     droppedCount: stats.dropped,
     reconnectCount: stats.reconnects,

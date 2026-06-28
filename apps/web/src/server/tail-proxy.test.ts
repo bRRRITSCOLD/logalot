@@ -113,7 +113,8 @@ describe('resolveTailAuth', () => {
 describe('tailProxy', () => {
   it('injects the bearer token + SSE Accept and pipes the upstream stream back', async () => {
     const fetchImpl = vi.fn(async () => upstreamSse());
-    const res = await tailProxy(req(`lg_at=${liveToken}`), {
+    const request = req(`lg_at=${liveToken}`);
+    const res = await tailProxy(request, {
       fetchImpl: fetchImpl as unknown as typeof fetch,
       baseUrl: 'http://query:8081',
       refresh: vi.fn(),
@@ -129,6 +130,10 @@ describe('tailProxy', () => {
     const headers = init.headers as Record<string, string>;
     expect(headers.authorization).toBe(`Bearer ${liveToken}`);
     expect(headers.accept).toBe('text/event-stream');
+
+    // M4: the browser's abort signal is forwarded to the upstream fetch, so a client
+    // disconnect tears down the upstream SSE (and the query-service Redis sub) — no leak.
+    expect(init.signal).toBe(request.signal);
 
     // The body is piped through unchanged.
     const text = await res.text();
