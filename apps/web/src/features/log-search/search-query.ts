@@ -53,6 +53,21 @@ export const EMPTY_SEARCH_FILTERS: SearchFilters = {
   to: '',
 };
 
+/**
+ * Page size requested from query-service per `?limit` (1..MaxSearchLimit; the
+ * service clamps independently). Sent EXPLICITLY rather than relying on the server
+ * default so page size is owned here and bounded.
+ */
+export const SEARCH_PAGE_LIMIT = 100;
+
+/**
+ * Ceiling on the number of accumulated results held in the (non-virtualized)
+ * result list. Mirrors the live tail's bounded buffer (DEFAULT_MAX_ITEMS) so this
+ * surface — the template for #23 — can never grow the DOM/memory without limit;
+ * past it the UI stops paging and tells the user to refine their filters.
+ */
+export const MAX_SEARCH_RESULTS = 1000;
+
 /** Whether any filter is narrowing the search (drives the Clear affordance). */
 export function searchFiltersActive(f: SearchFilters): boolean {
   return (
@@ -165,7 +180,13 @@ export function queryFromFilters(f: SearchFilters): SearchQueryState {
  */
 export const searchResponseSchema = z.object({
   events: z.array(tailLogEventSchema),
-  nextCursor: z.string().optional(),
+  // Normalize an empty-string cursor to "absent" at the boundary: query-service
+  // omits nextCursor on the final page, but a defensive `""` must read as "no more"
+  // (not "has more"), else Load-more would refetch page one forever.
+  nextCursor: z
+    .string()
+    .optional()
+    .transform((v) => (v ? v : undefined)),
 });
 export type SearchResult = z.infer<typeof searchResponseSchema>;
 

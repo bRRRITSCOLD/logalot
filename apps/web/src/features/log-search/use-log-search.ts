@@ -1,6 +1,6 @@
 import * as React from 'react';
 import type { TailLogEvent } from '../log-explorer/tail-event';
-import type { SearchExecutor, SearchFilters } from './search-query';
+import { MAX_SEARCH_RESULTS, type SearchExecutor, type SearchFilters } from './search-query';
 
 // ── useLogSearch: the historical-search state machine ───────────────────────
 //
@@ -34,6 +34,11 @@ export interface UseLogSearch {
   error?: string;
   /** True once a search has completed at least once (drives empty-state copy). */
   hasSearched: boolean;
+  /**
+   * True once the result ceiling (`MAX_SEARCH_RESULTS`) is reached: paging stops and
+   * the surface prompts the user to refine filters instead of growing unbounded.
+   */
+  capped: boolean;
   /** Run a fresh search (resets results to page one). */
   run: (filters: SearchFilters) => void;
   /** Append the next page; a no-op when there is no `nextCursor` or a load is in flight. */
@@ -46,9 +51,10 @@ interface State {
   nextCursor?: string;
   error?: string;
   hasSearched: boolean;
+  capped: boolean;
 }
 
-const INITIAL: State = { status: 'idle', events: [], hasSearched: false };
+const INITIAL: State = { status: 'idle', events: [], hasSearched: false, capped: false };
 
 export function useLogSearch({ search }: UseLogSearchOptions): UseLogSearch {
   const [state, setState] = React.useState<State>(INITIAL);
@@ -67,22 +73,27 @@ export function useLogSearch({ search }: UseLogSearchOptions): UseLogSearch {
       lastFilters.current = filters;
       cursorRef.current = undefined;
       inFlight.current = true;
-      setState({ status: 'loading', events: [], hasSearched: false });
+      setState({ status: 'loading', events: [], hasSearched: false, capped: false });
 
       void search(filters).then((out) => {
         if (id !== reqId.current) return; // superseded by a newer run
         inFlight.current = false;
         if (out.ok) {
-          cursorRef.current = out.nextCursor;
-          setState({
-            status: 'success',
-            events: out.events,
-            nextCursor: out.nextCursor,
-            hasSearched: true,
-          });
+          // Defensive: a single page should be <= the ceiling, but bound anyway.
+          const capped = out.events.length >= MAX_SEARCH_RESULTS;
+          const events = capped ? out.events.slice(0, MAX_SEARCH_RESULTS) : out.events;
+          const nextCursor = capped ? undefined : out.nextCursor;
+          cursorRef.current = nextCursor;
+          setState({ status: 'success', events, nextCursor, hasSearched: true, capped });
         } else {
           cursorRef.current = undefined;
-          setState({ status: 'error', events: [], error: out.message, hasSearched: true });
+          setState({
+            status: 'error',
+            events: [],
+            error: out.message,
+            hasSearched: true,
+            capped: false,
+          });
         }
       });
     },
@@ -102,13 +113,17 @@ export function useLogSearch({ search }: UseLogSearchOptions): UseLogSearch {
       if (id !== reqId.current) return;
       inFlight.current = false;
       if (out.ok) {
-        cursorRef.current = out.nextCursor;
-        setState((s) => ({
-          status: 'success',
-          events: [...s.events, ...out.events],
-          nextCursor: out.nextCursor,
-          hasSearched: true,
-        }));
+        setState((s) => {
+          const combined = [...s.events, ...out.events];
+          // Stop paging once the bounded ceiling is hit — slice to keep the DOM and
+          // memory bounded, drop the cursor, and flag `capped` so the surface tells
+          // the user to refine instead of loading forever.
+          const capped = combined.length >= MAX_SEARCH_RESULTS;
+          const events = capped ? combined.slice(0, MAX_SEARCH_RESULTS) : combined;
+          const nextCursor = capped ? undefined : out.nextCursor;
+          cursorRef.current = nextCursor;
+          return { status: 'success', events, nextCursor, hasSearched: true, capped };
+        });
       } else {
         // Keep the pages already loaded; surface the error and leave the cursor so
         // the user can retry the same "Load more".
@@ -123,6 +138,7 @@ export function useLogSearch({ search }: UseLogSearchOptions): UseLogSearch {
     nextCursor: state.nextCursor,
     error: state.error,
     hasSearched: state.hasSearched,
+    capped: state.capped,
     run,
     loadMore,
   };

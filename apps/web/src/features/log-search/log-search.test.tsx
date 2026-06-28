@@ -3,7 +3,12 @@ import userEvent from '@testing-library/user-event';
 import * as React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { LogSearch } from './log-search';
-import { EMPTY_SEARCH_FILTERS, type SearchFilters, type SearchOutcome } from './search-query';
+import {
+  EMPTY_SEARCH_FILTERS,
+  MAX_SEARCH_RESULTS,
+  type SearchFilters,
+  type SearchOutcome,
+} from './search-query';
 
 function event(message: string, overrides: Record<string, unknown> = {}) {
   return {
@@ -53,10 +58,18 @@ describe('LogSearch (integration, mocked query API)', () => {
     expect(search.mock.calls[0]?.[0]).toEqual({ ...EMPTY_SEARCH_FILTERS, text: 'boot' });
   });
 
+  it('shows the idle prompt and does NOT query when the URL has no filters', async () => {
+    const search = vi.fn(async (): Promise<SearchOutcome> => ({ ok: true, events: [] }));
+    render(<Harness search={search} />);
+    expect(await screen.findByText(/search your logs/i)).toBeInTheDocument();
+    // a bare entry (or tail→search toggle with no filters) must not fire a request
+    expect(search).not.toHaveBeenCalled();
+  });
+
   it('shows a loading state while the first page is in flight', async () => {
     const d = deferred<SearchOutcome>();
     const search = vi.fn(() => d.promise);
-    render(<Harness search={search} />);
+    render(<Harness search={search} initial={{ ...EMPTY_SEARCH_FILTERS, text: 'q' }} />);
     expect(await screen.findByText(/searching/i)).toBeInTheDocument();
     d.resolve({ ok: true, events: [event('done')] });
     expect(await screen.findByText('done')).toBeInTheDocument();
@@ -68,7 +81,9 @@ describe('LogSearch (integration, mocked query API)', () => {
       .mockResolvedValue({ ok: true, events: [event('typed result')] });
     const u = userEvent.setup();
     render(<Harness search={search} />);
-    await screen.findByText(/no matching logs|typed result/i);
+    // gated: no auto-run on an empty URL, so the idle prompt shows first
+    await screen.findByText(/search your logs/i);
+    expect(search).not.toHaveBeenCalled();
 
     await u.type(screen.getByLabelText(/full-text search/i), 'typed');
     await u.click(screen.getByRole('button', { name: /^search$/i }));
@@ -81,7 +96,7 @@ describe('LogSearch (integration, mocked query API)', () => {
       .mockResolvedValueOnce({ ok: true, events: [event('page one')], nextCursor: 'CUR_2' })
       .mockResolvedValueOnce({ ok: true, events: [event('page two')] });
     const u = userEvent.setup();
-    render(<Harness search={search} />);
+    render(<Harness search={search} initial={{ ...EMPTY_SEARCH_FILTERS, text: 'q' }} />);
     expect(await screen.findByText('page one')).toBeInTheDocument();
 
     const loadMore = screen.getByRole('button', { name: /load more/i });
@@ -105,7 +120,7 @@ describe('LogSearch (integration, mocked query API)', () => {
       .mockResolvedValueOnce({ ok: false, message: "'from' must be before 'to'" })
       .mockResolvedValueOnce({ ok: true, events: [event('after retry')] });
     const u = userEvent.setup();
-    render(<Harness search={search} />);
+    render(<Harness search={search} initial={{ ...EMPTY_SEARCH_FILTERS, text: 'q' }} />);
 
     const alert = await screen.findByRole('alert');
     expect(within(alert).getByText(/'from' must be before 'to'/)).toBeInTheDocument();
@@ -121,9 +136,21 @@ describe('LogSearch (integration, mocked query API)', () => {
         events: [event('boom', { level: 'fatal' })],
       }),
     );
-    render(<Harness search={search} />);
+    render(<Harness search={search} initial={{ ...EMPTY_SEARCH_FILTERS, text: 'q' }} />);
     const region = await screen.findByRole('region', { name: /search results/i });
     expect(await within(region).findByText('boom')).toBeInTheDocument();
     expect(within(region).getByText('fatal')).toBeInTheDocument();
+  });
+
+  it('stops paging with a refine notice once the result ceiling is reached', async () => {
+    const fullPage = Array.from({ length: MAX_SEARCH_RESULTS }, (_, i) => event(`row ${i}`));
+    const search = vi.fn(
+      async (): Promise<SearchOutcome> => ({ ok: true, events: fullPage, nextCursor: 'MORE' }),
+    );
+    render(<Harness search={search} initial={{ ...EMPTY_SEARCH_FILTERS, text: 'q' }} />);
+
+    expect(await screen.findByText(/refine your filters/i)).toBeInTheDocument();
+    // ceiling reached → no Load more even though upstream offered a nextCursor
+    expect(screen.queryByRole('button', { name: /load more/i })).not.toBeInTheDocument();
   });
 });

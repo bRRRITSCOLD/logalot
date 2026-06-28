@@ -2,7 +2,12 @@ import type { LogLevel } from '@logalot/contracts';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { TailLogEvent } from '../log-explorer/tail-event';
-import { EMPTY_SEARCH_FILTERS, type SearchFilters, type SearchOutcome } from './search-query';
+import {
+  EMPTY_SEARCH_FILTERS,
+  MAX_SEARCH_RESULTS,
+  type SearchFilters,
+  type SearchOutcome,
+} from './search-query';
 import { useLogSearch } from './use-log-search';
 
 function event(message: string, level: LogLevel = 'info'): TailLogEvent {
@@ -132,5 +137,40 @@ describe('useLogSearch', () => {
     });
 
     expect(result.current.events.map((e) => e.message)).toEqual(['b-result']);
+  });
+
+  it('caps a single oversized page at the ceiling and stops paging', async () => {
+    const page = Array.from({ length: MAX_SEARCH_RESULTS + 5 }, (_, i) => event(`r${i}`));
+    const search = vi.fn(
+      async (): Promise<SearchOutcome> => ({ ok: true, events: page, nextCursor: 'MORE' }),
+    );
+    const { result } = renderHook(() => useLogSearch({ search }));
+    act(() => result.current.run(EMPTY_SEARCH_FILTERS));
+    await waitFor(() => expect(result.current.status).toBe('success'));
+
+    expect(result.current.events).toHaveLength(MAX_SEARCH_RESULTS);
+    expect(result.current.capped).toBe(true);
+    expect(result.current.nextCursor).toBeUndefined(); // cursor dropped → no Load more
+  });
+
+  it('caps accumulation across pages and drops the cursor once the ceiling is crossed', async () => {
+    const big = Array.from({ length: MAX_SEARCH_RESULTS - 1 }, (_, i) => event(`r${i}`));
+    const search = vi
+      .fn<(f: SearchFilters, cursor?: string) => Promise<SearchOutcome>>()
+      .mockResolvedValueOnce({ ok: true, events: big, nextCursor: 'CUR_2' })
+      .mockResolvedValueOnce({
+        ok: true,
+        events: [event('a'), event('b'), event('c')],
+        nextCursor: 'CUR_3',
+      });
+
+    const { result } = renderHook(() => useLogSearch({ search }));
+    act(() => result.current.run(EMPTY_SEARCH_FILTERS));
+    await waitFor(() => expect(result.current.events).toHaveLength(MAX_SEARCH_RESULTS - 1));
+
+    act(() => result.current.loadMore());
+    await waitFor(() => expect(result.current.capped).toBe(true));
+    expect(result.current.events).toHaveLength(MAX_SEARCH_RESULTS);
+    expect(result.current.nextCursor).toBeUndefined();
   });
 });

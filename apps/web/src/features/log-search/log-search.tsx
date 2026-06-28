@@ -28,18 +28,20 @@ export interface LogSearchProps {
 }
 
 export function LogSearch({ filters, onFiltersChange, search, runOnMount = true }: LogSearchProps) {
-  const { status, events, nextCursor, error, hasSearched, run, loadMore } = useLogSearch({
+  const { status, events, nextCursor, error, hasSearched, capped, run, loadMore } = useLogSearch({
     search,
   });
 
-  // Auto-run ONCE on mount with whatever filters arrived in the URL. A ref holds the
-  // latest filters so this neither captures a stale value nor re-fires on every edit
-  // (search executes on explicit submit, never on keystroke — no request spam).
+  // Auto-run ONCE on mount, but ONLY when the incoming URL filters are non-empty:
+  // a shared/bookmarked link reproduces its results, while a bare entry (or a
+  // tail→search toggle with no filters) shows the idle prompt instead of firing an
+  // unfiltered query. A ref holds the latest filters so this neither captures a
+  // stale value nor re-fires on every edit (search runs on explicit submit only).
   const filtersRef = React.useRef(filters);
   filtersRef.current = filters;
   // biome-ignore lint/correctness/useExhaustiveDependencies: intentional mount-only run.
   React.useEffect(() => {
-    if (runOnMount) run(filtersRef.current);
+    if (runOnMount && searchFiltersActive(filtersRef.current)) run(filtersRef.current);
   }, []);
 
   const items = React.useMemo<TailItem[]>(
@@ -79,6 +81,7 @@ export function LogSearch({ filters, onFiltersChange, search, runOnMount = true 
               count={events.length}
               hasMore={nextCursor !== undefined}
               loadingMore={status === 'loadingMore'}
+              capped={capped}
               error={error}
               onLoadMore={loadMore}
             />
@@ -111,12 +114,14 @@ function Footer({
   count,
   hasMore,
   loadingMore,
+  capped,
   error,
   onLoadMore,
 }: {
   count: number;
   hasMore: boolean;
   loadingMore: boolean;
+  capped: boolean;
   error?: string;
   onLoadMore: () => void;
 }) {
@@ -128,7 +133,13 @@ function Footer({
           {error}
         </p>
       ) : null}
-      {hasMore ? (
+      {capped ? (
+        // Bounded result set hit (mirrors the tail's bounded buffer): stop paging
+        // and prompt the user to narrow rather than grow the list without limit.
+        <p className="text-fg-muted text-xs">
+          Showing the first {count} results — refine your filters to narrow the search.
+        </p>
+      ) : hasMore ? (
         <Button variant="secondary" size="sm" disabled={loadingMore} onClick={onLoadMore}>
           {loadingMore ? <Spinner className="size-4" label="Loading more results" /> : 'Load more'}
         </Button>

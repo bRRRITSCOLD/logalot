@@ -140,6 +140,12 @@ describe('searchResponseSchema (reuses the #21 log-event shape)', () => {
     expect(searchResponseSchema.parse({ events: [] }).events).toEqual([]);
   });
 
+  it('normalizes an empty-string nextCursor to undefined (no Load-more page-one loop)', () => {
+    expect(
+      searchResponseSchema.parse({ events: [event], nextCursor: '' }).nextCursor,
+    ).toBeUndefined();
+  });
+
   it('normalizes a null label map to an empty object (kernel emits null)', () => {
     const parsed = searchResponseSchema.parse({ events: [{ ...event, labels: null }] });
     expect(parsed.events[0]?.labels).toEqual({});

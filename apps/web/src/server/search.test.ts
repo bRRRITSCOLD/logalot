@@ -59,6 +59,8 @@ describe('searchUpstream — request construction', () => {
     expect(url.searchParams.get('level')).toBe('error');
     expect(url.searchParams.getAll('label')).toEqual(['env=prod']);
     expect(url.searchParams.get('cursor')).toBe('CUR==');
+    // an explicit bounded page size is always sent (never the server default)
+    expect(url.searchParams.get('limit')).toBe('100');
 
     expect((call[1].headers as Record<string, string>).authorization).toBe('Bearer tok-123');
   });

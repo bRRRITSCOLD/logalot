@@ -48,7 +48,9 @@ const searchFilterParsers = {
   to: parseAsString.withDefault(''),
 };
 
-function ExplorerPage() {
+// Exported for a route-level smoke test that locks the mode-toggle / nuqs↔filters
+// coexistence contract (the generated routeTree only consumes the `Route` export).
+export function ExplorerPage() {
   const session = useSession();
   const router = useRouter();
 

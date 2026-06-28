@@ -6,6 +6,7 @@ import type { TailLogEvent } from '../features/log-explorer/tail-event';
 import {
   buildSearchParams,
   EMPTY_SEARCH_FILTERS,
+  SEARCH_PAGE_LIMIT,
   type SearchFilters,
   type SearchOutcome,
   searchResponseSchema,
@@ -60,7 +61,8 @@ export async function searchUpstream(
 
   const fetchImpl = deps.fetchImpl ?? fetch;
   const base = deps.baseUrl ?? queryServiceUrl();
-  const qs = buildSearchParams(filters, cursor);
+  // Send an explicit bounded page size — never rely on the server default.
+  const qs = buildSearchParams(filters, cursor, SEARCH_PAGE_LIMIT);
 
   let res: Response;
   try {
