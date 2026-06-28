@@ -262,7 +262,13 @@ func setupSlice(t *testing.T) *harness {
 
 	startService(t, "processor", processorBin, infraEnv, nil)
 	startService(t, "ingest-service", ingestBin, infraEnv, map[string]string{"INGEST_HTTP_ADDR": ":" + ingestPort})
-	startService(t, "query-service", queryBin, infraEnv, map[string]string{"QUERY_HTTP_ADDR": ":" + queryPort})
+	// query-service now requires JWT_SECRET to boot (issue #74 — UI session-JWT auth).
+	// This e2e exercises the API-key path (keyA/keyB), so the value only needs to
+	// satisfy the startup config check (>=16 chars); it isn't used by these assertions.
+	startService(t, "query-service", queryBin, infraEnv, map[string]string{
+		"QUERY_HTTP_ADDR": ":" + queryPort,
+		"JWT_SECRET":      "e2e-test-jwt-secret-0123456789",
+	})
 
 	ingestURL := "http://127.0.0.1:" + ingestPort
 	queryURL := "http://127.0.0.1:" + queryPort

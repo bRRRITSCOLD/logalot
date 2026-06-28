@@ -19,6 +19,7 @@ import (
 	"github.com/bRRRITSCOLD/logalot/pkg/logstore"
 	"github.com/bRRRITSCOLD/logalot/pkg/platform"
 	"github.com/bRRRITSCOLD/logalot/pkg/tailbus"
+	"github.com/bRRRITSCOLD/logalot/services/query-service/internal/adapters/authn"
 	"github.com/bRRRITSCOLD/logalot/services/query-service/internal/adapters/httpx"
 	pgadapter "github.com/bRRRITSCOLD/logalot/services/query-service/internal/adapters/postgres"
 	"github.com/bRRRITSCOLD/logalot/services/query-service/internal/app"
@@ -59,8 +60,17 @@ func run(log *slog.Logger) error {
 	}
 	defer func() { _ = rc.Close() }()
 
-	// Authenticator is the swappable port (API key now; JWT in wave 2).
-	authr := auth.New(pool, rc, auth.WithLogger(log))
+	// Authenticator is the swappable port. The UI calls query-service with the
+	// user's control-plane session JWT, while ingest/dev tooling presents an
+	// `lgk_` API key — so the edge accepts BOTH via a composite that routes by
+	// credential shape (issue #74): an lgk_ key -> the RLS-backed API-key
+	// authenticator; anything else -> the HS256 JWT verifier. Both fail closed.
+	apiKeyAuthr := auth.New(pool, rc, auth.WithLogger(log))
+	jwtAuthr, err := authn.NewJWT(cfg.JWTSecret)
+	if err != nil {
+		return err
+	}
+	authr := authn.NewComposite(apiKeyAuthr, jwtAuthr)
 	bus := tailbus.New(rc, tailbus.WithLogger(log))
 	svc := app.New(bus, app.WithLogger(log))
 	// Hot search runs over the RLS-governed logalot_app pool (the LogStore adapter
