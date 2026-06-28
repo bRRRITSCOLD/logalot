@@ -1,6 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
-import { ControlPlaneError, cpAuthedFetch, cpLogin, cpLogout, cpRefresh } from './control-plane';
+import {
+  ControlPlaneError,
+  cpAuthedFetch,
+  cpAuthedSend,
+  cpLogin,
+  cpLogout,
+  cpRefresh,
+} from './control-plane';
 
 const tokenPair = {
   accessToken: 'a.b.c',
@@ -169,5 +176,50 @@ describe('cpAuthedFetch', () => {
     await expect(cpAuthedFetch('t', '/v1/tenants', z.unknown())).rejects.toBeInstanceOf(
       ControlPlaneError,
     );
+  });
+});
+
+describe('cpAuthedSend (write proxy)', () => {
+  const ruleSchema = z.object({ id: z.string(), name: z.string() });
+
+  it('sends the bearer token + JSON body and zod-validates the response', async () => {
+    const fetchMock = mockFetch(201, { id: 'r1', name: 'high errors' });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const out = await cpAuthedSend('access-tok', 'POST', '/v1/alert-rules', ruleSchema, {
+      name: 'high errors',
+    });
+
+    expect(out).toEqual({ id: 'r1', name: 'high errors' });
+    const [url, init] = fetchMock.mock.calls[0] ?? [];
+    expect(url).toBe('http://cp.test:8082/v1/alert-rules');
+    expect((init as RequestInit).method).toBe('POST');
+    expect(((init as RequestInit).headers as Record<string, string>).authorization).toBe(
+      'Bearer access-tok',
+    );
+    expect(JSON.parse(String((init as RequestInit).body))).toEqual({ name: 'high errors' });
+  });
+
+  it('omits the request body for a DELETE and tolerates an empty 204 response', async () => {
+    // A 204 carries a null body (the constructor forbids any body on 204).
+    const fetchMock = vi.fn(
+      (..._args: Parameters<typeof fetch>): Promise<Response> =>
+        Promise.resolve(new Response(null, { status: 204 })),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      cpAuthedSend('t', 'DELETE', '/v1/api-keys/key1', z.undefined()),
+    ).resolves.toBeUndefined();
+    const [, init] = fetchMock.mock.calls[0] ?? [];
+    expect((init as RequestInit).body).toBeUndefined();
+    expect((init as RequestInit).method).toBe('DELETE');
+  });
+
+  it('maps a non-2xx write to a ControlPlaneError carrying status + code', async () => {
+    vi.stubGlobal('fetch', mockFetch(403, { error: 'forbidden', message: 'forbidden' }));
+    await expect(
+      cpAuthedSend('t', 'PATCH', '/v1/users/u1', z.unknown(), { role: 'tenant_admin' }),
+    ).rejects.toMatchObject({ name: 'ControlPlaneError', status: 403, code: 'forbidden' });
   });
 });

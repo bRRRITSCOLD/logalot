@@ -106,3 +106,35 @@ export async function cpAuthedFetch<T>(
   });
   return schema.parse(body);
 }
+
+/** Mutating HTTP methods the admin BFF proxies (writes). */
+export type MutationMethod = 'POST' | 'PATCH' | 'PUT' | 'DELETE';
+
+/**
+ * Authenticated WRITE proxy for the control-plane (create/update/revoke/delete).
+ * The mutation analogue of `cpAuthedFetch`, mirroring it exactly: it attaches the
+ * session's access token as a Bearer (tenancy is enforced by the token — NEVER
+ * pass a tenant id in the path/body), serializes the JSON request body, and
+ * zod-parses the response against the SHARED contract so a backend shape change
+ * surfaces as a typed failure rather than untyped data flowing into a page.
+ *
+ * A non-2xx upstream becomes a typed `ControlPlaneError` (carrying status + code)
+ * so callers can route 401 → re-auth and surface 403 (RBAC denial) cleanly. A 204
+ * (revoke/delete) yields an empty body — pass `z.void()`/`z.undefined()` (or an
+ * `.optional()` schema) for those endpoints.
+ */
+export async function cpAuthedSend<T>(
+  accessToken: string,
+  method: MutationMethod,
+  path: string,
+  schema: ZodType<T>,
+  body?: unknown,
+): Promise<T> {
+  const responseBody = await cpFetch(path, {
+    method,
+    headers: { authorization: `Bearer ${accessToken}` },
+    // GET/HEAD aside, only attach a body when one is provided (DELETE usually has none).
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+  });
+  return schema.parse(responseBody);
+}

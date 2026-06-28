@@ -11,6 +11,8 @@ export * from './apiKey.js';
 export * from './auth.js';
 export * from './dashboard.js';
 export * from './ids.js';
+export * from './rbac.js';
+export * from './retention.js';
 export * from './roles.js';
 export * from './savedQuery.js';
 export * from './tenant.js';

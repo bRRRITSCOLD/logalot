@@ -46,8 +46,8 @@ describe('AppShell', () => {
   it('renders the primary navigation, brand, and page content', async () => {
     await renderShell();
     expect(screen.getAllByRole('navigation', { name: 'Primary' }).length).toBeGreaterThan(0);
-    // Overview, Log Explorer (#21) and Search (#22, the explorer's search mode)
-    // are live nav links; Admin remains a disabled placeholder until #23 lands.
+    // Overview, Log Explorer (#21), Search (#22), and now Alerts + Admin (#23)
+    // are all live nav links — no disabled placeholders remain.
     expect(screen.getAllByText('Overview').length).toBeGreaterThan(0);
     expect(screen.getAllByRole('link', { name: 'Log Explorer' })[0]).toHaveAttribute(
       'href',
@@ -58,11 +58,10 @@ describe('AppShell', () => {
       'href',
       expect.stringContaining('/explorer'),
     );
-    expect(screen.getAllByText('Search')[0]?.closest('[aria-disabled]')).toBeNull();
-    expect(screen.getAllByText('Admin')[0]?.closest('[aria-disabled]')).toHaveAttribute(
-      'aria-disabled',
-      'true',
-    );
+    expect(screen.getAllByRole('link', { name: 'Alerts' })[0]).toHaveAttribute('href', '/alerts');
+    expect(screen.getAllByRole('link', { name: 'Admin' })[0]).toHaveAttribute('href', '/admin');
+    // No nav item is a disabled placeholder anymore.
+    expect(screen.queryByText('soon')).not.toBeInTheDocument();
   });
 
   it('surfaces the server-derived role from the session', async () => {
