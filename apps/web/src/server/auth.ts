@@ -22,6 +22,21 @@ import {
 // ACCESS token's real validity is governed by its JWT `exp`, not the cookie.
 const COOKIE_MAX_AGE = 60 * 60 * 24 * 7;
 
+/**
+ * Whether to set the `Secure` cookie flag. Defaults ON (fail safe) and is driven
+ * by an explicit transport signal, NOT solely `NODE_ENV`: an HTTPS staging deploy
+ * may run with `NODE_ENV` unset/`staging` yet must still receive `Secure` cookies
+ * — keying off `NODE_ENV === 'production'` alone would silently drop it there.
+ * `COOKIE_SECURE=true|false` overrides explicitly; otherwise only plain-http local
+ * dev (`NODE_ENV=development`, i.e. http://localhost) opts out so dev cookies send.
+ */
+function cookieSecure(): boolean {
+  const explicit = process.env.COOKIE_SECURE;
+  if (explicit === 'true') return true;
+  if (explicit === 'false') return false;
+  return process.env.NODE_ENV !== 'development';
+}
+
 function cookieOptions(): {
   httpOnly: true;
   secure: boolean;
@@ -31,8 +46,7 @@ function cookieOptions(): {
 } {
   return {
     httpOnly: true,
-    // Secure in production; off on http://localhost so dev cookies are sent.
-    secure: process.env.NODE_ENV === 'production',
+    secure: cookieSecure(),
     sameSite: 'lax',
     path: '/',
     maxAge: COOKIE_MAX_AGE,
@@ -68,7 +82,18 @@ export const loginFn = createServerFn({ method: 'POST' })
       return { ok: true, session: sessionFromClaims(claims) };
     } catch (err) {
       if (err instanceof ControlPlaneError) {
-        return { ok: false, message: err.status === 401 ? 'Invalid credentials' : err.message };
+        // Keep the real upstream status/code in the server logs for debugging;
+        // never let it reach the browser (it can distinguish failure modes).
+        console.warn(`login failed: upstream ${err.status} ${err.code}`);
+        // Enumeration defense: collapse EVERY 4xx auth failure — bad password,
+        // unknown user, unknown/disabled tenant, malformed request — into one
+        // generic message so a caller can't tell "bad tenant" from "bad password".
+        if (err.status >= 400 && err.status < 500) {
+          return { ok: false, message: 'Invalid credentials' };
+        }
+        // 5xx / unreachable: a distinct but non-sensitive message; details stay
+        // in the logs above. This is the only case we surface differently.
+        return { ok: false, message: 'Sign-in is temporarily unavailable. Please try again.' };
       }
       throw err;
     }

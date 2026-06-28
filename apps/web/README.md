@@ -67,15 +67,31 @@ Accessibility comes from the primitive (focus, ARIA, keyboard) — never hand-ro
 writes the access + refresh tokens into cookies and the browser enters `/app`.
 
 **Token storage — decision & tradeoff.** Tokens live **only in `httpOnly`, `SameSite=Lax`,
-`Secure` (in prod) cookies**, set server-side in `src/server/auth.ts`. They are **never** put in
+`Secure` cookies**, set server-side in `src/server/auth.ts`. They are **never** put in
 `localStorage`/`sessionStorage` or any JS-readable place.
 - *Why:* `httpOnly` cookies are not readable by JavaScript, so an XSS bug cannot exfiltrate the
   tokens. The browser holds opaque cookies; the BFF attaches the access token as a `Bearer` header
   only on the server when proxying (`src/server/control-plane.ts`).
+- *`Secure` flag:* defaults **ON** and is driven by an explicit transport signal, not solely
+  `NODE_ENV` (an HTTPS staging box that isn't `NODE_ENV=production` must still get `Secure`).
+  `COOKIE_SECURE=true|false` overrides; only plain-http local dev (`NODE_ENV=development`) opts out.
 - *Tradeoff:* cookies ride along automatically, which is a CSRF surface. We mitigate with
-  `SameSite=Lax` and by using TanStack Start **server functions** (POST RPC with the framework's
-  CSRF protection) rather than form posts to arbitrary endpoints; mutations are not simple
-  cross-site GETs. The access token is short-lived (control-plane default 15 min) with refresh.
+  `SameSite=Lax` and by using TanStack Start **server functions** (POST RPC) for mutations rather
+  than form posts to arbitrary endpoints. CSRF protection is **explicitly pinned** in
+  `src/start.ts` (`createCsrfMiddleware` filtered to `handlerType === 'serverFn'`) so it can't be
+  silently dropped when #21–#23 add their own start instance. The access token is
+  short-lived (control-plane default 15 min) with refresh.
+
+**CSRF middleware is pinned, not implicit.** TanStack Start only adds its `defaultCsrfMiddleware`
+while **no** `createStart` instance exists. `src/start.ts` declares an explicit
+`createStart({ requestMiddleware: [createCsrfMiddleware({ filter: ctx => ctx.handlerType ===
+'serverFn' })] })`, so a cross-site request to a server function is rejected (403) and a future
+start instance can't quietly remove that protection. Covered by `src/start.test.ts`.
+
+**Login failures don't enable enumeration.** `loginFn` collapses **every** 4xx upstream result
+(bad password, unknown user, unknown/disabled tenant, malformed request) to one generic "Invalid
+credentials"; only 5xx/unreachable surfaces a distinct "temporarily unavailable" message. The raw
+upstream status/code is logged server-side, never returned to the browser.
 
 **Silent refresh.** `getSession` decodes (does **not** verify) the access token's claims for
 expiry/UX routing; if expired and a refresh cookie exists it calls `POST /v1/auth/refresh`, rotates
@@ -101,30 +117,39 @@ backend services.
 1. **Create the route** `src/routes/_authed/<name>.tsx` (it inherits the auth guard automatically):
 
    ```tsx
-   import { createFileRoute } from '@tanstack/react-router';
+   import { alertRuleResponseSchema } from '@logalot/contracts';
+   import { createFileRoute, redirect } from '@tanstack/react-router';
    import { createServerFn } from '@tanstack/react-start';
    import { getCookie } from '@tanstack/react-start/server';
+   import { z } from 'zod';
    import { ACCESS_COOKIE } from '../../server/session';
    import { cpAuthedFetch } from '../../server/control-plane';
    import { LoadingState, ErrorState, EmptyState } from '../../components/states';
 
+   // Compose the endpoint's response shape from the SHARED contract — never a
+   // local redefinition. cpAuthedFetch zod-parses the upstream body against this.
+   const alertRuleListSchema = z.array(alertRuleResponseSchema);
+
    // BFF loader: read the access token server-side, proxy to control-plane/query.
-   // Never pass a tenant id — the token carries it.
+   // Never pass a tenant id — the token carries it. Pass the variable `token`
+   // (not a string literal) and the schema; the response is validated for you.
    const loadAlertRules = createServerFn({ method: 'GET' }).handler(async () => {
      const token = getCookie(ACCESS_COOKIE);
-     if (!token) throw new Error('unauthenticated');
-     return cpAuthedFetch('<token>', '/v1/alert-rules'); // returns shared-contract shapes
+     if (!token) throw redirect({ to: '/login' });
+     return cpAuthedFetch(token, '/v1/alert-rules', alertRuleListSchema);
    });
 
    export const Route = createFileRoute('/_authed/alerts')({
      loader: () => loadAlertRules(),
      pendingComponent: () => <LoadingState label="Loading alerts…" />,
-     errorComponent: ({ error }) => <ErrorState message={error.message} />,
+     // Show a generic message — never surface `error.message`, which can carry a
+     // raw upstream/ControlPlaneError/ZodError detail. Log specifics server-side.
+     errorComponent: () => <ErrorState message="Couldn't load alerts. Please try again." />,
      component: AlertsPage,
    });
 
    function AlertsPage() {
-     const data = Route.useLoaderData();
+     const data = Route.useLoaderData(); // typed from alertRuleListSchema
      // …render with components from `../../components/ui`, EmptyState when empty.
    }
    ```
@@ -144,6 +169,7 @@ schemas.
 apps/web/
   scripts/build-tokens.mjs     design tokens → src/styles/tokens.css
   src/
+    start.ts                   pinned CSRF request middleware (createStart instance)
     routes/                    file-based routes (__root, index, login, _authed, _authed/app)
     components/{ui,states,shell}
     server/                    BFF: auth.ts (server fns), control-plane.ts (client), session.ts (pure)

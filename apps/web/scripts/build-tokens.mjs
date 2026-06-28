@@ -2,9 +2,9 @@
 // single CSS file of custom properties + a Tailwind v4 `@theme inline` mapping.
 //
 // This is the ONE place tokens.json is translated for the frontend. The output
-// (src/styles/tokens.css) is committed so the dev server boots without a build,
-// but it is regenerated on `predev`/`prebuild` so code can never silently drift
-// from the design source (the whole point of issue #19 -> #20).
+// (src/styles/tokens.css) is GENERATED and gitignored, regenerated on
+// `predev`/`prebuild` (and `pnpm --filter @logalot/web tokens`) so code can never
+// silently drift from the design source (the whole point of issue #19 -> #20).
 //
 //   Token path                          -> CSS var (raw)           -> Tailwind token
 //   semantic.color.dark.bg.surface      -> --lg-color-bg-surface   -> --color-bg-surface  (bg-bg-surface)

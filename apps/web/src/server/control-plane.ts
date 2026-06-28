@@ -1,4 +1,5 @@
 import { type LoginRequest, type TokenPair, tokenPairSchema } from '@logalot/contracts';
+import type { ZodType } from 'zod';
 
 // BFF -> control-plane HTTP client. This is the ONLY module that talks to the
 // control-plane; it runs server-side only (the base URL and tokens never reach
@@ -31,8 +32,29 @@ async function cpFetch(path: string, init: RequestInit): Promise<unknown> {
     // Network/connection failure — control-plane unreachable.
     throw new ControlPlaneError(503, 'upstream_unreachable', 'control-plane is unreachable');
   }
-  const text = await res.text();
-  const body = text ? (JSON.parse(text) as Record<string, unknown>) : undefined;
+
+  // Parse the body defensively. A healthy control-plane returns JSON, but a proxy
+  // or gateway in front of it can return HTML on a 502/504, and some endpoints
+  // return an empty 200. Reading/parsing must NOT throw a raw SyntaxError past
+  // this boundary — every failure leaves here as a typed ControlPlaneError so
+  // callers (and the login UI) only ever see our error contract.
+  const raw = await res.text().catch(() => '');
+  let body: Record<string, unknown> | undefined;
+  if (raw) {
+    try {
+      body = JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      // Non-JSON body. Surface upstream's status when it already failed (e.g. a
+      // proxy 502 HTML page); a 2xx with a non-JSON body is itself a 502-worthy
+      // contract violation. Either way: a typed error, never a SyntaxError.
+      throw new ControlPlaneError(
+        res.ok ? 502 : res.status,
+        'invalid_response',
+        'control-plane returned a non-JSON response',
+      );
+    }
+  }
+
   if (!res.ok) {
     throw new ControlPlaneError(
       res.status,
@@ -66,14 +88,21 @@ export async function cpLogout(refreshToken: string): Promise<void> {
  * server-side loaders with the session's access token; a 401 means the caller
  * should refresh or redirect to login. Tenancy is enforced by the access token
  * itself — never pass a tenant id in the path/body.
+ *
+ * The response is validated against the supplied SHARED zod contract before it is
+ * returned, so a backend shape change surfaces here as a typed `ZodError` rather
+ * than flowing untyped into a page. Pass the contract schema for the endpoint
+ * (e.g. `alertRuleListSchema`) — never a hand-rolled local shape.
  */
-export async function cpAuthedFetch<T = unknown>(
+export async function cpAuthedFetch<T>(
   accessToken: string,
   path: string,
+  schema: ZodType<T>,
   init: RequestInit = {},
 ): Promise<T> {
-  return cpFetch(path, {
+  const body = await cpFetch(path, {
     ...init,
     headers: { ...init.headers, authorization: `Bearer ${accessToken}` },
-  }) as Promise<T>;
+  });
+  return schema.parse(body);
 }
