@@ -39,7 +39,7 @@ MIGRATE_RUN          := docker run --rm --network logalot -v $(CURDIR)/migration
 .DEFAULT_GOAL := help
 .PHONY: help up down logs ps reset seed \
 	migrate-up migrate-down migrate-version migrate-create \
-	slice-up slice-down slice-logs slice-demo slice-test \
+	slice-up slice-down slice-logs slice-demo slice-test mimic-logs \
 	dev dev-up dev-down dev-logs \
 	cold-tier-spike cold-tier-spike-athena \
 	go-sync go-build go-test go-fmt go-lint \
@@ -133,6 +133,10 @@ slice-logs:
 ## slice-demo: POST a log with the dev key, then live-tail it (proves <2s)
 slice-demo:
 	@bash scripts/slice-demo.sh
+
+## mimic-logs: stream realistic app logs into the platform (env: RATE=, COUNT=)
+mimic-logs:
+	@bash scripts/mimic-app-logs.sh
 
 ## slice-test: run the hermetic e2e isolation test (testcontainers; needs Docker)
 slice-test:
