@@ -64,6 +64,19 @@ describe('AlertManager — RBAC-reduced UI (display-only mirror)', () => {
     expect(screen.getByRole('button', { name: 'Edit' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument();
   });
+
+  it('disables Edit for a saved-query-backed rule with an explanation', () => {
+    renderWithRole(
+      'tenant_admin',
+      <AlertManager
+        rules={[rule({ savedQueryId: '00000000-0000-0000-0000-0000000000d9', query: {} })]}
+        {...makeProps()}
+      />,
+    );
+    const edit = screen.getByRole('button', { name: 'Edit' });
+    expect(edit).toBeDisabled();
+    expect(edit).toHaveAttribute('title', expect.stringContaining('Saved-query-backed'));
+  });
 });
 
 describe('AlertManager — alert state display', () => {
@@ -149,5 +162,22 @@ describe('AlertManager — create / delete (tenant_admin)', () => {
 
     await waitFor(() => expect(props.remove).toHaveBeenCalledWith(rule().id));
     expect(props.onChanged).toHaveBeenCalled();
+  });
+
+  it('surfaces a failed delete and does not refresh', async () => {
+    const u = userEvent.setup();
+    const props = makeProps();
+    props.remove = vi.fn(async () => ({
+      ok: false as const,
+      error: { kind: 'invalid' as const, message: 'Rule is still referenced' },
+    }));
+    renderWithRole('tenant_admin', <AlertManager rules={[rule()]} {...props} />);
+
+    await u.click(screen.getByRole('button', { name: 'Delete' }));
+    const dialog = await screen.findByRole('dialog');
+    await u.click(within(dialog).getByRole('button', { name: 'Delete rule' }));
+
+    expect(await within(dialog).findByText('Rule is still referenced')).toBeInTheDocument();
+    expect(props.onChanged).not.toHaveBeenCalled();
   });
 });

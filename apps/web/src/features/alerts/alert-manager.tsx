@@ -137,9 +137,20 @@ export function AlertManager({ rules, create, update, remove, onChanged }: Alert
                   {canUpdate || canDelete ? (
                     <div className="flex shrink-0 gap-1">
                       {canUpdate ? (
+                        // A saved-query-backed rule (savedQueryId set, no inline
+                        // query) can't be edited in this inline-only form: the
+                        // shared update contract requires exactly one query source,
+                        // and reassembling the empty inline query would be rejected.
+                        // Disable with an explanation rather than surface that error.
                         <Button
                           variant="secondary"
                           size="sm"
+                          disabled={rule.savedQueryId !== null}
+                          title={
+                            rule.savedQueryId !== null
+                              ? 'Saved-query-backed rule — edit it via the API'
+                              : undefined
+                          }
                           onClick={() => setDialog({ kind: 'edit', rule })}
                         >
                           Edit

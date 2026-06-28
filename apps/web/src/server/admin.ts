@@ -257,11 +257,11 @@ export interface AdminData {
 }
 
 /**
- * Load everything the admin page needs in one server round-trip, GATING the
- * privileged fetches (users, api keys) on the role decoded from the token. A
- * member's browser therefore never receives user/key data at all — the gate is
- * server-side, not a client-side hide. Returns `null` when there is no valid
- * session so the server fn can fail closed to /login.
+ * Load everything the admin page needs in one server round-trip, skipping the
+ * privileged fetches (users, api keys) for a role that can't read them. A member's
+ * browser therefore never receives user/key data at all — the gate is server-side,
+ * not a client-side hide. Returns `null` when there is no valid session so the
+ * server fn can fail closed to /login.
  */
 export async function loadAdminData(token: string | undefined): Promise<AdminData | null> {
   const claims = decodeAccessClaims(token);
@@ -269,6 +269,13 @@ export async function loadAdminData(token: string | undefined): Promise<AdminDat
   const role = claims.role;
   const tenantId = claims.tenant_id; // server-derived; never from client input
 
+  // The `can(role, …)` checks below are NOT an authorization decision and do not
+  // contradict the "no auth decision rests on the mirror" rule in contracts/rbac.ts:
+  // the control-plane's 403 remains the SOLE authority (a wrong check or forged role
+  // still gets denied upstream). They are used here purely as a request-avoidance /
+  // data-minimization optimization — don't issue a fetch the server would 403, and
+  // don't ship that data to a client that shouldn't see it. A future reader should
+  // neither trust this as a security control nor "fix" it by removing it.
   const [tenant, retention, users, apiKeys] = await Promise.all([
     getTenantUpstream(token, tenantId),
     getRetentionUpstream(token),

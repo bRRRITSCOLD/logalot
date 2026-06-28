@@ -185,6 +185,7 @@ export function AlertRuleFormDialog({
   onSaved,
 }: AlertRuleFormDialogProps) {
   const [formError, setFormError] = React.useState<string | null>(null);
+  const labelsId = React.useId();
 
   const form = useForm({
     defaultValues: rule ? valuesFromRule(rule) : EMPTY_ALERT_RULE_VALUES,
@@ -291,11 +292,11 @@ export function AlertRuleFormDialog({
             <form.Field name="labels">
               {(field) => (
                 <div className="flex flex-col gap-1.5">
-                  <label htmlFor="alert-labels" className="font-medium text-fg-default text-sm">
+                  <label htmlFor={labelsId} className="font-medium text-fg-default text-sm">
                     Labels
                   </label>
                   <textarea
-                    id="alert-labels"
+                    id={labelsId}
                     name={field.name}
                     value={field.state.value}
                     onBlur={field.handleBlur}

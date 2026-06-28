@@ -96,6 +96,25 @@ describe('ApiKeysSection — revoke', () => {
     expect(props.onChanged).toHaveBeenCalled();
   });
 
+  it('surfaces a failed revoke and keeps the dialog open (no refresh)', async () => {
+    const u = userEvent.setup();
+    const props = makeProps();
+    props.revoke = vi.fn(async () => ({
+      ok: false as const,
+      error: { kind: 'invalid' as const, message: 'Key is still in use' },
+    }));
+    renderWithRole('tenant_admin', <ApiKeysSection apiKeys={[key()]} {...props} />);
+
+    await u.click(screen.getByRole('button', { name: 'Revoke' }));
+    const dialog = await screen.findByRole('dialog');
+    await u.click(within(dialog).getByRole('button', { name: 'Revoke key' }));
+
+    expect(await within(dialog).findByText('Key is still in use')).toBeInTheDocument();
+    expect(props.onChanged).not.toHaveBeenCalled();
+    // the confirm dialog stays open so the user can retry or cancel
+    expect(within(dialog).getByRole('button', { name: 'Revoke key' })).toBeInTheDocument();
+  });
+
   it('does not offer revoke for an already-revoked key', () => {
     renderWithRole(
       'tenant_admin',

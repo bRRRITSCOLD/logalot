@@ -80,3 +80,40 @@ describe('UsersSection — create (tenant_admin)', () => {
     expect(props.create).not.toHaveBeenCalled();
   });
 });
+
+describe('UsersSection — edit (tenant_admin)', () => {
+  it('sends a patch of only the changed fields and refreshes', async () => {
+    const u = userEvent.setup();
+    const props = makeProps();
+    renderWithRole('tenant_admin', <UsersSection users={[user()]} {...props} />);
+
+    await u.click(screen.getByRole('button', { name: 'Edit' }));
+    const dialog = await screen.findByRole('dialog');
+    // user fixture is active/member; suspend it and leave the rest untouched
+    await u.selectOptions(within(dialog).getByLabelText('Status'), 'suspended');
+    await u.click(within(dialog).getByRole('button', { name: 'Save changes' }));
+
+    await waitFor(() => expect(props.update).toHaveBeenCalledTimes(1));
+    expect(props.update.mock.calls[0]?.[0]).toBe(user().id);
+    expect(props.update.mock.calls[0]?.[1]).toEqual({ status: 'suspended' });
+    expect(props.onChanged).toHaveBeenCalled();
+  });
+
+  it('surfaces a failed update and does not refresh', async () => {
+    const u = userEvent.setup();
+    const props = makeProps();
+    props.update = vi.fn(async () => ({
+      ok: false as const,
+      error: { kind: 'invalid' as const, message: 'Email already exists' },
+    }));
+    renderWithRole('tenant_admin', <UsersSection users={[user()]} {...props} />);
+
+    await u.click(screen.getByRole('button', { name: 'Edit' }));
+    const dialog = await screen.findByRole('dialog');
+    await u.selectOptions(within(dialog).getByLabelText('Role'), 'tenant_admin');
+    await u.click(within(dialog).getByRole('button', { name: 'Save changes' }));
+
+    expect(await within(dialog).findByText('Email already exists')).toBeInTheDocument();
+    expect(props.onChanged).not.toHaveBeenCalled();
+  });
+});
