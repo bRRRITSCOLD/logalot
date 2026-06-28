@@ -67,26 +67,28 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
         <SearchIcon />
         Search
       </Link>
-      {/* Placeholders for the feature pages built in #23. */}
-      <NavPlaceholder icon={<BellIcon />} label="Alerts" />
-      <NavPlaceholder icon={<AdminIcon />} label="Admin" />
+      {/* Feature pages built in #23. Admin is visible to every role — a member sees
+          a correctly reduced view (read-only workspace + retention; no user/key
+          management); writes are gated server-side and mirrored in the UI. */}
+      <Link
+        to="/alerts"
+        onClick={onNavigate}
+        className={cn(linkBase, idleLink)}
+        activeProps={{ className: cn(linkBase, activeLink) }}
+      >
+        <BellIcon />
+        Alerts
+      </Link>
+      <Link
+        to="/admin"
+        onClick={onNavigate}
+        className={cn(linkBase, idleLink)}
+        activeProps={{ className: cn(linkBase, activeLink) }}
+      >
+        <AdminIcon />
+        Admin
+      </Link>
     </nav>
-  );
-}
-
-function NavPlaceholder({ icon, label }: { icon: React.ReactNode; label: string }) {
-  return (
-    <span
-      className={cn(linkBase, 'cursor-not-allowed text-fg-subtle')}
-      aria-disabled="true"
-      title="Coming soon"
-    >
-      {icon}
-      <span className="flex-1">{label}</span>
-      <Badge tone="neutral" className="text-2xs">
-        soon
-      </Badge>
-    </span>
   );
 }
 

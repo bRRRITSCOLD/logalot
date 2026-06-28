@@ -214,6 +214,33 @@ chrome, same `LogRow`/`LogList`, same `kernel.LogEvent` shape — over query-ser
   `tailLogEventSchema` is **reused in place** rather than lifted to `@logalot/contracts` yet
   (rule-of-three not met). The lift remains mechanical for a future third, cross-package consumer.
 
+## Admin + alerting (the BFF write + RBAC-mirror pattern, #23)
+
+`/alerts` and `/admin` add the control-plane *write* surfaces — alert-rule CRUD, API-key
+issue/revoke, user management, tenant settings and retention — over the same BFF the reads use.
+
+- **BFF writes.** `src/server/control-plane.ts` gains `cpAuthedSend(token, method, path, schema, body?)`,
+  the mutation analogue of `cpAuthedFetch`: bearer-authed, JSON body, response zod-parsed against the
+  shared contract, non-2xx → typed `ControlPlaneError`. `src/server/admin.ts` is the admin/alerts BFF:
+  pure `*Upstream` functions (token-guarded — they **fail closed without touching the network** when
+  there is no session, mirroring `search.ts`) wrapped by thin `createServerFn` RPCs that redirect to
+  `/login` on a 401 and return a user-safe `AdminOutcome` (`forbidden`/`invalid`/`unavailable`) the UI
+  renders directly. Tenancy is always server-derived — the `/v1/tenants/:id` path is read from the
+  token's **own** claims, never a client argument.
+- **Server-gated reads (no data leak).** `loadAdminData` decodes the role **server-side** and only
+  fetches users/api-keys when the role permits — a `member`'s browser never receives that data at all
+  (not a client-side hide).
+- **RBAC mirror is display-only.** `@logalot/contracts` exports `can(role, operation)` — a small,
+  data-only mirror of the control-plane's authority matrix (`domain/rbac.ts`), consumed via
+  `useCan()` to hide/disable actions a role can't perform. It is **defense-in-depth UX, never a
+  security control**: the server re-authorizes every call and a forged role still gets a 403.
+- **API-key secret shown once.** On issue, the one-time `plaintext` is held in component state only
+  while the reveal modal is open (copy-to-clipboard + an explicit "you won't see this again"
+  warning) and cleared the moment it closes — never logged, persisted, or sent anywhere.
+- **Retention contract lifted.** `retention.ts` (`upsertRetentionRequestSchema`,
+  `retentionResponseSchema`) now lives in `@logalot/contracts` and is consumed by **both** the
+  control-plane route and the web BFF (single source of truth; the route's local copy is removed).
+
 ## Layout
 
 ```

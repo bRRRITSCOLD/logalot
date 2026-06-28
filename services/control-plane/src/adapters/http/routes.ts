@@ -13,6 +13,7 @@ import {
   updateSavedQueryRequestSchema,
   updateTenantRequestSchema,
   updateUserRequestSchema,
+  upsertRetentionRequestSchema,
 } from '@logalot/contracts';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
@@ -37,15 +38,6 @@ const provisionAdminSchema = z
     displayName: z.string().trim().min(1).max(200).optional(),
   })
   .strict();
-
-// Retention is not (yet) in @logalot/contracts; bounds mirror migration 000006.
-const upsertRetentionSchema = z
-  .object({
-    hotDays: z.number().int().min(1).max(90),
-    coldDays: z.number().int().min(1).max(36500),
-  })
-  .strict()
-  .refine((v) => v.coldDays >= v.hotDays, { message: 'coldDays must be >= hotDays' });
 
 export interface RouteDeps {
   services: Services;
@@ -234,7 +226,7 @@ export function registerRoutes(app: FastifyInstance, deps: RouteDeps): void {
     '/v1/retention',
     { preHandler: [authenticate, makeRequireOperation('retention:update')] },
     async (req) => {
-      const body = parse(upsertRetentionSchema, req.body);
+      const body = parse(upsertRetentionRequestSchema, req.body);
       return services.retention.upsert(requireTenantContext(req), body);
     },
   );
