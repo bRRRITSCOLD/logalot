@@ -134,14 +134,14 @@ export function AppShell({ session, onLogout, children }: AppShellProps) {
   return (
     <div className="flex h-svh flex-col overflow-hidden lg:flex-row">
       {/* Desktop sidebar */}
-      <aside className="hidden w-60 shrink-0 flex-col gap-4 border-border-default border-r bg-bg-surface p-3 lg:flex">
+      <aside className="hidden w-60 shrink-0 flex-col gap-4 overflow-y-auto border-border-default border-r bg-bg-surface p-3 lg:flex">
         <Brand />
         <NavLinks />
         <SessionFooter session={session} onLogout={onLogout} />
       </aside>
 
       {/* Mobile/tablet top bar */}
-      <header className="flex items-center justify-between border-border-default border-b bg-bg-surface px-3 py-2 lg:hidden">
+      <header className="flex shrink-0 items-center justify-between border-border-default border-b bg-bg-surface px-3 py-2 lg:hidden">
         <Brand />
         <div className="flex items-center gap-1">
           <ThemeToggle />
