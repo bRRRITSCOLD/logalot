@@ -34,7 +34,10 @@ VALUES (
   '$2b$10$KIToUQi.7nqTONS/NKo1OOq8YfCnXOAtZMej7.aTsGsu.XOZ/yLly', -- bcrypt('devpassword', cost 10) — DEV ONLY
   'Dev Admin',
   false
-) ON CONFLICT (id) DO NOTHING;
+)
+-- DO UPDATE (not DO NOTHING) so an existing dev DB seeded with the prior stub
+-- hash self-heals to the real bcrypt hash on re-`make seed` (no `make reset` needed).
+ON CONFLICT (id) DO UPDATE SET password_hash = EXCLUDED.password_hash;
 
 INSERT INTO memberships (tenant_id, user_id, role)
 VALUES (

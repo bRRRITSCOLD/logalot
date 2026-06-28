@@ -61,17 +61,21 @@ case "${1:-start}" in
     exit 1
     ;;
   stop)
+    # `pnpm … dev` spawns tsx → a child node that binds the port; killing only the
+    # pnpm PID orphans that child. Kill the pidfile PID AND sweep the descendants
+    # unconditionally so `make dev-down` actually frees :${CONTROL_PLANE_PORT}.
     if [ -f "$PID_FILE" ]; then
       kill "$(cat "$PID_FILE")" 2>/dev/null || true
       rm -f "$PID_FILE"
-      echo "control-plane stopped"
-    else
-      # fall back to whatever holds the port
-      pkill -f "@logalot/control-plane" 2>/dev/null || true
-      echo "no pidfile; sent best-effort kill"
     fi
+    pkill -f "@logalot/control-plane" 2>/dev/null || true
+    echo "control-plane stopped"
     ;;
   logs)
+    if [ ! -f "$LOG_FILE" ]; then
+      echo "no log yet — run 'scripts/dev-control-plane.sh start' first" >&2
+      exit 1
+    fi
     tail -f "$LOG_FILE"
     ;;
   status)
