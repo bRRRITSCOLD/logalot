@@ -39,7 +39,7 @@ MIGRATE_RUN          := docker run --rm --network logalot -v $(CURDIR)/migration
 .PHONY: help up down logs ps reset seed \
 	migrate-up migrate-down migrate-version migrate-create \
 	slice-up slice-down slice-logs slice-demo slice-test \
-	cold-tier-spike \
+	cold-tier-spike cold-tier-spike-athena \
 	go-sync go-build go-test go-fmt go-lint \
 	node-install node-test node-lint \
 	test lint
@@ -136,12 +136,20 @@ slice-demo:
 slice-test:
 	cd tests/e2e && go test -tags=e2e -run TestSliceE2E -v -timeout 300s ./...
 
-## cold-tier-spike: run the cold-tier Firehose+Glue fidelity spike against compose floci
+## cold-tier-spike: run the cold-tier Firehose+Glue fidelity spike against compose floci (issue #13)
 # Requires: make up (floci must be healthy at FLOCI_ENDPOINT / localhost:4566).
 # Expected result: GlueCatalogFidelity/DirectS3WriteKeyLayout/GlueExplicitPartitionRegistration PASS;
-# FirehoseS3Delivery FAIL (confirmed stub in floci 1.5.28 community — see docs/data/spikes/013-).
+# FirehoseDeliveryFidelity FAIL (raw NDJSON, not Parquet; placeholders not substituted — see docs/data/spikes/013-).
 cold-tier-spike: .env
 	go test -tags=floci_spike -run TestColdTierFidelity -v -timeout 300s ./tests/cold-tier-spike/...
+
+## cold-tier-spike-athena: run the Athena query template + injected-projection fidelity spike (issue #14)
+# Requires: make up (floci must be healthy at FLOCI_ENDPOINT / localhost:4566).
+# Expected result: ParquetSeedAndDirectRead/EngineIdentity/DuckDBEquivalents/CrossTenantGlobLeak PASS;
+# PrestoFunction_*/GlueBridge_*/InjectedProjectionEnforcement FAIL — floci Athena = DuckDB v1.5.2,
+# no Glue catalog bridge, no Presto functions, no injected-projection enforcement. See docs/data/spikes/014-.
+cold-tier-spike-athena: .env
+	go test -tags=floci_spike -run TestAthenaProjectionFidelity -v -timeout 300s ./tests/cold-tier-spike/...
 
 # ----------------------------------------------------------------------------
 # Monorepo CI helpers. CI (.github/workflows/ci.yml) calls these same targets,
