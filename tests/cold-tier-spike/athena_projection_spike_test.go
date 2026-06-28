@@ -63,7 +63,7 @@
 //   - PrestoFunction_RegexpLike          FAIL (expected; function absent in DuckDB)
 //   - GlueBridge_TemplateWithTenant      FAIL (expected; Glue not bridged to DuckDB)
 //   - GlueBridge_TemplateWithoutTenant   FAIL (expected; Glue not bridged to DuckDB;
-//                                               NOT an injected-projection error)
+//     NOT an injected-projection error)
 //   - InjectedProjectionEnforcement      FAIL (expected; NOT enforced by floci)
 //
 // Requires compose floci running at FLOCI_ENDPOINT (default http://localhost:4566).
@@ -132,7 +132,7 @@ type coldLogRecord struct {
 	Service  string `parquet:"service"`
 	Level    string `parquet:"level"`
 	Message  string `parquet:"message"`
-	Labels   string `parquet:"labels"`  // JSON-encoded
+	Labels   string `parquet:"labels"` // JSON-encoded
 	TraceID  string `parquet:"trace_id"`
 	SpanID   string `parquet:"span_id"`
 	Raw      string `parquet:"raw"` // JSON-encoded
@@ -697,8 +697,8 @@ func setupAthenaGlueTable(t *testing.T, ctx context.Context, glueClient *glue.Cl
 			Name:        aws.String("log_events"),
 			Description: aws.String("Cold archive log_events (spike #14)"),
 			StorageDescriptor: &glutypes.StorageDescriptor{
-				Columns:  cols,
-				Location: aws.String(fmt.Sprintf("s3://%s/logs/", athenaDataBucket)),
+				Columns:      cols,
+				Location:     aws.String(fmt.Sprintf("s3://%s/logs/", athenaDataBucket)),
 				InputFormat:  aws.String("org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat"),
 				OutputFormat: aws.String("org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat"),
 				SerdeInfo: &glutypes.SerDeInfo{
