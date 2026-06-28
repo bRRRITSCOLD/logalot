@@ -132,16 +132,16 @@ export function AppShell({ session, onLogout, children }: AppShellProps) {
   const [mobileOpen, setMobileOpen] = React.useState(false);
 
   return (
-    <div className="flex min-h-svh flex-col lg:flex-row">
+    <div className="flex h-svh flex-col overflow-hidden lg:flex-row">
       {/* Desktop sidebar */}
-      <aside className="hidden w-60 shrink-0 flex-col gap-4 border-border-default border-r bg-bg-surface p-3 lg:flex">
+      <aside className="hidden w-60 shrink-0 flex-col gap-4 overflow-y-auto border-border-default border-r bg-bg-surface p-3 lg:flex">
         <Brand />
         <NavLinks />
         <SessionFooter session={session} onLogout={onLogout} />
       </aside>
 
       {/* Mobile/tablet top bar */}
-      <header className="flex items-center justify-between border-border-default border-b bg-bg-surface px-3 py-2 lg:hidden">
+      <header className="flex shrink-0 items-center justify-between border-border-default border-b bg-bg-surface px-3 py-2 lg:hidden">
         <Brand />
         <div className="flex items-center gap-1">
           <ThemeToggle />
@@ -188,8 +188,11 @@ export function AppShell({ session, onLogout, children }: AppShellProps) {
         </div>
       ) : null}
 
-      {/* Content */}
-      <main className="min-w-0 flex-1 p-4 lg:p-6">{children}</main>
+      {/* Content — the scroll container. min-h-0 lets it shrink inside the
+          viewport-locked shell so a fixed-height page (e.g. the live-tail explorer,
+          which fills h-full and scrolls its own log list) stays bounded, while a
+          tall normal page (Overview/Admin) scrolls here instead of growing the page. */}
+      <main className="min-h-0 min-w-0 flex-1 overflow-y-auto p-4 lg:p-6">{children}</main>
     </div>
   );
 }
