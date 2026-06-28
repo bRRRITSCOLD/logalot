@@ -29,11 +29,15 @@ BEGIN
 END;
 $$;
 
+-- CREATE OR REPLACE retains a function's attached SET config across a replace,
+-- so explicitly clear the SET search_path the up-migration attached, returning
+-- the function to its original 000010 (no per-function search_path) form.
+ALTER FUNCTION app.drop_log_events_partitions_older_than(integer) RESET ALL;
+
 -- Revoke grants and drop the role.
 REVOKE EXECUTE ON FUNCTION app.drop_log_events_partitions_older_than(integer)
   FROM logalot_retention;
 REVOKE SELECT ON retention_policies FROM logalot_retention;
-REVOKE SELECT ON tenants            FROM logalot_retention;
 REVOKE USAGE  ON SCHEMA public      FROM logalot_retention;
 REVOKE USAGE  ON SCHEMA app         FROM logalot_retention;
 REVOKE USAGE  ON SCHEMA pg_catalog  FROM logalot_retention;

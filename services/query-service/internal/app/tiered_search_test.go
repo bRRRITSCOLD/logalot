@@ -378,6 +378,117 @@ func TestTieredSearcher_Straddle_DedupeOnID(t *testing.T) {
 	}
 }
 
+func TestTieredSearcher_Straddle_EmptyIDColdRows_AllSurvive(t *testing.T) {
+	// C1/M1 REGRESSION: cold-tier parquet rows currently carry an EMPTY id
+	// (logstore Append does not backfill the DB-assigned UUID, and the cold-tee
+	// archives the same id-less event). A dedupe keyed on id alone would
+	// collapse ALL cold rows into one — silent data loss. They must ALL survive.
+	coldTS1 := hotCutoff30.Add(-time.Hour)
+	coldTS2 := hotCutoff30.Add(-2 * time.Hour)
+	coldTS3 := hotCutoff30.Add(-3 * time.Hour)
+	hotEvt := makeEvent("h1", hotCutoff30.Add(time.Hour))
+
+	hot := &fakeLogStore{page: kernel.SearchPage{Events: []kernel.LogEvent{hotEvt}}}
+	cold := &fakeColdArchive{page: kernel.SearchPage{Events: []kernel.LogEvent{
+		makeEvent("", coldTS1), // empty id — all cold rows look like this today
+		makeEvent("", coldTS2),
+		makeEvent("", coldTS3),
+	}}}
+	ts := NewTieredSearcher(hot, cold, 30, true,
+		WithTieredClock(func() time.Time { return fixedNow }),
+	)
+
+	q := kernel.SearchQuery{
+		From:  hotCutoff30.Add(-24 * time.Hour),
+		To:    fixedNow,
+		Limit: 50,
+	}
+	page, err := ts.Search(tcA, context.Background(), q)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	// 3 empty-id cold rows + 1 hot row = 4. None of the empty-id rows may collapse.
+	if len(page.Events) != 4 {
+		t.Errorf("empty-id cold rows collapsed: got %d events, want 4 (3 cold + 1 hot)", len(page.Events))
+	}
+	emptyIDCount := 0
+	for _, ev := range page.Events {
+		if ev.ID == "" {
+			emptyIDCount++
+		}
+	}
+	if emptyIDCount != 3 {
+		t.Errorf("expected all 3 empty-id cold rows to survive, got %d", emptyIDCount)
+	}
+}
+
+func TestTieredSearcher_Straddle_EmptyIDSameTS_StillAllSurvive(t *testing.T) {
+	// Adversarial: two empty-id cold rows with the SAME ts must BOTH survive
+	// (an empty-id row is never placed in the seen set, so (ts, "") can never
+	// dedupe another (ts, "")).
+	sameTS := hotCutoff30.Add(-time.Hour)
+	hot := &fakeLogStore{}
+	cold := &fakeColdArchive{page: kernel.SearchPage{Events: []kernel.LogEvent{
+		makeEvent("", sameTS),
+		makeEvent("", sameTS),
+	}}}
+	ts := NewTieredSearcher(hot, cold, 30, true,
+		WithTieredClock(func() time.Time { return fixedNow }),
+	)
+	q := kernel.SearchQuery{From: hotCutoff30.Add(-24 * time.Hour), To: fixedNow, Limit: 50}
+	page, err := ts.Search(tcA, context.Background(), q)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(page.Events) != 2 {
+		t.Errorf("two empty-id same-ts rows must both survive: got %d, want 2", len(page.Events))
+	}
+}
+
+func TestTieredSearcher_Straddle_NonEmptyIDDedupe_StillWorks(t *testing.T) {
+	// The (ts, id) dedupe still collapses a genuine duplicate with a real id
+	// (the future state once hot/cold share a stable id). Verify it does not
+	// regress when ids ARE present.
+	dupTS := hotCutoff30.Add(time.Minute)
+	dup := makeEvent("real-uuid", dupTS)
+	hot := &fakeLogStore{page: kernel.SearchPage{Events: []kernel.LogEvent{dup}}}
+	cold := &fakeColdArchive{page: kernel.SearchPage{Events: []kernel.LogEvent{dup}}}
+	ts := NewTieredSearcher(hot, cold, 30, true,
+		WithTieredClock(func() time.Time { return fixedNow }),
+	)
+	q := kernel.SearchQuery{From: hotCutoff30.Add(-24 * time.Hour), To: fixedNow, Limit: 50}
+	page, err := ts.Search(tcA, context.Background(), q)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(page.Events) != 1 {
+		t.Errorf("non-empty-id duplicate not deduped: got %d events, want 1", len(page.Events))
+	}
+}
+
+func TestTieredSearcher_Straddle_SameIDDifferentTS_BothKept(t *testing.T) {
+	// (ts, id) key: same id but different ts must NOT dedupe (they are distinct
+	// (ts, id) tuples per cold-tier.md §5.2).
+	id := "real-uuid"
+	hot := &fakeLogStore{page: kernel.SearchPage{Events: []kernel.LogEvent{
+		makeEvent(id, hotCutoff30.Add(time.Hour)),
+	}}}
+	cold := &fakeColdArchive{page: kernel.SearchPage{Events: []kernel.LogEvent{
+		makeEvent(id, hotCutoff30.Add(-time.Hour)),
+	}}}
+	ts := NewTieredSearcher(hot, cold, 30, true,
+		WithTieredClock(func() time.Time { return fixedNow }),
+	)
+	q := kernel.SearchQuery{From: hotCutoff30.Add(-24 * time.Hour), To: fixedNow, Limit: 50}
+	page, err := ts.Search(tcA, context.Background(), q)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(page.Events) != 2 {
+		t.Errorf("same-id different-ts rows must both be kept: got %d, want 2", len(page.Events))
+	}
+}
+
 func TestTieredSearcher_Straddle_SortedTSDesc(t *testing.T) {
 	ts1 := fixedNow.Add(-time.Hour)
 	ts2 := hotCutoff30.Add(time.Hour)

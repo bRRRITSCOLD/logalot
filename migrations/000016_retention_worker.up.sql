@@ -20,8 +20,11 @@
 --
 -- Same logic as 000010, plus:
 --   * SECURITY DEFINER → runs as the function owner (admin), who CAN DROP TABLE.
---   * SET search_path = public, app → protects against search_path-injection attacks
---     that could substitute a malicious "pg_inherits" or "pg_class" view.
+--   * SET search_path = pg_catalog, public, app → pg_catalog FIRST so the catalog
+--     relations + builtins this function reads (pg_inherits, pg_class, to_date,
+--     format, right) can never be shadowed by a same-named object a caller
+--     created in `public`. `public` stays IN the path (second) so the unqualified
+--     DROP TABLE log_events_YYYYMMDD still resolves the partition tables.
 --
 -- Only log_events_YYYYMMDD partitions are dropped (regex '^log_events_[0-9]{8}$');
 -- the default partition is never touched.
@@ -32,7 +35,7 @@ CREATE OR REPLACE FUNCTION app.drop_log_events_partitions_older_than(
 RETURNS integer
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public, pg_catalog, app
+SET search_path = pg_catalog, public, app
 AS $$
 DECLARE
   v_cutoff  date    := current_date - p_retention_days;
@@ -64,6 +67,12 @@ COMMENT ON FUNCTION app.drop_log_events_partitions_older_than(integer) IS
 -- BYPASSRLS so the worker can read retention_policies across all tenants.
 -- NOT a superuser; it owns nothing; DDL is gated to the one SECURITY DEFINER
 -- function above.
+--
+-- Dev credentials (LOCAL DEV ONLY): role `logalot_retention` / password
+-- `logalot_retention`. Rotate for any non-local environment with:
+--   ALTER ROLE logalot_retention PASSWORD '…';
+-- The matching connection string is LOGALOT_RETENTION_DATABASE_URL (mirrors the
+-- rotation note on logalot_app in migration 000011).
 
 DO $$
 BEGIN
@@ -82,9 +91,11 @@ GRANT USAGE ON SCHEMA public     TO logalot_retention;
 GRANT USAGE ON SCHEMA app        TO logalot_retention;
 GRANT USAGE ON SCHEMA pg_catalog TO logalot_retention;
 
--- Read retention policies + tenant ids (for cross-tenant cold-prefix sweeps).
+-- Least privilege: the worker reads ONLY retention_policies (RetentionStore.
+-- ListAll selects tenant_id + hot_days + cold_days from it; tenant_id is the
+-- policy's own PK, so no separate `tenants` read is needed). No grant on
+-- log_events or any tenant content table.
 GRANT SELECT ON retention_policies TO logalot_retention;
-GRANT SELECT ON tenants            TO logalot_retention;
 
 -- The single DDL capability: call the SECURITY DEFINER drop function.
 GRANT EXECUTE ON FUNCTION app.drop_log_events_partitions_older_than(integer)

@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -190,13 +191,21 @@ func (ts *TieredSearcher) classifyTier(q kernel.SearchQuery) tier {
 }
 
 // unionSearch queries both tiers, dedupes on (ts, id), sorts ts DESC, and
-// returns the first q.Limit events. No cursor is returned for straddling
-// queries because cross-tier keyset pagination is not yet implemented
-// (cold-tier Athena does not support server-side keyset cursors).
+// returns the first q.Limit events.
 //
-// Partial results: if one tier fails, the error is logged and the other
-// tier's results are returned alone (graceful degradation). If both fail,
-// the first error is returned.
+// I2 — PARTIAL FAILURE (deliberate availability-over-completeness choice):
+// if exactly one tier fails, its error is logged and the other tier's results
+// are returned alone, as a normal HTTP 200 with NO degraded-results signal in
+// the response. This trades completeness for availability. Before
+// COLD_SEARCH_ENABLED can be flipped (AC#3 / cold_smoke_aws gate) this needs a
+// degradation indicator on the response so a caller can tell a partial page
+// from a complete one — tracked as an AC#3 blocker. If both tiers fail, the
+// joined error propagates (HTTP 500).
+//
+// I3 — NO CURSOR on straddle: a straddling query returns no NextCursor, so
+// pages past the first are unreachable. Cross-tier keyset pagination (merging
+// a Postgres keyset cursor with Athena, which has no server-side cursor) is a
+// hard AC#3 blocker — tracked, see the return statement comment below.
 func (ts *TieredSearcher) unionSearch(tc kernel.TenantContext, ctx context.Context, q kernel.SearchQuery) (kernel.SearchPage, error) {
 	hotCutoff := ts.hotCutoff()
 
@@ -215,14 +224,19 @@ func (ts *TieredSearcher) unionSearch(tc kernel.TenantContext, ctx context.Conte
 	coldPage, coldErr := ts.cold.Search(tc, ctx, coldQ)
 
 	if hotErr != nil && coldErr != nil {
-		return kernel.SearchPage{}, fmt.Errorf("tiered search: hot: %w; cold: %v", hotErr, coldErr)
+		// Both tiers failed — propagate a joined error (both wrapped with %w via
+		// errors.Join so callers can errors.Is either underlying cause). M4.
+		return kernel.SearchPage{}, fmt.Errorf("tiered search: both tiers failed: %w",
+			errors.Join(hotErr, coldErr))
 	}
 	if hotErr != nil {
-		ts.log.WarnContext(ctx, "tiered search: hot tier failed, returning cold only",
+		// I2: returning cold-only as a 200 with no degraded signal — see fn doc.
+		ts.log.WarnContext(ctx, "tiered search: hot tier failed, returning cold only (no degraded signal — AC#3 blocker)",
 			"tenant_id", string(tc.TenantID), "err", hotErr)
 	}
 	if coldErr != nil {
-		ts.log.WarnContext(ctx, "tiered search: cold tier failed, returning hot only",
+		// I2: returning hot-only as a 200 with no degraded signal — see fn doc.
+		ts.log.WarnContext(ctx, "tiered search: cold tier failed, returning hot only (no degraded signal — AC#3 blocker)",
 			"tenant_id", string(tc.TenantID), "err", coldErr)
 	}
 
@@ -231,16 +245,45 @@ func (ts *TieredSearcher) unionSearch(tc kernel.TenantContext, ctx context.Conte
 	all = append(all, hotPage.Events...)
 	all = append(all, coldPage.Events...)
 
-	// Dedupe on id (UUIDs are globally unique; cold-tier.md says dedupe on
-	// (ts, id) — using id alone is correct and simpler because id is already
-	// a globally unique identifier for each event).
-	seen := make(map[string]struct{}, len(all))
+	// Dedupe on (ts, id) per cold-tier.md §5.2 — but ONLY for rows with a
+	// NON-EMPTY id. This is load-bearing and subtle:
+	//
+	//   Cold-tier parquet rows currently carry an EMPTY id. pkg/logstore Append
+	//   lets Postgres assign the row id via gen_random_uuid() and does not read
+	//   it back (no RETURNING backfill), and the processor cold-tee archives the
+	//   SAME id-less event. So today every cold row has id == "" while the hot
+	//   copy of the same event has a real UUID.
+	//
+	//   Consequence 1 (correctness): if we keyed dedupe on id alone, ALL cold
+	//   rows (id == "") would collapse to a single row — silent data loss.
+	//   Therefore empty-id rows are NEVER placed in the seen set and ALWAYS
+	//   pass through untouched.
+	//
+	//   Consequence 2 (known gap): because the tee-overlap event has a real id
+	//   in hot but "" in cold, cross-tier dedupe of a genuinely duplicated event
+	//   is a NO-OP today — a tee-overlap event can appear twice in a straddle
+	//   result. Fixing that requires hot and cold to share a stable id (a
+	//   processor/logstore change), which is a separate, tracked AC#3 blocker
+	//   for flipping COLD_SEARCH_ENABLED (cold_smoke_aws gate). We do NOT fix it
+	//   here. Once a shared id lands, this same (ts, id) key dedupes correctly
+	//   with no change to this logic.
+	type tsID struct {
+		ts time.Time
+		id string
+	}
+	seen := make(map[tsID]struct{}, len(all))
 	deduped := all[:0]
 	for _, ev := range all {
-		if _, dup := seen[ev.ID]; dup {
+		if ev.ID == "" {
+			// Empty-id rows (all cold rows today) are never deduped — keep all.
+			deduped = append(deduped, ev)
 			continue
 		}
-		seen[ev.ID] = struct{}{}
+		key := tsID{ts: ev.TS, id: ev.ID}
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
 		deduped = append(deduped, ev)
 	}
 
@@ -257,7 +300,10 @@ func (ts *TieredSearcher) unionSearch(tc kernel.TenantContext, ctx context.Conte
 		deduped = deduped[:q.Limit]
 	}
 
-	// No cursor for straddling queries (cross-tier keyset pagination is not
-	// yet implemented; cold Athena has no server-side cursor support).
+	// I3: No cursor for straddling queries. Cross-tier keyset pagination is not
+	// implemented (Athena has no server-side cursor, and merging it with a
+	// Postgres keyset position is non-trivial), so pages past the first are
+	// unreachable for a straddle. This is a hard AC#3 blocker — tracked in the
+	// PR body — and is acceptable only while COLD_SEARCH_ENABLED is OFF.
 	return kernel.SearchPage{Events: deduped}, nil
 }

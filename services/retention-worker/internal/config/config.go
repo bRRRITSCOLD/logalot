@@ -11,6 +11,19 @@ import (
 )
 
 const (
+	// RetentionEnabledEnv is the master kill-switch. Default: FALSE.
+	// When false, the worker runs but every cycle is a logging no-op — it
+	// drops NO partitions and deletes NO S3 objects. This mirrors the
+	// COLD_SEARCH_ENABLED opt-in posture so an accidental deploy of a
+	// destructive worker is harmless until an operator explicitly enables it.
+	RetentionEnabledEnv = "RETENTION_ENABLED"
+
+	// DryRunEnv, when true (and RETENTION_ENABLED is true), logs what WOULD be
+	// dropped/deleted without performing any destructive operation. Default:
+	// FALSE. A safe rehearsal mode for validating policy/cutoff arithmetic
+	// against real data before arming the worker.
+	DryRunEnv = "RETENTION_DRY_RUN"
+
 	// RetentionDatabaseURLEnv is the BYPASSRLS logalot_retention role DSN.
 	RetentionDatabaseURLEnv = "LOGALOT_RETENTION_DATABASE_URL"
 
@@ -33,6 +46,11 @@ const (
 
 // Config is the resolved retention-worker configuration.
 type Config struct {
+	// Enabled is the master kill-switch (RETENTION_ENABLED). Default FALSE:
+	// every cycle is a logging no-op until an operator opts in.
+	Enabled bool
+	// DryRun logs intended deletions without performing them (RETENTION_DRY_RUN).
+	DryRun bool
 	// RetentionDatabaseURL is the BYPASSRLS logalot_retention DSN.
 	RetentionDatabaseURL string
 	// ColdBucket is the S3 cold-tier bucket (e.g. "logalot-cold").
@@ -49,6 +67,9 @@ type Config struct {
 // Fails closed: required vars missing → error; service must not start.
 func Load() (Config, error) {
 	c := Config{
+		// Kill-switch OFF by default — an accidental deploy deletes nothing.
+		Enabled:              os.Getenv(RetentionEnabledEnv) == "true",
+		DryRun:               os.Getenv(DryRunEnv) == "true",
 		RetentionDatabaseURL: os.Getenv(RetentionDatabaseURLEnv),
 		ColdBucket:           os.Getenv(ColdBucketEnv),
 		HotDays:              app.DefaultHotDays,

@@ -104,6 +104,7 @@ func TestRunCycle_CallsHotDropperWithConfiguredDays(t *testing.T) {
 
 	fixed := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
 	r := New(policies, dropper, purger,
+		WithEnabled(true),
 		WithHotDays(30),
 		WithClock(func() time.Time { return fixed }),
 	)
@@ -130,6 +131,7 @@ func TestRunCycle_ColdPurgePerTenantWithCorrectCutoff(t *testing.T) {
 	purger := &fakeColdPurger{deleted: 5}
 
 	r := New(policies, dropper, purger,
+		WithEnabled(true),
 		WithClock(func() time.Time { return fixed }),
 	)
 	if err := r.RunCycle(context.Background()); err != nil {
@@ -173,7 +175,7 @@ func TestRunCycle_TenantIsolation_PurgesOnlyOwnTenant(t *testing.T) {
 	dropper := &fakeHotDropper{}
 	purger := &fakeColdPurger{deleted: 0}
 
-	r := New(policies, dropper, purger, WithClock(func() time.Time { return fixed }))
+	r := New(policies, dropper, purger, WithEnabled(true), WithClock(func() time.Time { return fixed }))
 	_ = r.RunCycle(context.Background())
 
 	seenTenants := make(map[string]bool)
@@ -197,7 +199,7 @@ func TestRunCycle_ListPoliciesError_IsHardError(t *testing.T) {
 	dropper := &fakeHotDropper{}
 	purger := &fakeColdPurger{}
 
-	r := New(policies, dropper, purger)
+	r := New(policies, dropper, purger, WithEnabled(true))
 	err := r.RunCycle(context.Background())
 	if err == nil {
 		t.Fatal("expected error from ListAll failure, got nil")
@@ -216,7 +218,7 @@ func TestRunCycle_HotDropperError_DoesNotAbortColdSweep(t *testing.T) {
 	dropper := &fakeHotDropper{err: errors.New("postgres down")}
 	purger := &fakeColdPurger{deleted: 2}
 
-	r := New(policies, dropper, purger, WithClock(func() time.Time { return fixed }))
+	r := New(policies, dropper, purger, WithEnabled(true), WithClock(func() time.Time { return fixed }))
 	err := r.RunCycle(context.Background())
 	// RunCycle should NOT return the hot drop error (it continues cold sweep).
 	if err != nil {
@@ -249,7 +251,7 @@ func TestRunCycle_PerTenantColdError_DoesNotAbortOtherTenants(t *testing.T) {
 		},
 	}
 
-	r := New(policies, dropper, purger, WithClock(func() time.Time { return fixed }))
+	r := New(policies, dropper, purger, WithEnabled(true), WithClock(func() time.Time { return fixed }))
 	err := r.RunCycle(context.Background())
 	if err != nil {
 		t.Errorf("expected no hard error even with per-tenant failure, got: %v", err)
@@ -265,11 +267,86 @@ func TestRunCycle_NoPolicies_SucceedsWithNoS3Calls(t *testing.T) {
 	dropper := &fakeHotDropper{dropped: 0}
 	purger := &fakeColdPurger{}
 
-	r := New(policies, dropper, purger)
+	r := New(policies, dropper, purger, WithEnabled(true))
 	if err := r.RunCycle(context.Background()); err != nil {
 		t.Fatalf("RunCycle with no policies: %v", err)
 	}
 	if len(purger.calls) != 0 {
 		t.Errorf("expected no purge calls for empty policies, got %d", len(purger.calls))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Kill-switch (RETENTION_ENABLED) — Security Medium-1
+// ---------------------------------------------------------------------------
+
+func TestRunCycle_Disabled_IsNoOp(t *testing.T) {
+	// SECURITY: a worker built WITHOUT WithEnabled(true) (the default, mirroring
+	// RETENTION_ENABLED unset) must perform NO drops and NO deletes — an
+	// accidental deploy is harmless.
+	policies := &fakePolicyStore{
+		policies: []RetentionPolicy{
+			{TenantID: "aaaaaaaa-0000-0000-0000-000000000001", HotDays: 30, ColdDays: 365},
+		},
+	}
+	dropper := &fakeHotDropper{dropped: 99}
+	purger := &fakeColdPurger{deleted: 99}
+
+	// New WITHOUT WithEnabled → disabled by default.
+	r := New(policies, dropper, purger)
+	if err := r.RunCycle(context.Background()); err != nil {
+		t.Fatalf("RunCycle (disabled): %v", err)
+	}
+
+	if len(dropper.calledWith) != 0 {
+		t.Errorf("disabled worker called hot dropper %d time(s) — want 0", len(dropper.calledWith))
+	}
+	if len(purger.calls) != 0 {
+		t.Errorf("disabled worker called purger %d time(s) — want 0", len(purger.calls))
+	}
+}
+
+func TestRunCycle_ExplicitlyDisabled_IsNoOp(t *testing.T) {
+	dropper := &fakeHotDropper{}
+	purger := &fakeColdPurger{}
+	r := New(&fakePolicyStore{}, dropper, purger, WithEnabled(false))
+	if err := r.RunCycle(context.Background()); err != nil {
+		t.Fatalf("RunCycle (explicitly disabled): %v", err)
+	}
+	if len(dropper.calledWith) != 0 || len(purger.calls) != 0 {
+		t.Error("explicitly-disabled worker performed a destructive operation")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Dry-run — logs intent, performs no destructive operation
+// ---------------------------------------------------------------------------
+
+func TestRunCycle_DryRun_NoDropsOrDeletes(t *testing.T) {
+	fixed := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	policies := &fakePolicyStore{
+		policies: []RetentionPolicy{
+			{TenantID: "aaaaaaaa-0000-0000-0000-000000000001", HotDays: 30, ColdDays: 365},
+			{TenantID: "bbbbbbbb-0000-0000-0000-000000000002", HotDays: 30, ColdDays: 90},
+		},
+	}
+	dropper := &fakeHotDropper{}
+	purger := &fakeColdPurger{}
+
+	// Enabled AND dry-run: iterates policies (SELECT only) but performs NO
+	// drops or deletes.
+	r := New(policies, dropper, purger,
+		WithEnabled(true),
+		WithDryRun(true),
+		WithClock(func() time.Time { return fixed }),
+	)
+	if err := r.RunCycle(context.Background()); err != nil {
+		t.Fatalf("RunCycle (dry-run): %v", err)
+	}
+	if len(dropper.calledWith) != 0 {
+		t.Errorf("dry-run called hot dropper %d time(s) — want 0", len(dropper.calledWith))
+	}
+	if len(purger.calls) != 0 {
+		t.Errorf("dry-run called purger %d time(s) — want 0", len(purger.calls))
 	}
 }

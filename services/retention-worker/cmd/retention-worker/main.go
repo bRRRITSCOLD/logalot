@@ -70,12 +70,16 @@ func run(log *slog.Logger) error {
 	purger := s3adapter.New(s3Client, cfg.ColdBucket)
 
 	worker := app.New(retStore, retStore, purger,
+		app.WithEnabled(cfg.Enabled), // kill-switch — default OFF (no-op cycles)
+		app.WithDryRun(cfg.DryRun),
 		app.WithHotDays(cfg.HotDays),
 		app.WithInterval(cfg.Interval),
 		app.WithLogger(log),
 	)
 
 	log.Info("retention-worker: starting",
+		"enabled", cfg.Enabled,
+		"dry_run", cfg.DryRun,
 		"hot_days", cfg.HotDays,
 		"cold_bucket", cfg.ColdBucket,
 		"interval", cfg.Interval.String())

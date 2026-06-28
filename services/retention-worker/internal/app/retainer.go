@@ -33,6 +33,8 @@ type Retainer struct {
 	hotDrop  HotDropper
 	purger   ColdPurger
 
+	enabled  bool          // master kill-switch (RETENTION_ENABLED); default false
+	dryRun   bool          // log intended sweeps without performing them
 	hotDays  int           // global hot-partition horizon (default 30)
 	interval time.Duration // run cadence
 	now      func() time.Time
@@ -41,6 +43,19 @@ type Retainer struct {
 
 // Option configures a Retainer.
 type Option func(*Retainer)
+
+// WithEnabled sets the master kill-switch. Default is false (no-op cycles):
+// a Retainer built without this option deletes NOTHING, so an accidental
+// deploy is harmless. Pass true to arm destructive retention.
+func WithEnabled(on bool) Option {
+	return func(r *Retainer) { r.enabled = on }
+}
+
+// WithDryRun enables dry-run mode: cycles iterate and log the computed
+// per-tenant cutoffs and the hot horizon but perform NO drops or deletes.
+func WithDryRun(on bool) Option {
+	return func(r *Retainer) { r.dryRun = on }
+}
 
 // WithHotDays overrides the global hot-partition retention horizon. Must be
 // positive; zero is a no-op (keeps the default).
@@ -120,10 +135,25 @@ func (r *Retainer) Run(ctx context.Context) error {
 // bad tenant must not stall the rest. The hot partition drop failure IS a hard
 // error (it is global and idempotent to retry).
 //
+// Kill-switch: when the Retainer is not enabled (RETENTION_ENABLED!=true, the
+// default), this is a pure logging no-op — NO partitions are dropped and NO S3
+// objects are deleted. This mirrors COLD_SEARCH_ENABLED's opt-in posture so an
+// accidental deploy of a destructive worker is harmless.
+//
 // Returns a non-nil error only when the cycle cannot proceed at all (e.g. the
 // DB is unreachable for the policy list). Individual-tenant cold-purge errors
 // are reported via metrics/logging only.
 func (r *Retainer) RunCycle(ctx context.Context) error {
+	// Master kill-switch — fail-safe OFF. No destructive call is reached.
+	if !r.enabled {
+		r.log.InfoContext(ctx, "retention-worker: disabled (RETENTION_ENABLED!=true) — skipping cycle, no drops or deletes")
+		return nil
+	}
+
+	if r.dryRun {
+		return r.runDryCycle(ctx)
+	}
+
 	start := r.now()
 
 	// ── Step 1: hot partition drop (global, O(1)) ──────────────────────────
@@ -180,6 +210,35 @@ func (r *Retainer) RunCycle(ctx context.Context) error {
 		"cold_objects_deleted", totalDeleted,
 		"elapsed_ms", elapsed.Milliseconds())
 
+	return nil
+}
+
+// runDryCycle iterates policies and logs the hot horizon + each tenant's
+// computed cold cutoff WITHOUT performing any drop or delete. It still reads
+// retention_policies (a non-destructive SELECT) so an operator can rehearse the
+// exact set of tenants and cutoffs that an armed cycle would act on.
+//
+// It deliberately does NOT report per-object counts: counting expired objects
+// requires a list-only purger call, which would expand the ColdPurger port; a
+// count-mode dry-run is left as a follow-up. The required guarantee here is
+// that NO destructive operation runs.
+func (r *Retainer) runDryCycle(ctx context.Context) error {
+	r.log.InfoContext(ctx, "retention-worker: DRY RUN — no drops or deletes will be performed",
+		"would_drop_partitions_older_than_days", r.hotDays)
+
+	policies, err := r.policies.ListAll(ctx)
+	if err != nil {
+		r.log.ErrorContext(ctx, "retention-worker: dry-run list retention policies failed", "err", err)
+		return err
+	}
+	today := r.now().UTC().Truncate(24 * time.Hour)
+	for _, p := range policies {
+		cutoff := today.AddDate(0, 0, -p.ColdDays)
+		r.log.InfoContext(ctx, "retention-worker: dry-run would purge tenant cold prefixes",
+			"tenant_id", p.TenantID,
+			"cold_days", p.ColdDays,
+			"cutoff_date", cutoff.Format("2006-01-02"))
+	}
 	return nil
 }
 
