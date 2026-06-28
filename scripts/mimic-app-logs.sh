@@ -26,6 +26,11 @@ INGEST="http://localhost:${INGEST_PORT}/v1/ingest"
 API_KEY="${API_KEY:-lgk_dev_devkey001_devsecret0123456789}"
 RATE="${RATE:-5}"
 COUNT="${COUNT:-0}"
+# Jitter (stream) mode: when BOTH are set, sleep a RANDOM duration in
+# [JITTER_MIN, JITTER_MAX] seconds between events instead of the fixed RATE
+# cadence — bursty, more lifelike traffic. Driven by mimic-app-logs-stream.sh.
+JITTER_MIN="${JITTER_MIN:-}"
+JITTER_MAX="${JITTER_MAX:-}"
 
 SERVICES=(api-gateway auth-service checkout-service payments-worker user-service \
           search-indexer notification-worker billing-cron)
@@ -54,17 +59,26 @@ MESSAGES=(
 
 pick() { local arr=("$@"); echo "${arr[RANDOM % ${#arr[@]}]}"; }
 
-# Sleep between posts to approximate RATE/sec. bc if present, else coarse fallback.
-delay() {
-  if command -v bc >/dev/null 2>&1; then
-    awk "BEGIN{printf \"%.4f\", 1/$RATE}"
+# Fixed inter-event sleep to approximate RATE/sec (used when jitter is off).
+SLEEP="$(awk "BEGIN{printf \"%.4f\", 1/$RATE}")"
+
+# nap: wait before the next event. Random in [JITTER_MIN,JITTER_MAX] when jitter
+# mode is on (seeded with $RANDOM so sub-second calls differ), else fixed SLEEP.
+nap() {
+  if [[ -n "$JITTER_MIN" && -n "$JITTER_MAX" ]]; then
+    sleep "$(awk -v a="$JITTER_MIN" -v b="$JITTER_MAX" -v s="$RANDOM" \
+      'BEGIN{srand(s); printf "%.3f", a + rand()*(b-a)}')"
   else
-    echo 1
+    sleep "$SLEEP"
   fi
 }
-SLEEP="$(delay)"
 
-echo ">> emitting logs -> ${INGEST}  (rate≈${RATE}/s, count=${COUNT:-∞}); Ctrl-C to stop"
+if [[ -n "$JITTER_MIN" && -n "$JITTER_MAX" ]]; then
+  cadence="random ${JITTER_MIN}-${JITTER_MAX}s gaps"
+else
+  cadence="rate≈${RATE}/s"
+fi
+echo ">> emitting logs -> ${INGEST}  (${cadence}, count=${COUNT:-∞}); Ctrl-C to stop"
 n=0
 trap 'echo; echo ">> stopped after ${n} logs"; exit 0' INT TERM
 
@@ -86,5 +100,5 @@ while :; do
     sleep 1
   fi
   [[ "$COUNT" -gt 0 && "$n" -ge "$COUNT" ]] && { echo ">> done — emitted ${n} logs"; exit 0; }
-  sleep "$SLEEP"
+  nap
 done
