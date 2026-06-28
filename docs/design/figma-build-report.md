@@ -104,6 +104,18 @@ be run whenever a designer edits variables in Figma going forward.
 
 ## 6. Code Connect plan (#24)
 
+> **UPDATE (2026-06-28, #24): Code Connect publish is BLOCKED on Figma Org/Enterprise licensing —
+> not on #20.** The React component library #20–#23 has since shipped, so the "not built yet"
+> reasoning below is superseded. The real blocker is that `figma connect publish` requires an
+> **Organization / Enterprise** plan and this workspace is **Pro** (confirmed via the `whoami` probe
+> in §1). The `@figma/code-connect` dependency + publish step are therefore **descoped** until the
+> license gate clears. The interim, zero-dependency stand-in is
+> **`docs/design/figma-component-map.md`** (manual Figma-node ↔ actual-React-file map, with real
+> prop/variant APIs) + **`docs/design/token-parity.md`**. The node-id → source-path table below was a
+> pre-build *guess*; `figma-component-map.md` carries the **verified actual** paths (the layout used
+> `components/ui`, `components/shell`, `components/states`, and `features/*`, not the
+> `components/logalot/*` paths guessed here). Use the map doc, not this table.
+
 The React component library (#20) is **not built yet**, so Code Connect cannot publish real
 examples. Convention chosen for when it lands:
 
@@ -157,7 +169,11 @@ examples. Convention chosen for when it lands:
 
 ## 7. Deferred / follow-ups
 
-- **Code Connect publish** — blocked on #20 (React lib). Mapping plan above is ready to execute.
+- **Code Connect publish** — **BLOCKED on Figma Org/Enterprise licensing** (workspace is Pro);
+  `@figma/code-connect` is descoped (#24). Interim artifact:
+  `docs/design/figma-component-map.md` (+ `docs/design/token-parity.md`). To resume once licensed:
+  add `@figma/code-connect`, author a `*.figma.tsx` per *mapped* row in the map doc, and
+  `npx figma connect publish` with `FIGMA_ACCESS_TOKEN` from the repo-root `/.env`.
 - **Publish DS as a Figma library** — the DS components are not yet published to the team library,
   so the app-screen frames replicate component structures bound to the local variable copies rather
   than instancing remote DS components. After a one-time **Publish** in the Figma UI, screens can be
