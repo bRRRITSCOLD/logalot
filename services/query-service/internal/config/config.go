@@ -6,6 +6,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/bRRRITSCOLD/logalot/pkg/platform"
@@ -26,6 +27,30 @@ type Config struct {
 	JWTSecret string
 	// ShutdownGrace bounds in-flight request draining on shutdown.
 	ShutdownGrace time.Duration
+
+	// Cold-read routing (AC#2 / ADR-0003 / cold-tier.md §5.2).
+	// All cold config is defaulted OFF — production is a no-op until an
+	// operator sets COLD_SEARCH_ENABLED=true (AC#3, gated on cold_smoke_aws).
+
+	// ColdSearchEnabled gates cold-read routing (COLD_SEARCH_ENABLED env var).
+	// Default FALSE: behavior is exactly today's Postgres-only path.
+	ColdSearchEnabled bool
+	// HotDays is the global hot-partition horizon for routing decisions.
+	// Default 30 (app.DefaultHotDays). Used only when ColdSearchEnabled=true.
+	HotDays int
+	// ColdS3Bucket is the S3 cold-tier bucket (COLD_S3_BUCKET env var).
+	// Required only when ColdSearchEnabled=true.
+	ColdS3Bucket string
+	// ColdGlueDB is the Glue database (COLD_GLUE_DB env var).
+	// Required only when ColdSearchEnabled=true.
+	ColdGlueDB string
+	// ColdAthenaResultBucket is the Athena output S3 location
+	// (COLD_ATHENA_RESULT_BUCKET env var). Required only when
+	// ColdSearchEnabled=true.
+	ColdAthenaResultBucket string
+	// AWSEndpoint is an optional AWS endpoint override (AWS_ENDPOINT_URL env
+	// var) — points at floci for local dev (endpoint :4566, image floci/floci).
+	AWSEndpoint string
 }
 
 // DefaultAddr is the listen address when neither QUERY_HTTP_ADDR nor PORT is set.
@@ -33,6 +58,23 @@ const DefaultAddr = ":8081"
 
 // JWTSecretEnv is the env var carrying the shared HS256 session-token secret.
 const JWTSecretEnv = "JWT_SECRET"
+
+// Cold-read routing env var names.
+const (
+	// ColdSearchEnabledEnv gates cold-read routing. Default: false.
+	// Set to "true" only after the real-AWS cold_smoke_aws CI test passes (AC#3).
+	ColdSearchEnabledEnv = "COLD_SEARCH_ENABLED"
+	// HotDaysEnv overrides the hot-partition routing horizon. Default: 30.
+	HotDaysEnv = "HOT_RETENTION_DAYS"
+	// ColdS3BucketEnv is the S3 cold-tier bucket name.
+	ColdS3BucketEnv = "COLD_S3_BUCKET"
+	// ColdGlueDBEnv is the Glue database name.
+	ColdGlueDBEnv = "COLD_GLUE_DB"
+	// ColdAthenaResultBucketEnv is the Athena output S3 URL.
+	ColdAthenaResultBucketEnv = "COLD_ATHENA_RESULT_BUCKET"
+	// AWSEndpointEnv is the AWS endpoint override (floci for local dev).
+	AWSEndpointEnv = "AWS_ENDPOINT_URL"
+)
 
 // MinJWTSecretLen mirrors control-plane's zod `min(16)` on JWT_SECRET
 // (services/control-plane/src/config/env.ts) so a weak or missing secret fails
@@ -55,13 +97,51 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	return Config{
+
+	cfg := Config{
 		Addr:          listenAddr(),
 		AppDBURL:      appDB,
 		Redis:         redisCfg,
 		JWTSecret:     jwtSecret,
 		ShutdownGrace: 15 * time.Second,
-	}, nil
+
+		// Cold-read defaults: flag OFF, no AWS config required.
+		ColdSearchEnabled:      false,
+		HotDays:                30,
+		ColdS3Bucket:           os.Getenv(ColdS3BucketEnv),
+		ColdGlueDB:             os.Getenv(ColdGlueDBEnv),
+		ColdAthenaResultBucket: os.Getenv(ColdAthenaResultBucketEnv),
+		AWSEndpoint:            os.Getenv(AWSEndpointEnv),
+	}
+
+	// Parse COLD_SEARCH_ENABLED (string "true" → bool true; anything else → false).
+	if v := os.Getenv(ColdSearchEnabledEnv); v == "true" {
+		cfg.ColdSearchEnabled = true
+	}
+
+	// HOT_RETENTION_DAYS override.
+	if v := os.Getenv(HotDaysEnv); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 {
+			return Config{}, fmt.Errorf("config: %s must be a positive int, got %q", HotDaysEnv, v)
+		}
+		cfg.HotDays = n
+	}
+
+	// When cold search is enabled, the cold AWS config must be present.
+	if cfg.ColdSearchEnabled {
+		if cfg.ColdS3Bucket == "" {
+			return Config{}, fmt.Errorf("config: %s is required when %s=true", ColdS3BucketEnv, ColdSearchEnabledEnv)
+		}
+		if cfg.ColdGlueDB == "" {
+			return Config{}, fmt.Errorf("config: %s is required when %s=true", ColdGlueDBEnv, ColdSearchEnabledEnv)
+		}
+		if cfg.ColdAthenaResultBucket == "" {
+			return Config{}, fmt.Errorf("config: %s is required when %s=true", ColdAthenaResultBucketEnv, ColdSearchEnabledEnv)
+		}
+	}
+
+	return cfg, nil
 }
 
 // jwtSecretFromEnv reads and validates JWT_SECRET, failing closed if it is unset

@@ -21,8 +21,10 @@ type Searcher interface {
 	Search(tc kernel.TenantContext, ctx context.Context, q kernel.SearchQuery) (kernel.SearchPage, error)
 }
 
-// compile-time proof the app service satisfies the handler's port.
+// compile-time proof that both app.Searcher (hot-only) and app.TieredSearcher
+// (cold-read routing) satisfy the handler's port.
 var _ Searcher = (*app.Searcher)(nil)
+var _ Searcher = (*app.TieredSearcher)(nil)
 
 // searchResponse is the JSON body of GET /v1/search: the page of events plus an
 // opaque nextCursor (omitted on the final page). Clients pass nextCursor straight
