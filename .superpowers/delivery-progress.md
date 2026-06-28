@@ -405,11 +405,36 @@ during the chunk; bring it down with `make down` (or the infra-down target) when
 `docs/data/spikes/013–016`.
 
 ### NEXT — fresh session, next chunk
-1. **#17 cold tier** — now well-scoped by decision 016: implement direct-write Parquet + `CreatePartition`
-   (NOT Firehose) behind `ColdArchive`; cold-read SQL fitness function; Trino+HMS+MinIO local compose overlay
-   for cold-query integration tests; real-AWS cold-tier CI smoke (injected-projection + dialect canaries);
-   keep feature-flagged. Solo PR.
+1. **#17 cold tier** — DONE Session 7 (see below).
 2. **Wave 4 frontend** — **#20 scaffold + component library SOLO FIRST** (shadcn/ui-on-Base-UI from Figma
    `9N3v2ZGGo3McfSxOLfBPnC` + `packages/design-tokens/tokens.json` via `ai:ux-designer`); then **#21/#22/#23
    PARALLEL** worktrees; **#24 Code Connect LAST**. Confirm Figma MCP authed at session start.
+3. **#56** tiny backend minors — fold into a nearby backend chunk.
+
+---
+
+## SESSION 7 UPDATE (2026-06-28) — #17 cold tier MERGED
+
+Drove **#17 cold tier** to done via `/ai:orchestrate` → `autonomous-delivery` (manual loop, serial). `main` @ `eaedf9b`.
+
+### #17 — MERGED (PR #62, squash `eaedf9b`), #17 CLOSED
+Implemented per decision 016 (Firehose REJECTED → direct-write). `ai:backend-engineer` (sonnet, worktree) → staff gate (opus/high): **REQUEST-CHANGES → 1 fix-pass → APPROVE** → security audit (tenancy, clean) → lint fix → squash-merge.
+- **`pkg/coldstore`** (13th go.work module): `ColdArchive` adapter = **direct S3 PutObject Parquet + explicit `glue.CreatePartition`** (NO Firehose). `parquet.go` (`encodeParquet`+`coldKey`, tenant_id LEADING partition from validated `tc.TenantID`, never event body); `Archive` groups events by `(dt,hour)` → one object/partition. `fitness.go` `CheckTenantPredicate` = structural AST/token check rejecting any cold SQL lacking a static `tenant_id='<ctx>'` AND-term (OR/paren/subquery/wrong-tenant all fail-closed); `query.go` `buildColdQuery` escapes all user fields via `escapeSQ` (`'`→`''`, complete for Athena/Trino). Cold search behind `COLD_ENABLED` (default OFF) + `WithSearchEnabled`.
+- **Processor tee** wired best-effort: cold failure never fails hot ACK; hot-persist failure → no cold tee; tee skipped once lifecycle ctx cancelled (bounded shutdown).
+- **Trino+HMS+MinIO overlay** `docker-compose.cold-query.yml` (`trinodb/trino:482` + `apache/hive:4.1.0` (embedded Derby — image ships no PG JDBC driver; ephemeral fixture, acceptable) + MinIO). `cold_query`-tagged test runs the REAL `buildColdQuery` output verbatim → ran GREEN: scoped rows only + Trino rejects no-partition-predicate query (`hive.query-partition-filter-required=true` = injected-projection analog).
+- **Real-AWS smoke** `tests/cold-tier-smoke/` (`cold_smoke_aws` tag, skips w/o creds): raw `athenaRunner` bypasses fitness gate → asserts Athena `CONSTRAINT_VIOLATION` on no-tenant query (proves engine-enforced injected projection), bound-tenant returns rows, wrong-tenant zero rows, regexp_like/json_extract_scalar dialect. Correct-by-construction; runs only in gated AWS CI.
+- Docs: `cold-tier.md` §2/§3 reconciled to `bigint` Unix-millis `ts`.
+- **Security audit verdict: no exploitable cross-tenant vuln.** Tenant always kernel-validated UUID (36-char hex/dash → SQL-breakout impossible), inlined safely; user fields escaped; fitness gate fail-closed, no TOCTOU (same `sql` var to gate + execute). **Latent (non-blocking) note:** `splitTopLevelAND` ignores AND/OR precedence — NOT reachable here (user input can't inject a top-level OR), but harden if a future caller ever passes externally-influenced SQL structure to the gate.
+- CI all green (go-lint after a De-Morgan/unused-helper fix, go-test, slice-e2e, node, GitGuardian). Unit: coldstore 18 + processor 23.
+
+### Deferred → tracked
+- **#63 (NEW, OPEN)** — cold-tier retention jobs (hot `drop_log_events_partitions_older_than` + per-tenant cold S3 prefix delete) + query-service cold-read routing/union-dedupe. Original #17 AC items intentionally deferred per decision 016 scope.
+- **`cold_smoke_aws` CI workflow job** — needs real AWS + bucket provisioning (devops scope); test is complete, only the workflow wiring + `COLD_ENABLED=true` flip remain (decision 016 §6 gates the flip on a green smoke).
+
+### State at session end
+`main` @ `eaedf9b`, clean tree, no worktrees, no live agents, no claimed issues. floci + postgres compose UP (`logalot-floci` :4566 healthy, `logalot-postgres`); burrow stack was brought DOWN by the user mid-session (freed 5672/6379/27017). Stale orphan `worktree-agent-*` local branches from prior sessions remain (harmless clutter; safe to `git branch -D` later). Cold search stays feature-flagged.
+
+### NEXT — fresh session, next chunk
+1. **Wave 4 frontend** (DS in Figma `9N3v2ZGGo3McfSxOLfBPnC` + `packages/design-tokens/tokens.json`): **#20 scaffold + component library SOLO FIRST** (shadcn/ui-on-Base-UI `@base-ui-components/react`, via `ai:ux-designer`); then **#21/#22/#23 PARALLEL** worktrees (#23 has #16+#18 backends); **#24 Code Connect LAST**. Confirm Figma MCP authed at session start; never create new Figma files.
+2. **#63** cold-tier retention + cold-read routing — backend, flips `COLD_ENABLED` only after the real-AWS smoke job lands.
 3. **#56** tiny backend minors — fold into a nearby backend chunk.
