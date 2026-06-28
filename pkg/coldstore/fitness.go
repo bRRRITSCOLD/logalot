@@ -110,7 +110,7 @@ func tokenize(sql string) []token {
 		// --- skip block comment (/* … */) ---
 		if c == '/' && i+1 < len(sql) && sql[i+1] == '*' {
 			i += 2
-			for i+1 < len(sql) && !(sql[i] == '*' && sql[i+1] == '/') {
+			for i+1 < len(sql) && (sql[i] != '*' || sql[i+1] != '/') {
 				i++
 			}
 			i += 2

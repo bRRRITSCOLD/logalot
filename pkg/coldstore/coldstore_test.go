@@ -396,7 +396,3 @@ func newTestStore(s3 testS3Writer, g testGlueRegistrar, _ *fakeAthena) *Store {
 		log:      slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 }
-
-func newTestStoreWithAthena(s3 testS3Writer, g testGlueRegistrar, _ *fakeAthena) *Store {
-	return newTestStore(s3, g, nil)
-}
