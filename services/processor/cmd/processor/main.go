@@ -1,8 +1,8 @@
 // Command processor is the Log Processing worker (ADR-0001): it consumes ingest
 // envelopes from RabbitMQ, normalizes each to a LogEvent, persists it to the hot
-// store under the tenant's RLS context, and fans it out to the live-tail bus on
-// tail:{tenant_id} (overview.md §5.2, ADR-0006). The cold-tier tee is out of
-// scope here (#17).
+// store under the tenant's RLS context, fans it out to the live-tail bus on
+// tail:{tenant_id} (overview.md §5.2, ADR-0006), and tees each event to the
+// cold-tier S3 Parquet archive when COLD_ENABLED=true (ADR-0005, decision 016).
 package main
 
 import (
@@ -14,13 +14,21 @@ import (
 	"syscall"
 	"time"
 
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	awscreds "github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/athena"
+	"github.com/aws/aws-sdk-go-v2/service/glue"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/bRRRITSCOLD/logalot/pkg/broker"
+	"github.com/bRRRITSCOLD/logalot/pkg/coldstore"
 	"github.com/bRRRITSCOLD/logalot/pkg/kernel"
 	"github.com/bRRRITSCOLD/logalot/pkg/logstore"
 	"github.com/bRRRITSCOLD/logalot/pkg/platform"
 	"github.com/bRRRITSCOLD/logalot/pkg/tailbus"
 	"github.com/bRRRITSCOLD/logalot/services/processor/internal/app"
 	"github.com/bRRRITSCOLD/logalot/services/processor/internal/config"
+
+	aws "github.com/aws/aws-sdk-go-v2/aws"
 )
 
 func main() {
@@ -75,11 +83,28 @@ func run(log *slog.Logger) error {
 
 	store := logstore.New(pool)
 	tail := tailbus.New(rc, tailbus.WithLogger(log))
-	svc := app.New(store, tail,
+
+	svcOpts := []app.Option{
 		app.WithLogger(log),
 		app.WithRetry(cfg.MaxRetries, cfg.RetryBackoff),
 		app.WithDrainTimeout(cfg.DrainTimeout),
-	)
+	}
+
+	// Wire the cold-tier tee when COLD_ENABLED=true (decision 016 §6: feature-
+	// flagged OFF by default until the real-AWS smoke test passes).
+	if cfg.ColdEnabled {
+		coldArchive, err := buildColdStore(startCtx, cfg, log)
+		if err != nil {
+			return err
+		}
+		svcOpts = append(svcOpts, app.WithColdArchive(coldArchive))
+		log.Info("cold-tier tee enabled",
+			"bucket", cfg.ColdBucket, "glue_db", cfg.ColdGlueDB)
+	} else {
+		log.Info("cold-tier tee disabled (COLD_ENABLED not set)")
+	}
+
+	svc := app.New(store, tail, svcOpts...)
 
 	// The consuming identity is a platform worker; the broker rebuilds a fresh
 	// per-message TenantContext from each envelope's authoritative tenant_id and
@@ -93,4 +118,57 @@ func run(log *slog.Logger) error {
 		return nil
 	}
 	return err
+}
+
+// buildColdStore constructs the coldstore.Store with AWS clients. When
+// FLOCI_ENDPOINT is set (local dev against floci), the clients are pointed at
+// that endpoint with static credentials; otherwise they use the default AWS
+// credential chain (IAM role in production).
+func buildColdStore(ctx context.Context, cfg config.Config, log *slog.Logger) (*coldstore.Store, error) {
+	var loadOpts []func(*awsconfig.LoadOptions) error
+	loadOpts = append(loadOpts, awsconfig.WithRegion(cfg.AWSRegion))
+
+	if cfg.FlociEndpoint != "" {
+		log.Info("cold-tier using floci endpoint", "endpoint", cfg.FlociEndpoint)
+		loadOpts = append(loadOpts,
+			awsconfig.WithCredentialsProvider(awscreds.NewStaticCredentialsProvider("test", "test", "")),
+			awsconfig.WithEndpointResolver( //nolint:staticcheck
+				aws.EndpointResolverFunc( //nolint:staticcheck
+					func(_, _ string) (aws.Endpoint, error) { //nolint:staticcheck
+						return aws.Endpoint{ //nolint:staticcheck
+							URL:               cfg.FlociEndpoint,
+							SigningRegion:     cfg.AWSRegion,
+							HostnameImmutable: true,
+						}, nil
+					}),
+			),
+		)
+	}
+
+	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, loadOpts...)
+	if err != nil {
+		return nil, err
+	}
+
+	s3Client := s3.NewFromConfig(awsCfg, func(o *s3.Options) {
+		if cfg.FlociEndpoint != "" {
+			o.UsePathStyle = true // required for floci path-style S3
+		}
+	})
+	glueClient := glue.NewFromConfig(awsCfg)
+	athenaClient := athena.NewFromConfig(awsCfg)
+
+	cs := coldstore.New(
+		s3Client,
+		glueClient,
+		athenaClient,
+		cfg.ColdBucket,
+		cfg.ColdGlueDB,
+		cfg.ColdAthenaResultBucket,
+		coldstore.WithLogger(log),
+		coldstore.WithWorkgroup(cfg.ColdAthenaWorkgroup),
+		// Cold search stays OFF (feature-flagged). The processor only calls
+		// Archive; Search is gated separately in the query-service (decision 016 §6).
+	)
+	return cs, nil
 }

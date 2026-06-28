@@ -41,7 +41,7 @@ pay-per-scan cost (NFR-4). The record mirrors `log_events` so hot and cold resul
 | Column | Parquet type | Maps to `log_events` |
 |---|---|---|
 | `tenant_id` | `string` (uuid) | `tenant_id` — also the partition key (redundant in-file for self-describing files) |
-| `ts` | `timestamp (millis, UTC)` | `ts` |
+| `ts` | `bigint` (Unix epoch millis, UTC) | `ts` |
 | `id` | `string` (uuid) | `id` |
 | `service` | `string` | `service` |
 | `level` | `string` | `level` (enum rendered as text) |
@@ -67,7 +67,8 @@ A single Glue **external table** over `s3://logalot-cold/logs/`, partitioned on
 ```sql
 CREATE EXTERNAL TABLE logalot_cold.log_events (
   tenant_id string,
-  ts        timestamp,
+  ts        bigint,      -- Unix epoch millis (UTC); stored as int64 in Parquet so Athena
+                         -- compares without conversion. from_unixtime(ts/1000) to render.
   id        string,
   service   string,
   level     string,

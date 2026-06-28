@@ -21,6 +21,7 @@ go 1.26
 use (
 	./pkg/auth
 	./pkg/broker
+	./pkg/coldstore
 	./pkg/httpkit
 	./pkg/kernel
 	./pkg/logstore
@@ -30,6 +31,7 @@ use (
 	./services/ingest-service
 	./services/processor
 	./services/query-service
+	./tests/cold-tier-smoke
 	./tests/cold-tier-spike
 	./tests/e2e
 )
