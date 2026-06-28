@@ -4,7 +4,12 @@
 // delivery and Glue cataloging fidelity against the cold-tier.md §1–3 design.
 //
 // Each sub-test is independent and self-cleaning. The suite records an honest
-// pass/fail verdict — a FAIL here is the expected, documented result for Firehose.
+// pass/fail verdict. The Firehose sub-test FAILS by design: it controls for the
+// IAM-role variable (creates a recognized delivery role), triggers floci's actual
+// flush path (≥5 records), and then asserts the cold-tier requirements that floci's
+// Firehose CANNOT meet — it delivers raw NDJSON (not Parquet) and writes the
+// dynamic-partition placeholders LITERALLY (no !{...} substitution). See the
+// findings doc for the source-level root cause.
 //
 // Requires compose floci running at FLOCI_ENDPOINT (default http://localhost:4566).
 // Start the stack with `make up` and confirm health with `curl /_floci/health`.
@@ -32,6 +37,7 @@ import (
 	firetypes "github.com/aws/aws-sdk-go-v2/service/firehose/types"
 	"github.com/aws/aws-sdk-go-v2/service/glue"
 	glutypes "github.com/aws/aws-sdk-go-v2/service/glue/types"
+	"github.com/aws/aws-sdk-go-v2/service/iam"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
@@ -49,7 +55,26 @@ const (
 	testDT       = "2026-06-27"
 	testHour     = "21"
 	locationTmpl = "s3://" + coldBucket + "/logs/tenant_id=${tenant_id}/dt=${dt}/hour=${hour}/"
+
+	// firehoseRoleName is a delivery role with a Firehose trust policy + S3 write
+	// policy. It is created so the Firehose FAIL cannot be attributed to a missing
+	// or unauthorized role — the IAM-role confound is eliminated in-test.
+	firehoseRoleName = "firehose-delivery-role-spike"
+	firehoseRoleARN  = "arn:aws:iam::000000000000:role/" + firehoseRoleName
+
+	// firehoseFlushCount is floci 1.5.28's hard-coded count-based flush threshold
+	// (FirehoseService.DEFAULT_FLUSH_COUNT = 5). floci has NO time-based flush, so
+	// fewer than this many records never reach S3. We send exactly this many to
+	// guarantee floci's flush path runs and the FAIL reflects fidelity, not a
+	// sub-threshold buffer.
+	firehoseFlushCount = 5
 )
+
+// firehoseDynSuffix is the cold-tier.md §1 key layout expressed with real AWS
+// Firehose dynamic-partitioning + timestamp expressions. Real Firehose substitutes
+// these; floci writes them LITERALLY (see findings doc). A run-unique isolation
+// segment is prepended at call time so leftover objects cannot pollute the result.
+const firehoseDynSuffix = "tenant_id=!{partitionKeyFromQuery:tenant_id}/dt=!{timestamp:yyyy-MM-dd}/hour=!{timestamp:HH}/"
 
 // ---------------------------------------------------------------------------
 // Suite entry-point.
@@ -66,11 +91,12 @@ func TestColdTierFidelity(t *testing.T) {
 	})
 	fhClient := firehose.NewFromConfig(cfg)
 	glueClient := glue.NewFromConfig(cfg)
+	iamClient := iam.NewFromConfig(cfg)
 
 	ensureBucket(t, ctx, s3Client, coldBucket)
 	ensureGlueDB(t, ctx, glueClient, glueDB)
 
-	// Run Glue and direct-S3 tests first (non-Firehose fallback path).
+	// Run Glue and direct-S3 tests first (the direct-write fallback path).
 	// These are expected to PASS. Firehose is last (expected FAIL).
 	t.Run("GlueCatalogFidelity", func(t *testing.T) {
 		testGlueCatalogFidelity(t, ctx, glueClient)
@@ -81,9 +107,11 @@ func TestColdTierFidelity(t *testing.T) {
 	t.Run("GlueExplicitPartitionRegistration", func(t *testing.T) {
 		testGlueExplicitPartition(t, ctx, glueClient)
 	})
-	// This sub-test FAILS by design. See findings doc §3.
-	t.Run("FirehoseS3Delivery", func(t *testing.T) {
-		testFirehoseS3Delivery(t, ctx, fhClient, s3Client)
+	// This sub-test FAILS by design — see findings doc §3. It controls for the
+	// IAM-role variable, triggers floci's real flush path, and asserts the
+	// cold-tier requirements floci's Firehose cannot meet (Parquet + partitioning).
+	t.Run("FirehoseDeliveryFidelity", func(t *testing.T) {
+		testFirehoseDeliveryFidelity(t, ctx, fhClient, s3Client, iamClient)
 	})
 }
 
@@ -354,18 +382,45 @@ func testGlueExplicitPartition(t *testing.T, ctx context.Context, glueClient *gl
 }
 
 // ---------------------------------------------------------------------------
-// Sub-test: Firehose → S3 delivery (the primary cold-tier path).
+// Sub-test: Firehose → S3 delivery fidelity (the primary cold-tier path).
 //
-// EXPECTED RESULT: FAIL.
-// floci 1.5.28 community edition accepts PutRecord / PutRecordBatch (returns
-// valid RecordIds) but never delivers to S3. No flush event appears in the
-// floci container log even after 90s with a 1-second buffer interval.
-// See docs/data/spikes/013-firehose-glue-fidelity.md §3 for full evidence.
+// EXPECTED RESULT: FAIL — but for fidelity reasons, NOT non-delivery.
+//
+// This test settles the IAM-role confound raised in review: an unauthorized or
+// missing delivery role would produce zero S3 objects with no caller-visible
+// error, which is indistinguishable from a delivery stub. So we:
+//
+//  1. Create a recognized IAM delivery role (Firehose trust + S3 write policy),
+//     eliminating the role variable.
+//  2. Configure the stream with the cold-tier.md design: Parquet conversion
+//     (DataFormatConversionConfiguration referencing the Glue table) and the
+//     §1 dynamic-partition prefix.
+//  3. Assert the DescribeDeliveryStream SHAPE — floci collapses the extended
+//     config to a plain S3DestinationDescription, the first fidelity signal.
+//  4. Send EXACTLY firehoseFlushCount (5) records to trigger floci's hard-coded
+//     count-based flush (there is NO time-based flush in floci 1.5.28), so we
+//     observe its real delivery, then assert the cold-tier requirements:
+//       (a) the object is Parquet  → floci writes raw NDJSON       → FAIL
+//       (b) the key has the substituted tenant_id=/dt=/hour= path  → floci
+//           writes the !{...} placeholders LITERALLY               → FAIL
+//
+// Root cause (floci source, FirehoseService.java @ tag 1.5.28): flush() writes
+// raw NDJSON via s3Service.putObject and resolvePrefix only substitutes
+// {year}/{month}/{day}/{hour}, never the real-Firehose !{...} expressions, and
+// no Parquet/DataFormatConversion path exists. See findings doc §3.
 // ---------------------------------------------------------------------------
 
-func testFirehoseS3Delivery(t *testing.T, ctx context.Context,
-	fhClient *firehose.Client, s3Client *s3.Client) {
+func testFirehoseDeliveryFidelity(t *testing.T, ctx context.Context,
+	fhClient *firehose.Client, s3Client *s3.Client, iamClient *iam.Client) {
 	t.Helper()
+
+	// --- (1) Eliminate the IAM-role confound: create a recognized delivery role.
+	ensureFirehoseRole(t, ctx, iamClient)
+
+	// Run-unique isolation segment so leftover objects from prior runs / manual
+	// probing cannot pollute the scan. The §1 dynamic-partition layout follows it.
+	runPrefix := fmt.Sprintf("logs/_fh_fidelity_%d/", time.Now().UnixNano())
+	streamPrefix := runPrefix + firehoseDynSuffix
 
 	// Clean up prior runs.
 	_, _ = fhClient.DeleteDeliveryStream(ctx, &firehose.DeleteDeliveryStreamInput{
@@ -373,36 +428,83 @@ func testFirehoseS3Delivery(t *testing.T, ctx context.Context,
 	})
 	time.Sleep(2 * time.Second)
 
-	// Create stream: minimal buffer (1s / 1MB) so we do not wait for the default 60s.
+	// --- (2) Create the stream per cold-tier.md: Parquet conversion + §1 prefix.
 	_, err := fhClient.CreateDeliveryStream(ctx, &firehose.CreateDeliveryStreamInput{
 		DeliveryStreamName: aws.String(streamName),
 		DeliveryStreamType: firetypes.DeliveryStreamTypeDirectPut,
 		ExtendedS3DestinationConfiguration: &firetypes.ExtendedS3DestinationConfiguration{
-			RoleARN:   aws.String("arn:aws:iam::000000000000:role/firehose-role"),
+			RoleARN:   aws.String(firehoseRoleARN), // the recognized role
 			BucketARN: aws.String("arn:aws:s3:::" + coldBucket),
-			Prefix:    aws.String("logs/firehose/"),
+			Prefix:    aws.String(streamPrefix),
 			BufferingHints: &firetypes.BufferingHints{
 				SizeInMBs:         aws.Int32(1),
 				IntervalInSeconds: aws.Int32(1),
 			},
 			CompressionFormat: firetypes.CompressionFormatUncompressed,
+			// cold-tier.md §2: convert the JSON stream to Parquet against the
+			// Glue table schema. Real Firehose honours this; floci ignores it.
+			DataFormatConversionConfiguration: &firetypes.DataFormatConversionConfiguration{
+				Enabled: aws.Bool(true),
+				InputFormatConfiguration: &firetypes.InputFormatConfiguration{
+					Deserializer: &firetypes.Deserializer{HiveJsonSerDe: &firetypes.HiveJsonSerDe{}},
+				},
+				OutputFormatConfiguration: &firetypes.OutputFormatConfiguration{
+					Serializer: &firetypes.Serializer{
+						ParquetSerDe: &firetypes.ParquetSerDe{
+							Compression: firetypes.ParquetCompressionSnappy,
+						},
+					},
+				},
+				SchemaConfiguration: &firetypes.SchemaConfiguration{
+					RoleARN:      aws.String(firehoseRoleARN),
+					DatabaseName: aws.String(glueDB),
+					TableName:    aws.String(glueTable),
+					Region:       aws.String("us-east-1"),
+					VersionId:    aws.String("LATEST"),
+				},
+			},
 		},
 	})
 	if err != nil {
 		t.Fatalf("Firehose CreateDeliveryStream: %v", err)
 	}
 
-	// Wait for ACTIVE status.
 	if err := waitFirehoseActive(ctx, fhClient, streamName, 30*time.Second); err != nil {
 		t.Fatalf("stream never became ACTIVE: %v", err)
 	}
-	t.Log("Firehose stream is ACTIVE")
+	t.Log("Firehose stream is ACTIVE (recognized role attached; IAM-role confound eliminated)")
 
-	// Put 3 records (raw JSON bytes — the SDK base64-encodes them for the wire).
-	batch := []firetypes.Record{
-		{Data: []byte(`{"tenant_id":"` + testTenantID + `","ts":"2026-06-27T21:30:00.000Z","id":"b1-0001","service":"orders","level":"warn","message":"firehose-spike-1"}`)},
-		{Data: []byte(`{"tenant_id":"` + testTenantID + `","ts":"2026-06-27T21:31:00.000Z","id":"b1-0002","service":"orders","level":"info","message":"firehose-spike-2"}`)},
-		{Data: []byte(`{"tenant_id":"` + testTenantID + `","ts":"2026-06-27T21:32:00.000Z","id":"b1-0003","service":"auth","level":"error","message":"firehose-spike-3"}`)},
+	// --- (3) Assert the Describe SHAPE: floci drops the extended/Parquet config.
+	desc, err := fhClient.DescribeDeliveryStream(ctx, &firehose.DescribeDeliveryStreamInput{
+		DeliveryStreamName: aws.String(streamName),
+	})
+	if err != nil {
+		t.Fatalf("Firehose DescribeDeliveryStream: %v", err)
+	}
+	dests := desc.DeliveryStreamDescription.Destinations
+	if len(dests) == 1 {
+		d := dests[0]
+		hasExtended := d.ExtendedS3DestinationDescription != nil
+		hasPlainS3 := d.S3DestinationDescription != nil
+		t.Logf("Describe shape: ExtendedS3DestinationDescription present=%v, "+
+			"S3DestinationDescription present=%v", hasExtended, hasPlainS3)
+		if !hasExtended {
+			t.Errorf("FIDELITY GAP (Describe): floci did not round-trip the "+
+				"ExtendedS3DestinationConfiguration (Parquet conversion + role). "+
+				"Describe returned S3DestinationDescription=%v / Extended=%v — the "+
+				"DataFormatConversionConfiguration is silently dropped.",
+				hasPlainS3, hasExtended)
+		}
+	}
+
+	// --- (4) Send exactly the flush threshold to trigger floci's real delivery.
+	batch := make([]firetypes.Record, 0, firehoseFlushCount)
+	for i := 0; i < firehoseFlushCount; i++ {
+		// Raw JSON bytes — the SDK base64-encodes them for the wire.
+		rec := fmt.Sprintf(
+			`{"tenant_id":%q,"ts":"2026-06-27T21:30:00.000Z","id":"fh-%04d","service":"orders","level":"warn","message":"firehose-fidelity-%d"}`,
+			testTenantID, i, i)
+		batch = append(batch, firetypes.Record{Data: []byte(rec)})
 	}
 	batchOut, err := fhClient.PutRecordBatch(ctx, &firehose.PutRecordBatchInput{
 		DeliveryStreamName: aws.String(streamName),
@@ -411,46 +513,134 @@ func testFirehoseS3Delivery(t *testing.T, ctx context.Context,
 	if err != nil {
 		t.Fatalf("Firehose PutRecordBatch: %v", err)
 	}
-	t.Logf("PutRecordBatch accepted: FailedPutCount=%d", aws.ToInt32(batchOut.FailedPutCount))
+	t.Logf("PutRecordBatch accepted %d records (== flush threshold): FailedPutCount=%d",
+		firehoseFlushCount, aws.ToInt32(batchOut.FailedPutCount))
 
-	// Poll S3 for any object under logs/firehose/. Window = 90s >> 1s buffer.
-	const pollWindow = 90 * time.Second
-	const pollInterval = 5 * time.Second
-	t.Logf("Polling s3://%s/logs/firehose/ for Firehose-delivered objects (window=%s)...",
-		coldBucket, pollWindow)
+	// Poll for THIS run's delivered object under the run-unique prefix (floci
+	// honours the bucket + prefix, so it lands under runPrefix with the LITERAL
+	// placeholder segment). Scanning by runPrefix isolates us from any leftover or
+	// direct-write objects. Window is short because floci flushes synchronously on
+	// the threshold-crossing PutRecordBatch.
+	const pollWindow = 30 * time.Second
+	const pollInterval = 3 * time.Second
+	t.Logf("Polling s3://%s/%s for this run's flushed object (window=%s)...",
+		coldBucket, runPrefix, pollWindow)
 
-	deadline := time.Now().Add(pollWindow)
-	for time.Now().Before(deadline) {
-		list, err := s3Client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
-			Bucket: aws.String(coldBucket),
-			Prefix: aws.String("logs/firehose/"),
-		})
-		if err != nil {
-			t.Fatalf("S3 ListObjectsV2: %v", err)
+	var delivered *firehoseObject
+	start := time.Now()
+	for time.Since(start) < pollWindow {
+		obj := findFirehoseFlush(t, ctx, s3Client, runPrefix)
+		if obj != nil {
+			delivered = obj
+			break
 		}
-		if len(list.Contents) > 0 {
-			// Firehose DID deliver — document what landed.
-			t.Logf("PASS: Firehose delivered %d object(s) to S3 within %s",
-				len(list.Contents), time.Since(deadline.Add(-pollWindow)).Round(time.Second))
-			for _, obj := range list.Contents {
-				t.Logf("  key=%q size=%d lastModified=%s",
-					aws.ToString(obj.Key), obj.Size, obj.LastModified)
-			}
-			return
-		}
-		t.Logf("  no objects yet (elapsed %s)", time.Since(deadline.Add(-pollWindow)).Round(time.Second))
 		time.Sleep(pollInterval)
 	}
 
-	// Nothing arrived. This is the expected negative result. Mark it explicitly.
-	t.Fatal(
-		"FAIL (expected per spike findings): floci Firehose accepted PutRecordBatch " +
-			"(FailedPutCount=0) but delivered 0 objects to S3 within 90s with a 1-second " +
-			"buffer interval. The Firehose→S3 delivery loop is a stub in floci 1.5.28 " +
-			"community edition — it returns valid RecordIds but never flushes to S3. " +
-			"Trigger: switch ColdArchive to processor direct-write + explicit ADD PARTITION. " +
-			"See docs/data/spikes/013-firehose-glue-fidelity.md for full findings and recommendation.",
-	)
+	if delivered == nil {
+		// With a recognized role AND ≥5 records, non-delivery would mean a true
+		// stub. We did not observe that — but if a future floci changes behaviour,
+		// this fatal documents it as still-unusable.
+		t.Fatal(
+			"FAIL: with a recognized delivery role and exactly the flush-count " +
+				"records, floci delivered 0 objects to S3. Either way the Firehose " +
+				"path is unusable for the cold tier; use the direct-write fallback. " +
+				"See docs/data/spikes/013-firehose-glue-fidelity.md.")
+		return
+	}
+
+	t.Logf("floci DID deliver: key=%q size=%d (delivery works — so the FAIL below "+
+		"is a FIDELITY gap, not a stub and not the IAM role)", delivered.key, delivered.size)
+
+	// (4a) cold-tier.md §2 requires Parquet. floci writes raw NDJSON.
+	if !bytes.HasPrefix(delivered.body, []byte("PAR1")) {
+		preview := delivered.body
+		if len(preview) > 80 {
+			preview = preview[:80]
+		}
+		t.Errorf("FIDELITY GAP (format): cold-tier.md §2 requires Parquet "+
+			"(magic 'PAR1'); floci delivered non-Parquet content. First bytes: %q. "+
+			"floci's DataFormatConversionConfiguration is a no-op — it writes raw "+
+			"NDJSON, which the Glue Parquet serde cannot read.", preview)
+	}
+
+	// (4b) cold-tier.md §1 requires the substituted tenant_id=/dt=/hour= path.
+	// floci writes the real-Firehose !{...} expressions literally.
+	if strings.Contains(delivered.key, "!{") {
+		t.Errorf("FIDELITY GAP (partitioning): cold-tier.md §1 requires the key "+
+			"…/tenant_id=<uuid>/dt=<date>/hour=<HH>/…; floci wrote the dynamic-"+
+			"partition expressions LITERALLY: %q. The data is unreachable as Hive "+
+			"partitions — Glue/Athena cannot discover it.", delivered.key)
+	}
+
+	// Both assertions are expected to fail; surface the recommendation once.
+	t.Logf("VERDICT: floci Firehose delivers but is NON-FAITHFUL (NDJSON not Parquet; " +
+		"placeholders not substituted; count-only flush, no time flush). " +
+		"Recommendation: ColdArchive uses processor direct-write Parquet + explicit " +
+		"CreatePartition. See docs/data/spikes/013-firehose-glue-fidelity.md §6.")
+}
+
+// firehoseObject is a delivered S3 object captured for fidelity assertions.
+type firehoseObject struct {
+	key  string
+	size int64
+	body []byte
+}
+
+// findFirehoseFlush scans the run-unique prefix for the Firehose flush object
+// (floci writes it as <streamPrefix><uuid>.json). Returns the first match with its
+// body, or nil. The runPrefix isolates this run from leftover/direct-write objects.
+func findFirehoseFlush(t *testing.T, ctx context.Context, s3Client *s3.Client, runPrefix string) *firehoseObject {
+	t.Helper()
+	list, err := s3Client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+		Bucket: aws.String(coldBucket),
+		Prefix: aws.String(runPrefix),
+	})
+	if err != nil {
+		t.Fatalf("S3 ListObjectsV2: %v", err)
+	}
+	for _, obj := range list.Contents {
+		key := aws.ToString(obj.Key)
+		out, err := s3Client.GetObject(ctx, &s3.GetObjectInput{
+			Bucket: aws.String(coldBucket),
+			Key:    aws.String(key),
+		})
+		if err != nil {
+			continue
+		}
+		body, _ := io.ReadAll(out.Body)
+		_ = out.Body.Close()
+		return &firehoseObject{key: key, size: aws.ToInt64(obj.Size), body: body}
+	}
+	return nil
+}
+
+// ensureFirehoseRole creates an IAM role with a Firehose trust policy and an
+// inline S3-write policy, so a missing/unauthorized role cannot be the cause of
+// any delivery failure. Idempotent.
+func ensureFirehoseRole(t *testing.T, ctx context.Context, iamClient *iam.Client) {
+	t.Helper()
+	const trust = `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"firehose.amazonaws.com"},"Action":"sts:AssumeRole"}]}`
+	_, err := iamClient.CreateRole(ctx, &iam.CreateRoleInput{
+		RoleName:                 aws.String(firehoseRoleName),
+		AssumeRolePolicyDocument: aws.String(trust),
+		Description:              aws.String("Firehose→S3 delivery role (spike #13 confound control)"),
+	})
+	if err != nil && !isAlreadyExists(err) {
+		t.Fatalf("IAM CreateRole: %v", err)
+	}
+	policy := fmt.Sprintf(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:PutObject","s3:GetObject","s3:GetBucketLocation","s3:ListBucket","s3:AbortMultipartUpload"],"Resource":["arn:aws:s3:::%s","arn:aws:s3:::%s/*"]}]}`,
+		coldBucket, coldBucket)
+	_, err = iamClient.PutRolePolicy(ctx, &iam.PutRolePolicyInput{
+		RoleName:       aws.String(firehoseRoleName),
+		PolicyName:     aws.String("firehose-s3-write"),
+		PolicyDocument: aws.String(policy),
+	})
+	if err != nil {
+		t.Fatalf("IAM PutRolePolicy: %v", err)
+	}
+	t.Logf("IAM role %q ready (Firehose trust + S3 write) — role confound eliminated",
+		firehoseRoleName)
 }
 
 // ---------------------------------------------------------------------------

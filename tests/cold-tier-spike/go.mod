@@ -8,6 +8,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.24
 	github.com/aws/aws-sdk-go-v2/service/firehose v1.44.0
 	github.com/aws/aws-sdk-go-v2/service/glue v1.116.0
+	github.com/aws/aws-sdk-go-v2/service/iam v1.54.5
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.79.2
 )
 
