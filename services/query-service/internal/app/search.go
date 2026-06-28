@@ -14,6 +14,9 @@ const (
 	DefaultSearchLimit = 50
 	// MaxSearchLimit caps a caller-supplied page size to bound query cost.
 	MaxSearchLimit = 1000
+	// DefaultHotDays is the hot-tier retention horizon used for cold-read
+	// routing when no per-tenant override is configured (cold-tier.md §5.2).
+	DefaultHotDays = 30
 )
 
 // Searcher is the query-service application service for hot search. It is the

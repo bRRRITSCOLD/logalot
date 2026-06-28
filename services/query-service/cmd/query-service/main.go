@@ -7,6 +7,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -15,7 +16,12 @@ import (
 	"syscall"
 	"time"
 
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	athenaaws "github.com/aws/aws-sdk-go-v2/service/athena"
+	glueaws "github.com/aws/aws-sdk-go-v2/service/glue"
+	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/bRRRITSCOLD/logalot/pkg/auth"
+	"github.com/bRRRITSCOLD/logalot/pkg/coldstore"
 	"github.com/bRRRITSCOLD/logalot/pkg/logstore"
 	"github.com/bRRRITSCOLD/logalot/pkg/platform"
 	"github.com/bRRRITSCOLD/logalot/pkg/tailbus"
@@ -73,9 +79,52 @@ func run(log *slog.Logger) error {
 	authr := authn.NewComposite(apiKeyAuthr, jwtAuthr)
 	bus := tailbus.New(rc, tailbus.WithLogger(log))
 	svc := app.New(bus, app.WithLogger(log))
-	// Hot search runs over the RLS-governed logalot_app pool (the LogStore adapter
-	// arms SET LOCAL app.tenant_id per query); search shares the same pool.
-	searcher := app.NewSearcher(logstore.New(pool))
+
+	// Hot log store: RLS-governed logalot_app pool.
+	hotStore := logstore.New(pool)
+
+	// Cold-read routing (AC#2 / ADR-0003 / cold-tier.md §5.2).
+	// Gated on COLD_SEARCH_ENABLED (default FALSE, AC#3 deferred).
+	// When false, TieredSearcher routes ALL traffic to hot — no-op in production.
+	var coldArchive *coldstore.Store
+	if cfg.ColdSearchEnabled {
+		log.Info("query-service: COLD_SEARCH_ENABLED=true — wiring cold-read path",
+			"hot_days", cfg.HotDays, "cold_bucket", cfg.ColdS3Bucket)
+
+		awsCfg, err := awsconfig.LoadDefaultConfig(ctx)
+		if err != nil {
+			return fmt.Errorf("cold-read: load AWS config: %w", err)
+		}
+		s3c := awss3.NewFromConfig(awsCfg, func(o *awss3.Options) {
+			if cfg.AWSEndpoint != "" {
+				o.BaseEndpoint = &cfg.AWSEndpoint
+				o.UsePathStyle = true // required for floci path-style addressing
+			}
+		})
+		gluec := glueaws.NewFromConfig(awsCfg, func(o *glueaws.Options) {
+			if cfg.AWSEndpoint != "" {
+				o.BaseEndpoint = &cfg.AWSEndpoint
+			}
+		})
+		athenac := athenaaws.NewFromConfig(awsCfg, func(o *athenaaws.Options) {
+			if cfg.AWSEndpoint != "" {
+				o.BaseEndpoint = &cfg.AWSEndpoint
+			}
+		})
+		coldArchive = coldstore.New(
+			s3c, gluec, athenac,
+			cfg.ColdS3Bucket, cfg.ColdGlueDB, cfg.ColdAthenaResultBucket,
+			coldstore.WithSearchEnabled(true), // inner flag: enabled because outer flag is true
+			coldstore.WithLogger(log),
+		)
+	}
+
+	// TieredSearcher: routes hot/cold/both based on the query window.
+	// When coldArchive=nil (flag off), TieredSearcher is a thin pass-through to hot.
+	searcher := app.NewTieredSearcher(hotStore, coldArchive, cfg.HotDays, cfg.ColdSearchEnabled,
+		app.WithTieredLogger(log),
+	)
+
 	// Panel-data: saved_query resolution + log aggregation, same RLS-governed pool.
 	panelStore := pgadapter.NewPanelStore(pool)
 	panelSvc := app.NewPanelService(panelStore)
