@@ -310,3 +310,106 @@ PR #51 (branch `feat/18-dashboards`, head `2da7d4c`). Built by ai:backend-engine
 
 ### Wave 3 status
 #16 done (merged). #18 done (approved, merge-pending-user). Remaining: #17 cold tier (floci-gated; spikes #13/#14/#15 first). Backend hardening batch: #33 #35 #37 #39 #41 #42 #47 #52 + #16 M6 (FOR UPDATE SKIP LOCKED multi-replica). Wave 4 frontend next major (#20 scaffold+component-lib first, then #21/#22/#23, #24 Code Connect).
+
+---
+
+## SESSION 5 UPDATE (2026-06-27) — backend hardening, BATCHED (α/β/γ)
+
+Executed the Session-4 strategic batch plan: 6 hardening follow-ups → **3 cohesive PRs**, α‖γ in parallel worktrees, β serial after α. All dispatched `ai:backend-engineer` (sonnet, worktree-isolated), staff-engineer gate (opus/high) each, fix-pass where needed. **Merge classifier let agent `gh pr merge --squash` through this session** — no manual-merge bottleneck (contrast sessions 3/4).
+
+### Batch α — auth/ingest fail-closed — MERGED (PR #54, squash `5417954`)
+Closes #33 #39 #47 #35. Staff gate: APPROVE (0 Crit/0 Imp/3 Minor → #56).
+- #33 `cacheEntry.ExpiresAt` enforced on BOTH cache-hit + DB-resolve paths (expired key never admitted/cached).
+- #39 **new `pkg/httpkit` module** (12th go.work module) — Gin-free `CredentialFromRequest` single source of truth, both ingest+query consume it (byte-identical behavior, no auth regression); query-service pre-subscribe before headers → JSON 5xx. Gin error helpers left service-local (extracting would couple Gin into httpkit).
+- #47 `tc.Valid()` unconditional BEFORE `Unlimited()` short-circuit (redis+memory); Retry-After on 503; per-tenant 429 log metric.
+- #35 bounded confirm-timeout via `WithPublishTimeout` (default 10s) → 503; WriteTimeout 30s; app-core tenant test unmasked; NDJSON `confirmed:N` surfaced; AuthMiddleware `tc.Valid()`→401.
+
+### Batch γ — RLS FORCE + slice-isolation CI gate — MERGED (PR #53, squash `c8d6087`)
+Closes #41. **#42 closed as already-satisfied** — `migrations/000010:63` ALREADY has `FORCE ROW LEVEL SECURITY` (double-space alignment hid it from grep); staff verified ALL ten tenant tables already FORCE. Redundant 000016 migration was authored then DROPPED in fix-pass (its down would have STRIPPED the owner-bound FORCE — a regression). #41 = new `.github/workflows/slice-e2e.yml` job `slice isolation e2e (testcontainers)` running `make slice-test`, gated to PRs→main + nightly 02:00 UTC. **First CI gate on the multi-tenant isolation invariant.** Verified passing on #53 + #55.
+
+### Batch β — query/evaluator/processor — MERGED (PR #55, squash `f805bbc`)
+Closes #52 #37. Staff gate: REQUEST-CHANGES → 1 fix-pass → APPROVE.
+- #52.1/.2 panelstore `errors.Is(pgx.ErrNoRows)` + edge UUID parse → 400-before-DB (was 500). .3 evaluator `ListDue` N+1 → single `ANY($1) AND tenant_id=ANY($2)` batch + Go-side composite `(id,tenant)` apply (tenant isolation test-proven; safe because saved_queries.id is globally-unique PK). .4 TS DRY `isUniqueViolation`→shared tenant-tx. .5 migration 000015 down `COMMENT...IS NULL` (true prior state). .6 sparse-bucket contract documented.
+- #37 processor graceful drain: **`context.WithTimeout(context.WithoutCancel(ctx), drainTimeout)`** — SIGTERM no longer Nack→DLQ misclassifies in-flight persist, but bounded (`DefaultDrainTimeout=8s` < 20s ShutdownGrace < 30s grace period) so a stuck DB can't hang shutdown. `WithDrainTimeout` option + `WithLogger` on RuleStore (batch-error no longer swallowed). Fix-pass also fixed I1 unbounded-drain + I2 fabricated-down-comment + dead-code + test-assertion.
+
+### State at session end
+`main` @ `f805bbc`. Clean — no worktrees, no live agents, no claimed issues. Hardening backlog CLEARED (#33 #35 #37 #39 #41 #42 #47 #52 all closed). 12 go.work modules (added pkg/httpkit).
+
+**Open:** #56 (α 3 minors — tiny: 2 comment rewords + 1 pre-existing lint), #25 epic, wave-4 frontend #20→{#21,#22,#23}→#24, #17 cold tier, floci spikes #13/#14/#15.
+
+### NEXT SESSION — fresh start, next chunk
+1. **floci spikes #13/#14/#15** = ONE investigation chunk (Firehose→Parquet+Glue fidelity, Athena templates+tenant projection, Kinesis-unused/Glacier deferral). Needs floci AWS-local stack (:4566, image floci/floci — NOT localstack). Gates #17. Output = validation runs + fidelity decision; keep feature flag.
+2. **#17 cold tier** — solo PR after spikes pass; stays feature-flagged.
+3. **Wave 4 frontend** (DS in Figma `9N3v2ZGGo3McfSxOLfBPnC` + `packages/design-tokens/tokens.json`): **#20 scaffold + component library SOLO FIRST** (shadcn/ui-on-Base-UI `@base-ui-components/react`, build from Figma); then **#21/#22/#23 PARALLEL** (worktree-isolated, independent pages; #23 has #16+#18 backends); **#24 Code Connect LAST**. Route ALL Figma work through ux-designer; never create new Figma files; confirm Figma MCP authed at session start.
+4. #56 tiny minors — fold into any nearby backend chunk.
+
+---
+
+## SESSION 6 UPDATE (2026-06-27) — floci cold-tier fidelity spikes, ALL CLOSED
+
+> NOTE: this file's Session-5 entry above was authored last session but its PR #57 squash **dropped the
+> file change** (the commit landed empty). This session recovered it (it was still uncommitted in the
+> working tree) and committed it together with this Session-6 entry — so `main` now finally carries both.
+
+Drove floci spikes **#13/#14/#15** as one investigation chunk via `/ai:deliver` → `/ai:orchestrate`.
+Ran the loop in **manual mode (main session)**, not the reference Workflow script — the script infers
+`blockedBy` from issue bodies and treats a blocker satisfied only if closed *this run*, so the stale
+`#1` (closed last session) would have stalled round 1. Manual mode gave deterministic readiness +
+floci-stack serialization. All dispatched `ai:backend-engineer` (sonnet, worktree-isolated) → staff-engineer
+gate (opus/high) → fix-pass where flagged → squash-merge. Merge classifier permissive again
+(`gh pr merge --squash` worked); issue-body edits were classifier-BLOCKED (couldn't normalize stale
+`blockedBy`, hence manual mode).
+
+### #13 — Firehose→Parquet + Glue fidelity — MERGED (PR #58, squash `ea1e9b9`)
+**Firehose FAIL, Glue/S3 PASS.** floci 1.5.28 Firehose is non-faithful: delivers raw NDJSON (no Parquet
+conversion), writes `!{...}` dynamic-partition expressions **literally**, count-based flush only (=5, no
+time-based). Root cause confirmed in floci **source** (`FirehoseService.java@1.5.28`). Staff flagged an
+IAM-role confound (missing role = indistinguishable from a stub); fix-pass **controlled it in-test**
+(created a recognized delivery role, observed floci *deliver*, then asserted the fidelity failures) →
+airtight. Glue table + all 12 projection props (incl `projection.tenant_id.type=injected`) + explicit
+`CreatePartition` + S3 direct-write Parquet all **PASS**.
+
+### #14 — Athena templates + injected projection — MERGED (PR #59, squash `2d60747`)
+**Dialect FAIL.** floci Athena is a **real DuckDB sidecar** (NOT a stub — content-correct results), but
+DuckDB ≠ Presto/Trino: cold-tier.md §4's `regexp_like`/`json_extract_scalar` **don't exist in DuckDB**;
+named Glue-table refs aren't bridged. `injected` projection **not enforced** (DuckDB has no Athena table
+props). Test seeds real Parquet via direct S3 write for 2 tenants, demonstrates cross-tenant glob leak +
+DuckDB-native predicates passing (proves real execution). Staff blocked once on a gofmt CI gate → fix-pass.
+An **independent web-research pass corroborated** this (floci=DuckDB sidecar; Trino is the sole OSS engine
+faithful to the Athena dialect AND enforcing `injected` projection — `InjectedProjection.java`).
+
+### #15 — Kinesis unused + Glacier deferral — MERGED (PR #60, squash `f980260`)
+**Kinesis CONFIRMED UNUSED** (0 build-path matches across Go/go.mod/TS/compose/Make/scripts; only in docs).
+**floci Glacier** accepts lifecycle + GLACIER storage-class APIs but enforces **no archive semantics**
+(GetObject on a GLACIER object succeeds with no RestoreObject; RestoreObject is a stub) → deferral
+**confirmed appropriate**. Findings staged in the spike doc (NOT the ledger) to avoid conflicting with this
+file's mid-consolidation.
+
+### DECISION (gates #17) — see `docs/data/spikes/016-floci-cold-tier-decision.md`
+1. **Drop Firehose → processor direct-write Parquet + explicit Glue `CreatePartition`** (the ADR-0005
+   fallback, promoted on evidence; `ColdArchive` port contract unchanged).
+2. **Local cold-query validation → Trino + Hive Metastore + MinIO** (Athena = managed Trino; runs our §4 SQL
+   verbatim + enforces `injected`). floci stays for S3/SQS/etc; only cold SQL routes to Trino. Images:
+   `minio/minio` + `postgres:16` (HMS) + `apache/hive:4.1.0` + `trinodb/trino:482`.
+3. **Tenant guard local = app-side SQL fitness function** (NFR-6: reject SQL lacking `tenant_id=<ctx>`, AST
+   check) + **real-AWS CI smoke test** for the proprietary `injected` projection.
+4. Kinesis risk closed; Glacier deferral stands (real-S3-only when cost matters).
+5. Cold search stays **feature-flagged** until #17 lands the above.
+Reconciled **ADR-0005** (amendment: Firehose rejected, direct-write chosen) + **cold-tier.md** (§3 resolved,
+§5.1 tee diagram, §5.2 Glacier) in this PR.
+
+### State at session end
+`main` @ `f980260` + this docs PR. floci spikes #13/#14/#15 **CLOSED**. Compose floci stack was left **UP**
+during the chunk; bring it down with `make down` (or the infra-down target) when fully done. New artifacts:
+`tests/cold-tier-spike/` module (3 tag-gated `floci_spike` tests + `make cold-tier-spike*` targets),
+`docs/data/spikes/013–016`.
+
+### NEXT — fresh session, next chunk
+1. **#17 cold tier** — now well-scoped by decision 016: implement direct-write Parquet + `CreatePartition`
+   (NOT Firehose) behind `ColdArchive`; cold-read SQL fitness function; Trino+HMS+MinIO local compose overlay
+   for cold-query integration tests; real-AWS cold-tier CI smoke (injected-projection + dialect canaries);
+   keep feature-flagged. Solo PR.
+2. **Wave 4 frontend** — **#20 scaffold + component library SOLO FIRST** (shadcn/ui-on-Base-UI from Figma
+   `9N3v2ZGGo3McfSxOLfBPnC` + `packages/design-tokens/tokens.json` via `ai:ux-designer`); then **#21/#22/#23
+   PARALLEL** worktrees; **#24 Code Connect LAST**. Confirm Figma MCP authed at session start.
+3. **#56** tiny backend minors — fold into a nearby backend chunk.

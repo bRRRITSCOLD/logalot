@@ -1,9 +1,22 @@
 # ADR-0005: Cold tier and retention/tiering mechanism
 
-- **Status:** Accepted
-- **Date:** 2026-06-26
+- **Status:** Accepted — **amended 2026-06-27** (cold delivery path flipped Firehose → direct-write; see amendment below)
+- **Date:** 2026-06-26 (amended 2026-06-27)
 - **Deciders:** systems architect + data architect
-- **Related:** spec §Storage & retention, overview.md §5.1/§6, ADR-0002, ADR-0003, NFR-4, NFR-6
+- **Related:** spec §Storage & retention, overview.md §5.1/§6, ADR-0002, ADR-0003, NFR-4, NFR-6,
+  **floci spikes #13/#14/#15 → [decision 016](../data/spikes/016-floci-cold-tier-decision.md)**
+
+> **Amendment (2026-06-27) — floci fidelity validated.** Spikes #13/#14/#15 verified floci 1.5.28 against
+> this ADR. Firehose→Parquet is **non-faithful** (raw NDJSON, no Parquet conversion, literal `!{...}`
+> partition placeholders — confirmed in floci source). floci Athena is a real **DuckDB** sidecar whose
+> dialect does not implement our `regexp_like`/`json_extract_scalar` templates and does not enforce
+> `injected` projection. Glue cataloging, the projection DDL, and S3 direct-write Parquet are **faithful**.
+> **The "direct-write" fallback below is therefore promoted to the chosen delivery path**, local cold-query
+> validation moves to **Trino + Hive Metastore + MinIO** (Athena = managed Trino), and the proprietary
+> injected-projection guard is enforced locally by the app-side **SQL fitness function** (NFR-6) plus a
+> real-AWS CI smoke test. Kinesis is confirmed unused; Glacier/lifecycle deferral stands. The original
+> decision text is retained below for the record; deltas are marked **[AMENDED]**. Full rationale and the
+> re-scoped #17 work-list: [decision 016](../data/spikes/016-floci-cold-tier-decision.md).
 
 ## Context
 
@@ -19,8 +32,11 @@ Kinesis are unverified** and must not be silently depended upon.
   streams it to the cold tier. Cold is the **durable long-term archive**; hot is the fast-search window.
   This gives durability independent of hot-store retention and means retention = simply dropping old hot
   partitions.
-- **Delivery:** processor → **Firehose** delivery stream → **S3**, with Firehose buffering and **Parquet**
-  conversion (columnar, compressed). Behind a `ColdArchive` port.
+- **Delivery:** ~~processor → **Firehose** delivery stream → **S3**, with Firehose buffering and **Parquet**
+  conversion (columnar, compressed)~~. Behind a `ColdArchive` port. **[AMENDED 2026-06-27] processor →
+  batched **direct S3 Parquet write** → explicit Glue `CreatePartition`** (Firehose dropped — verified
+  non-faithful on floci, #13). Port contract unchanged; Firehose remains a swap-back option behind the port
+  if a faithful implementation appears.
 - **Layout / isolation:** `s3://logalot-cold/logs/tenant_id=<id>/dt=<YYYY-MM-DD>/hour=<HH>/*.parquet`.
   `tenant_id` is the **leading partition** — the cold-tier prefix-isolation layer of ADR-0002. A **Glue**
   table is partitioned on `tenant_id` + date; **Athena** queries are generated with the `tenant_id`
@@ -35,8 +51,11 @@ Kinesis are unverified** and must not be silently depended upon.
 
 ## Status
 
-Accepted. Cold tier targets **S3 standard** only. Firehose→Parquet is the primary path with a direct-write
-fallback (below). Glacier/archive tiering is **deferred** (tracked floci gap).
+Accepted. Cold tier targets **S3 standard** only. ~~Firehose→Parquet is the primary path with a direct-write
+fallback~~ **[AMENDED 2026-06-27] processor direct-write Parquet is the primary (and now only) path; Firehose
+is rejected on floci-fidelity grounds (#13)**. Local cold-query validation uses **Trino + HMS + MinIO**, not
+floci Athena (#14). Glacier/archive tiering is **deferred** (confirmed appropriate, #15). Cold search stays
+**feature-flagged** until #17 lands direct-write + the SQL fitness function and the real-AWS smoke test passes.
 
 ## Consequences
 
@@ -54,20 +73,24 @@ fallback (below). Glacier/archive tiering is **deferred** (tracked floci gap).
 - Dependency on floci fidelity for Firehose/Glue/Athena (see fallback + tracked risks).
 
 ### Trigger to revisit
-- **Firehose/Glue fidelity gap on floci:** if Firehose Parquet conversion or Glue cataloging is
-  unreliable on floci, switch `ColdArchive` to **processor-batched direct S3 Parquet writes** (skip
-  Firehose) — a localized adapter change.
-- **Cold storage cost becomes material:** introduce S3 lifecycle-to-archive / Glacier tiering **only after**
-  verifying floci support; until then keep cold in S3 standard. Do **not** substitute localstack.
-- **Athena query-shape gaps:** if Athena on floci cannot serve our query templates, feature-flag cold
-  search off and treat hot-only as the v1 search surface while we resolve it.
+- ~~**Firehose/Glue fidelity gap on floci:**~~ **[FIRED 2026-06-27, #13]** Firehose verified non-faithful →
+  `ColdArchive` switched to **processor-batched direct S3 Parquet writes** + explicit `CreatePartition`.
+  Glue cataloging itself is faithful. Re-evaluate only if a faithful floci Firehose ships.
+- **Cold storage cost becomes material:** introduce S3 lifecycle-to-archive / Glacier tiering. **[#15]**
+  floci enforces no Glacier archive semantics, so this is a real-S3-only change (standard
+  `PutBucketLifecycleConfiguration`, no local validation); until then keep cold in S3 standard. Do **not**
+  substitute localstack.
+- ~~**Athena query-shape gaps:**~~ **[FIRED 2026-06-27, #14]** floci Athena (DuckDB sidecar) does not serve
+  our `regexp_like`/`json_extract_scalar` templates or enforce `injected` projection → local cold-query
+  validation moved to **Trino + HMS + MinIO**; the tenant-predicate guard is enforced by the app-side SQL
+  fitness function (NFR-6) + a real-AWS CI smoke test. Cold search stays feature-flagged until #17 lands these.
 
 ## Alternatives considered
 
 | Option | Cold cost | Query latency | tenant isolation | floci dependency | Verdict |
 |---|---|---|---|---|---|
-| **Tee → Firehose → S3 Parquet + Athena (chosen)** | Low | Sec–tens of sec | S3 prefix + Glue part. | Firehose+Glue+Athena | **Chosen** |
-| Processor direct-write S3 Parquet + Athena | Low | Same | Same | Athena only (less) | Fallback if Firehose flaky |
+| Tee → Firehose → S3 Parquet + Athena | Low | Sec–tens of sec | S3 prefix + Glue part. | Firehose+Glue+Athena | ~~Chosen~~ **[AMENDED] Rejected** — Firehose non-faithful on floci (#13) |
+| **Processor direct-write S3 Parquet + explicit `CreatePartition`** | Low | Same | Same | Glue+S3 (no Firehose) | **[AMENDED] Chosen** (#13); local query via Trino, not floci Athena (#14) |
 | Move-at-30-days (no tee) | Low | Same | Same | Same | Rejected — risky migration, no day-0 durability |
 | Keep everything hot (no cold) | High | Fast | n/a | none | Rejected — cost + unbounded hot growth |
 | S3 + Glacier archive tiering | Lowest | High (restore) | Same | **unverified** | Deferred — floci Glacier unverified |

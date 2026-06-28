@@ -105,11 +105,14 @@ an equality predicate on `tenant_id` in the query — Athena will not run a cold
 it. That turns "always include the tenant predicate" from a convention into an engine-enforced
 rule (defense in depth at the cold layer).
 
-> floci fidelity for Firehose→Parquet conversion, Glue cataloging, and partition projection is a
-> **tracked risk** (`nfr.md` floci gaps). Cold search is **feature-flagged off** until the exact
-> query templates below are validated against floci. Fallback if Firehose/projection is unreliable:
-> `ColdArchive` switches to processor-batched direct S3 Parquet writes, and partitions are
-> registered via explicit `ADD PARTITION` — a localized adapter change (ADR-0005).
+> **[RESOLVED 2026-06-27 — spikes #13/#14/#15, see [decision 016](spikes/016-floci-cold-tier-decision.md)]**
+> floci fidelity was validated: **Glue cataloging + partition-projection DDL (incl. `injected`) + S3
+> direct-write Parquet are faithful**; **Firehose→Parquet is NOT** (raw NDJSON, no conversion) so the
+> cold write path is **processor-batched direct S3 Parquet + explicit Glue `CreatePartition`** (the former
+> fallback, now chosen). floci **Athena** is a DuckDB sidecar that does not run the §4 templates or enforce
+> `injected` projection, so **local cold-query validation uses Trino + HMS + MinIO** (Athena = managed
+> Trino), and the tenant-predicate guard is enforced by the app-side SQL fitness function (§4 / NFR-6) plus
+> a real-AWS CI smoke test. Cold search stays **feature-flagged off** until #17 lands these.
 
 ---
 
@@ -143,9 +146,14 @@ LIMIT :n;
 ### 5.1 Tee from day 0 (write path)
 
 ```
-processor --(hot, transactional)--> Postgres log_events       [system of record for the write]
-          --(cold, best-effort)----> Firehose --> S3 Parquet  [durable archive, retried; DLQ-safe]
+processor --(hot, transactional)--> Postgres log_events                       [system of record]
+          --(cold, best-effort)----> batch-encode Parquet --> S3 PutObject     [durable archive, retried]
+                                     --> Glue CreatePartition (tenant_id/dt/hour)
 ```
+
+> **[AMENDED 2026-06-27, #13]** Cold delivery is **processor direct-write Parquet** (batched), not Firehose —
+> floci's Firehose is non-faithful (decision 016). The hot insert is still the transactional write; the cold
+> tee is still a retried best-effort side-effect that does not fail the message ack (NFR-2).
 
 The hot insert is the transactional write; the cold tee is a retried side-effect whose failure
 does **not** fail the message ack (NFR-2). Because cold is written from day 0, hot retention is a
@@ -161,5 +169,7 @@ cheap partition drop, not a risky migration.
 - Query routing (ADR-0003 / `overview.md §5.2`): a search within the hot window goes to Postgres;
   one spanning > `hot_days` goes to Athena; one straddling the boundary unions both, deduping on
   `(ts, id)`.
-- Glacier / S3-lifecycle archive tiering is **deferred** (floci support unverified) — cold stays
-  S3 standard until verified; do not silently substitute localstack (ADR-0005, `nfr.md`).
+- Glacier / S3-lifecycle archive tiering is **deferred** — **[#15] confirmed appropriate**: floci accepts the
+  lifecycle/storage-class APIs but enforces **no archive semantics** (RestoreObject is a stub), so local
+  validation is not meaningful. Cold stays S3 standard; revisit when production cold-cost is material (apply
+  `PutBucketLifecycleConfiguration` to real S3 then). Do not silently substitute localstack (ADR-0005, `nfr.md`).
