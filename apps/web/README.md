@@ -160,8 +160,30 @@ backend services.
 4. **Test it** (Vitest + Testing Library) and keep `biome check` clean.
 
 Conventions: keep route files thin (loader + render), push fetching to `src/server/*`, derive URL
-state with `nuqs` (add it when the first page needs it), forms with TanStack Form + shared zod
-schemas.
+state with `nuqs` (wired in `#21` — `NuqsAdapter` is mounted in `__root.tsx`; use
+`useQueryStates` with the `nuqs/adapters/tanstack-router` adapter), forms with TanStack Form +
+shared zod schemas.
+
+## Live tail over SSE (the BFF streaming pattern, #21)
+
+The Log Explorer (`/explorer`) streams the authed tenant's logs over Server-Sent Events. Because the
+browser's `EventSource` **cannot set `Authorization`/`Accept` headers and must never hold a token**,
+the stream goes through a **same-origin BFF route**:
+
+- `src/routes/api/tail.ts` — a server route (`server.handlers.GET`) that delegates to
+  `src/server/tail-proxy.ts`. The proxy reads the httpOnly access cookie (silently refreshing via the
+  refresh cookie, same rotation as `getSession`), **fails closed to 401** when there is no session,
+  opens an upstream SSE connection to query-service `GET /v1/tail` with `Authorization: Bearer …` +
+  `Accept: text/event-stream`, and **pipes the upstream stream back unchanged** (`data:` / `event: gap`
+  framing preserved). Tenancy is server-derived from the forwarded JWT — no client-supplied tenant id.
+  Query-service base URL comes from `QUERY_SERVICE_URL` (default `http://localhost:8081`), server-only.
+- `src/features/log-explorer/` — the reusable **explorer surface**: `useLogTail` (the EventSource
+  state machine: bounded buffer, coalesced flush, pause/resume, reconnect-with-backoff, gap markers),
+  `FilterBar` + `matchesFilters` (client-side service/level/label/text filtering), `LogRow`/`GapRow`/
+  `LogList`, and `TailToolbar`. #22 (historical search) composes the same `FilterBar`/`LogList`/`LogRow`
+  over its REST results — see `src/features/log-explorer/index.ts`.
+- The streamed log-event shape is pinned in `tail-event.ts` (mirrors `kernel.LogEvent`'s json tags);
+  there is no shared `@logalot/contracts` log-event DTO yet — lift it there when #22 shares it.
 
 ## Layout
 
@@ -170,9 +192,11 @@ apps/web/
   scripts/build-tokens.mjs     design tokens → src/styles/tokens.css
   src/
     start.ts                   pinned CSRF request middleware (createStart instance)
-    routes/                    file-based routes (__root, index, login, _authed, _authed/app)
+    routes/                    file-based routes (__root, index, login, _authed/app, _authed/explorer)
+    routes/api/tail.ts         same-origin BFF SSE proxy route (#21 live tail)
     components/{ui,states,shell}
-    server/                    BFF: auth.ts (server fns), control-plane.ts (client), session.ts (pure)
+    features/log-explorer/     live-tail surface: useLogTail, FilterBar, LogRow/GapRow/LogList, toolbar
+    server/                    BFF: auth.ts (server fns), control-plane.ts, session.ts, tail-proxy.ts
     hooks/use-session.tsx      read-only session context
     lib/cn.ts                  Tailwind-aware class merge
     styles/app.css             Tailwind entry + generated tokens

@@ -46,9 +46,14 @@ describe('AppShell', () => {
   it('renders the primary navigation, brand, and page content', async () => {
     await renderShell();
     expect(screen.getAllByRole('navigation', { name: 'Primary' }).length).toBeGreaterThan(0);
-    // Overview is the live nav link; feature pages render as disabled placeholders.
+    // Overview and Log Explorer (#21) are live nav links; Search/Admin remain
+    // disabled placeholders until #22-#23 land.
     expect(screen.getAllByText('Overview').length).toBeGreaterThan(0);
-    expect(screen.getAllByText('Log Explorer')[0]?.closest('[aria-disabled]')).toHaveAttribute(
+    expect(screen.getAllByRole('link', { name: 'Log Explorer' })[0]).toHaveAttribute(
+      'href',
+      '/explorer',
+    );
+    expect(screen.getAllByText('Search')[0]?.closest('[aria-disabled]')).toHaveAttribute(
       'aria-disabled',
       'true',
     );

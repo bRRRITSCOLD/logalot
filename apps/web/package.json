@@ -24,6 +24,7 @@
     "@tanstack/react-start": "^1.168.26",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "nuqs": "^2.8.9",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "tailwind-merge": "^3.6.0",
