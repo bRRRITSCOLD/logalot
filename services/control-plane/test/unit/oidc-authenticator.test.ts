@@ -57,6 +57,54 @@ const CLIENT_ID = 'google-client-id.apps.googleusercontent.com';
 const REDIRECT_URI = 'https://app.logalot.dev/auth/oidc/google/callback';
 const AUTH_ENDPOINT = 'https://accounts.google.com/o/oauth2/v2/auth';
 
+// Stub fakes for the callback-half deps that the beginAuthorize tests don't exercise.
+const NEVER_CALLED_EXCHANGE: OidcAuthenticatorDeps['tokenExchangeClient'] = {
+  exchange: () => Promise.reject(new Error('not expected in these tests')),
+};
+const NEVER_CALLED_VERIFIER: OidcAuthenticatorDeps['idTokenVerifier'] = {
+  verify: () => Promise.reject(new Error('not expected in these tests')),
+};
+const NEVER_CALLED_IDENTITIES: OidcAuthenticatorDeps['oauthIdentities'] = {
+  findByProviderSub: () => Promise.resolve(null),
+  linkFirst: () => Promise.reject(new Error('not expected in these tests')),
+  touchLastLogin: () => Promise.resolve(),
+  findById: () => Promise.resolve(null),
+};
+const NEVER_CALLED_USERS: OidcAuthenticatorDeps['users'] = {
+  create: () => Promise.reject(new Error('not expected in these tests')),
+  list: () => Promise.resolve([]),
+  findById: () => Promise.resolve(null),
+  update: () => Promise.resolve(null),
+  delete: () => Promise.resolve(false),
+  findCredentialsByEmail: () => Promise.resolve(null),
+  findCredentialsById: () => Promise.resolve(null),
+};
+const NEVER_CALLED_REFRESH_TOKENS: OidcAuthenticatorDeps['refreshTokens'] = {
+  create: () => Promise.reject(new Error('not expected in these tests')),
+  findById: () => Promise.resolve(null),
+  rotate: () => Promise.resolve(null),
+  revokeFamily: () => Promise.resolve(),
+};
+const NEVER_CALLED_TOKENS: OidcAuthenticatorDeps['tokens'] = {
+  issueAccess: () => Promise.reject(new Error('not expected in these tests')),
+  verifyAccess: () => Promise.reject(new Error('not expected in these tests')),
+};
+const NEVER_CALLED_SECRETS: OidcAuthenticatorDeps['secrets'] = {
+  generate: () => {
+    throw new Error('not expected in these tests');
+  },
+};
+const NEVER_CALLED_IDS: OidcAuthenticatorDeps['ids'] = {
+  uuid: () => {
+    throw new Error('not expected in these tests');
+  },
+};
+const NEVER_CALLED_CLOCK: OidcAuthenticatorDeps['clock'] = {
+  now: () => {
+    throw new Error('not expected in these tests');
+  },
+};
+
 function makeDeps(overrides?: Partial<OidcAuthenticatorDeps>): OidcAuthenticatorDeps {
   return {
     tenants: new FakeTenantRepo([TENANT]) as unknown as OidcAuthenticatorDeps['tenants'],
@@ -65,6 +113,16 @@ function makeDeps(overrides?: Partial<OidcAuthenticatorDeps>): OidcAuthenticator
     redirectUri: REDIRECT_URI,
     authEndpoint: AUTH_ENDPOINT,
     stateTtlSeconds: 600,
+    tokenExchangeClient: NEVER_CALLED_EXCHANGE,
+    idTokenVerifier: NEVER_CALLED_VERIFIER,
+    oauthIdentities: NEVER_CALLED_IDENTITIES,
+    users: NEVER_CALLED_USERS,
+    refreshTokens: NEVER_CALLED_REFRESH_TOKENS,
+    tokens: NEVER_CALLED_TOKENS,
+    secrets: NEVER_CALLED_SECRETS,
+    ids: NEVER_CALLED_IDS,
+    clock: NEVER_CALLED_CLOCK,
+    refreshTtlSeconds: 604800,
     ...overrides,
   };
 }
@@ -85,7 +143,7 @@ describe('OidcAuthenticator.beginAuthorize', () => {
   describe('redirect URL params', () => {
     it('returns an absolute URL pointing at the configured auth endpoint', async () => {
       const { redirectUrl } = await sut.beginAuthorize({ tenantSlug: 'acme' });
-      expect(redirectUrl.startsWith(AUTH_ENDPOINT + '?')).toBe(true);
+      expect(redirectUrl.startsWith(`${AUTH_ENDPOINT}?`)).toBe(true);
     });
 
     it('includes code_challenge and code_challenge_method=S256', async () => {
@@ -100,7 +158,7 @@ describe('OidcAuthenticator.beginAuthorize', () => {
       const stateValue = params.get('state') ?? '';
       const stored = stateStore._peek(stateValue);
       expect(stored).toBeDefined();
-      const verifier = stored!.record.meta['codeVerifier'] ?? '';
+      const verifier = stored?.record.meta.codeVerifier ?? '';
       expect(verifier).toBeTruthy();
       const expected = createHash('sha256').update(verifier, 'ascii').digest('base64url');
       expect(challenge).toBe(expected);
@@ -175,12 +233,13 @@ describe('OidcAuthenticator.beginAuthorize', () => {
       const state = new URL(redirectUrl).searchParams.get('state') ?? '';
       const entry = stateStore._peek(state);
       expect(entry).toBeDefined();
-      const record = entry!.record;
+      if (!entry) throw new Error('expected state record to be stored');
+      const record = entry.record;
       expect(record.tenantId).toBe(TENANT.id);
-      expect(record.meta['provider']).toBe('google');
-      expect(record.meta['codeVerifier']).toBeTruthy();
-      expect(record.meta['nonce']).toBeTruthy();
-      expect(record.meta['returnTo']).toBe('/dashboard');
+      expect(record.meta.provider).toBe('google');
+      expect(record.meta.codeVerifier).toBeTruthy();
+      expect(record.meta.nonce).toBeTruthy();
+      expect(record.meta.returnTo).toBe('/dashboard');
     });
 
     it('record is retrievable exactly once (single-use)', async () => {
@@ -209,7 +268,7 @@ describe('OidcAuthenticator.beginAuthorize', () => {
     async function getStoredReturnTo(returnTo?: string): Promise<string> {
       const { redirectUrl } = await sut.beginAuthorize({ tenantSlug: 'acme', returnTo });
       const state = new URL(redirectUrl).searchParams.get('state') ?? '';
-      return stateStore._peek(state)!.record.meta['returnTo'] ?? '';
+      return stateStore._peek(state)?.record.meta.returnTo ?? '';
     }
 
     it('stores a valid relative path as-is', async () => {

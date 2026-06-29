@@ -9,6 +9,7 @@ import { GoogleTokenExchangeHttpClient } from './adapters/http/google-token-exch
 import { PgAlertRuleRepository } from './adapters/postgres/alert-rule-repository';
 import { PgApiKeyRepository } from './adapters/postgres/api-key-repository';
 import { PgDashboardRepository } from './adapters/postgres/dashboard-repository';
+import { PgOAuthIdentityRepository } from './adapters/postgres/oauth-identity-repository';
 import { PgRefreshTokenRepository } from './adapters/postgres/refresh-token-repository';
 import { PgRetentionRepository } from './adapters/postgres/retention-repository';
 import { PgSavedQueryRepository } from './adapters/postgres/saved-query-repository';
@@ -83,6 +84,7 @@ export function buildContainer(pool: Pool, config: Config): Container {
   const alertRuleRepo = new PgAlertRuleRepository(pool);
   const savedQueryRepo = new PgSavedQueryRepository(pool);
   const dashboardRepo = new PgDashboardRepository(pool);
+  const oauthIdentityRepo = new PgOAuthIdentityRepository(pool);
 
   const services: Services = {
     auth: new AuthService({
@@ -130,16 +132,36 @@ export function buildContainer(pool: Pool, config: Config): Container {
           clientSecret: config.googleClientSecret,
         })
       : undefined;
-  // OidcAuthenticator — beginAuthorize (issue #95). clientId and redirectUri
-  // are required in production; they are optional in config so tests that don't
-  // exercise the OIDC path don't need to supply them.
+  // OidcAuthenticator — beginAuthorize (issue #95) + handleCallback (issue #96).
+  // clientId and redirectUri are required in production; they are optional in
+  // config so tests that don't exercise the OIDC path don't need to provide them.
+  // The callback-half deps (tokenExchangeClient, idTokenVerifier, oauthIdentities)
+  // may be undefined in dev/test environments that lack Google credentials; the
+  // route is guarded at the HTTP layer.
   const oidcAuthenticator = new OidcAuthenticator({
     tenants: tenantRepo,
     stateStore: oauthStateStore,
     clientId: config.googleOidcClientId ?? '',
-    redirectUri: config.googleOidcRedirectUri ?? '',
+    redirectUri: config.googleOidcRedirectUri ?? config.googleRedirectUri ?? '',
     authEndpoint: config.googleOidcAuthEndpoint,
     stateTtlSeconds: config.oauthStateTtlSeconds,
+    // Callback-half deps — fall back to stubs that throw when Google config is
+    // absent. The stubs satisfy the type; the route/service will propagate the
+    // error as a 401 (exchange/verify failure) rather than crashing at startup.
+    tokenExchangeClient: googleTokenExchangeClient ?? {
+      exchange: () => Promise.reject(new Error('Google token exchange not configured')),
+    },
+    idTokenVerifier: googleIdTokenVerifier ?? {
+      verify: () => Promise.reject(new Error('Google id_token verifier not configured')),
+    },
+    oauthIdentities: oauthIdentityRepo,
+    users: userRepo,
+    refreshTokens: refreshTokenRepo,
+    tokens: tokenService,
+    secrets: secretGenerator,
+    ids: idGenerator,
+    clock,
+    refreshTtlSeconds: config.refreshTokenTtlSeconds,
   });
 
   return {

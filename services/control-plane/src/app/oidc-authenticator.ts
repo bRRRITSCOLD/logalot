@@ -1,6 +1,23 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { NotFoundError } from '../domain/errors';
-import type { OAuthStateStore, TenantRepository } from './ports';
+import { normalizeEmail } from '../domain/email';
+import { NotFoundError, ServiceUnavailableError, UnauthorizedError } from '../domain/errors';
+import { assembleRefreshToken } from '../domain/refresh-token';
+import type { Role } from '../domain/roles';
+import { sha256 } from '../domain/secret-hash';
+import type {
+  Clock,
+  GoogleIdTokenVerifier,
+  GoogleTokenExchangeClient,
+  IdGenerator,
+  OAuthIdentityRepository,
+  OAuthStateStore,
+  RefreshTokenRepository,
+  SecretGenerator,
+  SessionTokens,
+  TenantRepository,
+  TokenService,
+  UserRepository,
+} from './ports';
 
 // PKCE constants (RFC 7636).
 // State: 32 bytes → 256 bits of entropy (≥128-bit as required by the spec).
@@ -31,6 +48,17 @@ export interface OidcAuthorizeResult {
   redirectUrl: string;
 }
 
+export interface OidcCallbackCommand {
+  code: string;
+  state: string;
+}
+
+export interface OidcCallbackResult {
+  tokens: SessionTokens;
+  /** Relative URL the client should redirect to after login (from the state record). */
+  returnTo: string;
+}
+
 export interface OidcAuthenticatorDeps {
   tenants: TenantRepository;
   stateStore: OAuthStateStore;
@@ -42,6 +70,27 @@ export interface OidcAuthenticatorDeps {
   authEndpoint: string;
   /** TTL for the OAuth state record (seconds, defaults to 600). */
   stateTtlSeconds?: number;
+  // ── Callback-half deps (required when handleCallback is invoked) ──────────
+  /** Exchanges the authorization code for tokens at Google's token endpoint. */
+  tokenExchangeClient: GoogleTokenExchangeClient;
+  /** Verifies the Google id_token (RS256, iss, aud, exp, nonce). */
+  idTokenVerifier: GoogleIdTokenVerifier;
+  /** OAuth identity link persistence (oauth_identities table). */
+  oauthIdentities: OAuthIdentityRepository;
+  /** User credential queries (status + role needed for session minting). */
+  users: UserRepository;
+  /** Stateful rotating refresh-token persistence. */
+  refreshTokens: RefreshTokenRepository;
+  /** Access JWT issuer. */
+  tokens: TokenService;
+  /** Refresh-token secret generator. */
+  secrets: SecretGenerator;
+  /** UUID generator for refresh-token family ids. */
+  ids: IdGenerator;
+  /** Wall-clock — injected for deterministic testing. */
+  clock: Clock;
+  /** Refresh-token lifetime in seconds. */
+  refreshTtlSeconds: number;
 }
 
 // OidcAuthenticator owns the OIDC authorization-initiation half of the
@@ -72,7 +121,7 @@ export class OidcAuthenticator {
   async beginAuthorize(cmd: OidcAuthorizeCommand): Promise<OidcAuthorizeResult> {
     // 1. Resolve tenant — 404 when slug is unknown or tenant is not active.
     const tenant = await this.deps.tenants.findByPublicId(cmd.tenantSlug);
-    if (!tenant || tenant.status !== 'active') {
+    if (tenant?.status !== 'active') {
       throw new NotFoundError(`tenant '${cmd.tenantSlug}' not found`);
     }
 
@@ -118,6 +167,149 @@ export class OidcAuthenticator {
     const redirectUrl = `${this.deps.authEndpoint}?${params.toString()}`;
 
     return { redirectUrl };
+  }
+
+  // handleCallback completes the OIDC Authorization Code + PKCE flow.
+  //
+  // Steps:
+  //   1. Consume state (single-use) — 401 with ZERO Google calls if unknown/expired/consumed.
+  //   2. Exchange code + verifier at Google's token endpoint — 401 on any exchange error.
+  //   3. Verify id_token (alg, iss, aud, exp, nonce) — 401 on mismatch.
+  //   4. Resolve identity: findByProviderSub → linkFirst on first login (invite-only: 401 when
+  //      no provisioned user matches the email from the id_token).
+  //   5. Mint session (access + rotating refresh token) and return it alongside returnTo.
+  //
+  // Security invariants:
+  //   - state consumption is atomic (OAuthStateStore.consume is retrieve-and-delete).
+  //   - The nonce in the state record must equal the nonce in the verified id_token claims.
+  //   - No secret material (idToken, code_verifier) is ever returned or logged.
+  async handleCallback(cmd: OidcCallbackCommand): Promise<OidcCallbackResult> {
+    const { deps } = this;
+
+    // 1. Consume state — single-use, returns null if missing/expired/already consumed.
+    //    MUST happen BEFORE any outbound call to Google (acceptance criteria AC-1, R11).
+    const stateRecord = await deps.stateStore.consume(cmd.state);
+    if (!stateRecord) {
+      throw new UnauthorizedError('invalid or expired OAuth state');
+    }
+
+    const { tenantId } = stateRecord;
+    const codeVerifier = stateRecord.meta.codeVerifier;
+    const nonce = stateRecord.meta.nonce;
+    const returnTo = stateRecord.meta.returnTo ?? '/';
+
+    if (!codeVerifier || !nonce) {
+      // Corrupt state record — should never happen in a correct flow.
+      throw new UnauthorizedError('malformed OAuth state record');
+    }
+
+    // 2. Exchange code for tokens at Google's token endpoint.
+    //    A 4xx/5xx from Google (bad code, mismatched verifier, etc.) → 401 here.
+    let idToken: string;
+    try {
+      const exchangeResult = await deps.tokenExchangeClient.exchange({
+        code: cmd.code,
+        redirectUri: deps.redirectUri,
+        codeVerifier,
+      });
+      idToken = exchangeResult.idToken;
+    } catch (err) {
+      // Distinguish a genuine Google outage (5xx / network) from an auth rejection
+      // (4xx). Both become 401 from the caller's perspective — we never expose which
+      // Google endpoint was contacted or what it returned.
+      if (err instanceof ServiceUnavailableError) throw err;
+      throw new UnauthorizedError('token exchange failed');
+    }
+
+    // 3. Verify id_token: alg=RS256, iss, aud, exp (jose layer), nonce equality.
+    //    GoogleIdTokenVerifier throws on any mismatch — we catch and re-throw as 401.
+    //    ServiceUnavailableError (Google JWKS unreachable) is re-thrown as 503, not 401,
+    //    consistent with the exchange step above.
+    let claims: Awaited<ReturnType<GoogleIdTokenVerifier['verify']>>;
+    try {
+      claims = await deps.idTokenVerifier.verify(idToken, nonce);
+    } catch (err) {
+      if (err instanceof ServiceUnavailableError) throw err;
+      throw new UnauthorizedError('id_token verification failed');
+    }
+
+    // 4. Resolve identity within the tenant (invite-only: no self-signup).
+    const normalizedEmail = normalizeEmail(claims.email);
+    let userId: string;
+
+    const existingIdentity = await deps.oauthIdentities.findByProviderSub(
+      tenantId,
+      'google',
+      claims.sub,
+    );
+
+    if (existingIdentity) {
+      userId = existingIdentity.userId;
+    } else {
+      // First login for this Google account — look up the provisioned user by email.
+      // invite-only: if no user exists for this email, reject with 401.
+      const userRecord = await deps.users.findCredentialsByEmail(tenantId, normalizedEmail);
+      if (!userRecord) {
+        throw new UnauthorizedError('no provisioned account for this Google identity');
+      }
+      // Link the Google identity to the existing user (idempotent on 23505).
+      const linked = await deps.oauthIdentities.linkFirst(tenantId, {
+        userId: userRecord.id,
+        provider: 'google',
+        providerSub: claims.sub,
+        email: normalizedEmail,
+      });
+      userId = linked.userId;
+    }
+
+    // 5. Load user credentials (status + role) — required for session claims.
+    const record = await deps.users.findCredentialsById(tenantId, userId);
+    if (record?.status !== 'active' || record.role === null) {
+      throw new UnauthorizedError('account is not active');
+    }
+
+    // Fire-and-forget last-login timestamp update for returning users only.
+    // Placed AFTER the active/role check so a suspended user does not have
+    // last_login_at bumped before the 401 is thrown.
+    if (existingIdentity) {
+      const now = deps.clock.now();
+      deps.oauthIdentities.touchLastLogin(tenantId, existingIdentity.id, now).catch(() => {
+        // Non-fatal: login still succeeds even if the touch fails.
+      });
+    }
+
+    // 6. Mint session: access JWT + rotating refresh token.
+    const tokens = await this.mintSession(tenantId, record.id, record.role);
+    return { tokens, returnTo };
+  }
+
+  // mintSession issues a short-lived access JWT and a stateful rotating refresh
+  // token. Mirrors AuthService.login's session-minting path so token format and
+  // TTL are identical regardless of the credential type used.
+  private async mintSession(tenantId: string, userId: string, role: Role): Promise<SessionTokens> {
+    const { deps } = this;
+    const familyId = deps.ids.uuid();
+    const secret = deps.secrets.generate();
+    const now = deps.clock.now();
+    const expiresAt = new Date(now.getTime() + deps.refreshTtlSeconds * 1000);
+
+    const { id: tokenId } = await deps.refreshTokens.create(tenantId, {
+      familyId,
+      userId,
+      tokenHash: sha256(secret),
+      expiresAt,
+    });
+
+    const access = await deps.tokens.issueAccess({ tenantId, principalId: userId, role });
+    return {
+      accessToken: access.token,
+      refreshToken: assembleRefreshToken(tenantId, tokenId, secret),
+      expiresIn: access.expiresInSeconds,
+      tokenType: 'Bearer',
+      role,
+      tenantId,
+      userId,
+    };
   }
 }
 
