@@ -4,10 +4,12 @@ on:
   pull_request:
     paths:
       - "infra/aws/**"
+      - "scripts/tf-sg-policy-assert.sh"
   push:
     branches: [main]
     paths:
       - "infra/aws/**"
+      - "scripts/tf-sg-policy-assert.sh"
 
 concurrency:
   group: tf-validate-${{ github.ref }}
@@ -48,3 +50,13 @@ jobs:
 
       - name: terraform fmt check
         run: terraform fmt -check -recursive
+
+  sg-policy-assert:
+    name: SG policy assertions (no-SSH-to-world)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assert SG policy — no 0.0.0.0/0:22, 443+80 open
+        run: bash scripts/tf-sg-policy-assert.sh infra/aws/security.tf
