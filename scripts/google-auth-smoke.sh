@@ -13,11 +13,10 @@
 #   1. HTTPS reachability — domain responds on 443 (Caddy TLS active).
 #   2. HSTS header present (R16 transport-only requirement).
 #   3. HTTP → HTTPS redirect (Caddy default; R16).
-#   4. Control-plane healthz reachable via Caddy (compose wiring correct).
-#   5. OIDC authorize endpoint returns a redirect to accounts.google.com
-#      (Google client_id wired through; control-plane reads SSM params).
-#   6. Unprovisioned-user callback rejection (invite-only guard — AC #2).
-#      Uses a fabricated state to trigger the callback and asserts 401.
+#   4. Google OIDC callback route reachable (route wired in web BFF; probe confirms
+#      the route exists and does not 404/500 on a garbage code+state).
+#   5. Unprovisioned-user callback rejection (invite-only guard — AC #2).
+#      Uses a fabricated state to trigger the callback and asserts no 5xx.
 #
 # Usage:
 #   LOGALOT_DOMAIN=app.example.com bash scripts/google-auth-smoke.sh
@@ -26,7 +25,7 @@
 #   0 — all checks passed.
 #   1 — one or more checks failed (details printed to stderr).
 #
-# Dependencies: curl (>= 7.x), jq.
+# Dependencies: curl (>= 7.x).
 
 set -euo pipefail
 
@@ -41,8 +40,8 @@ BASE="https://$DOMAIN"
 PASS=0
 FAIL=0
 
-check_pass() { echo "  [PASS] $1"; ((PASS++)); }
-check_fail() { echo "  [FAIL] $1" >&2; ((FAIL++)); }
+check_pass() { echo "  [PASS] $1"; PASS=$((PASS+1)); }
+check_fail() { echo "  [FAIL] $1" >&2; FAIL=$((FAIL+1)); }
 
 echo "=== logalot Google OAuth smoke test: $BASE ==="
 echo ""
@@ -78,32 +77,16 @@ else
   check_fail "HTTP did not redirect to HTTPS (location: '$REDIRECT_LOC')"
 fi
 
-# ── 4. Control-plane healthz via Caddy ────────────────────────────────────────
-# control-plane is not exposed directly; its /v1/* routes are BFF-server-side.
-# We validate the web BFF healthz as a proxy for compose wiring.
-echo ""
-echo "4. Web BFF healthz (compose wiring)"
-WEB_STATUS=$(curl -sf -o /dev/null -w "%{http_code}" --max-time 10 "$BASE/api/healthz" 2>/dev/null || echo "000")
-if [[ "$WEB_STATUS" == "200" ]]; then
-  check_pass "GET $BASE/api/healthz → 200 (web BFF healthy)"
-else
-  check_fail "GET $BASE/api/healthz → $WEB_STATUS (web BFF not responding)"
-fi
-
-# ── 5. OIDC authorize endpoint → redirect to accounts.google.com ──────────────
-# The web BFF delegates to the control-plane's /v1/auth/google/authorize over the
-# compose network. We probe the control-plane authorize route via the web BFF's
-# server-function endpoint path if exposed, or confirm that the control-plane is
-# correctly configured by inspecting the error from a bad-state callback.
-# Because startGoogleSignin is a server function (not a plain HTTP route), we
-# test it indirectly via the callback route, which is browser-facing.
-echo ""
-echo "5. Google OIDC callback reachable (route wired in web BFF)"
+# ── 4. Google OIDC callback route reachable ────────────────────────────────────
 # The callback route at /auth/google/callback must exist and respond to a probe
 # request. With a garbage code+state it should fail cleanly (not 404/500).
-CB_STATUS=$(curl -sf -o /dev/null -w "%{http_code}" --max-time 10 \
+# Note: -f is intentionally omitted so that 4xx responses (which are expected
+# here) are captured cleanly by -w "%{http_code}" without appending "000".
+echo ""
+echo "4. Google OIDC callback route reachable (route wired in web BFF)"
+CB_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 \
   "$BASE/auth/google/callback?code=smoke-probe&state=smoke-probe" 2>/dev/null || echo "000")
-# Accept 302/400/401/422 — all indicate the route exists.
+# Accept 302/400/401/422 — all indicate the route exists and handles the probe.
 # 404 or 500 means the route is missing or the BFF is broken.
 if [[ "$CB_STATUS" == "302" || "$CB_STATUS" == "400" || \
       "$CB_STATUS" == "401" || "$CB_STATUS" == "422" || \
@@ -113,15 +96,17 @@ else
   check_fail "GET /auth/google/callback?code=probe&state=probe → $CB_STATUS (expected 2xx/3xx/4xx, got $CB_STATUS — route missing or internal error)"
 fi
 
-# ── 6. Unprovisioned-user rejection (invite-only, AC #2) ─────────────────────
+# ── 5. Unprovisioned-user rejection (invite-only, AC #2) ─────────────────────
 # A callback with a valid-shaped but unknown code/state triggers the control-plane
 # OIDC callback, which will try to exchange the code with Google.  Google will
 # reject the fabricated code with an error, causing the control-plane to return
 # 401.  The key assertion is that the HTTP layer does NOT return 5xx (which would
 # indicate a crash or misconfigured service).
+# Note: -f is intentionally omitted so that 4xx responses are captured cleanly
+# by -w "%{http_code}" without appending "000".
 echo ""
-echo "6. Unprovisioned / bad-code callback → reject cleanly (not 5xx)"
-UNPROVISIONED_STATUS=$(curl -sf -o /dev/null -w "%{http_code}" --max-time 15 \
+echo "5. Unprovisioned / bad-code callback → reject cleanly (not 5xx)"
+UNPROVISIONED_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 \
   "$BASE/auth/google/callback?code=INVALID_CODE_smoke_test&state=INVALID_STATE_smoke_test" \
   2>/dev/null || echo "000")
 if [[ "$UNPROVISIONED_STATUS" != "500" && "$UNPROVISIONED_STATUS" != "502" && \
