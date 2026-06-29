@@ -1,9 +1,11 @@
 import type { Pool } from 'pg';
 import { BcryptHasher } from './adapters/crypto/bcrypt-hasher';
+import { JoseGoogleIdTokenVerifier } from './adapters/crypto/jose-google-verifier';
 import { JoseTokenService } from './adapters/crypto/jose-token-service';
 import { NodeKeyMaterialGenerator } from './adapters/crypto/node-key-material';
 import { NodeIdGenerator, NodeSecretGenerator } from './adapters/crypto/node-random';
 import { SystemClock } from './adapters/crypto/system-clock';
+import { GoogleTokenExchangeHttpClient } from './adapters/http/google-token-exchange-client';
 import { PgAlertRuleRepository } from './adapters/postgres/alert-rule-repository';
 import { PgApiKeyRepository } from './adapters/postgres/api-key-repository';
 import { PgDashboardRepository } from './adapters/postgres/dashboard-repository';
@@ -12,8 +14,6 @@ import { PgRetentionRepository } from './adapters/postgres/retention-repository'
 import { PgSavedQueryRepository } from './adapters/postgres/saved-query-repository';
 import { PgTenantRepository } from './adapters/postgres/tenant-repository';
 import { PgUserRepository } from './adapters/postgres/user-repository';
-import { GoogleTokenExchangeHttpClient } from './adapters/http/google-token-exchange-client';
-import { JoseGoogleIdTokenVerifier } from './adapters/crypto/jose-google-verifier';
 import { createRedisClient } from './adapters/redis/client';
 import { InMemoryOAuthStateStore } from './adapters/redis/in-memory-oauth-state-store';
 import { RedisOAuthStateStore } from './adapters/redis/redis-oauth-state-store';
@@ -21,7 +21,12 @@ import { AlertRuleService } from './app/alert-rule-service';
 import { ApiKeyService } from './app/api-key-service';
 import { AuthService } from './app/auth-service';
 import { DashboardService } from './app/dashboard-service';
-import type { GoogleIdTokenVerifier, GoogleTokenExchangeClient, OAuthStateStore, TokenService } from './app/ports';
+import type {
+  GoogleIdTokenVerifier,
+  GoogleTokenExchangeClient,
+  OAuthStateStore,
+  TokenService,
+} from './app/ports';
 import { RetentionService } from './app/retention-service';
 import { SavedQueryService } from './app/saved-query-service';
 import { TenantService } from './app/tenant-service';

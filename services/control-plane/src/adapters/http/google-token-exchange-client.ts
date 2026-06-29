@@ -1,5 +1,10 @@
-import { UnauthorizedError } from '../../domain/errors';
 import type { GoogleTokenExchangeClient, GoogleTokenExchangeResult } from '../../app/ports';
+import { ServiceUnavailableError, UnauthorizedError } from '../../domain/errors';
+
+// GOOGLE_TOKEN_TIMEOUT_MS caps how long we wait for Google's /token endpoint.
+// A slow or hung response would otherwise block the in-flight auth request
+// indefinitely; AbortSignal.timeout surfaces as a network error → 503.
+const GOOGLE_TOKEN_TIMEOUT_MS = 10_000;
 
 const GOOGLE_TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token';
 
@@ -55,16 +60,24 @@ export class GoogleTokenExchangeHttpClient implements GoogleTokenExchangeClient 
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: body.toString(),
+        // Abort if Google's endpoint hangs — prevents connection exhaustion.
+        signal: AbortSignal.timeout(GOOGLE_TOKEN_TIMEOUT_MS),
       });
     } catch {
-      // Network-level error (DNS, TLS, timeout). Surface as generic auth error
-      // to avoid leaking connectivity details.
-      throw new UnauthorizedError('token exchange failed');
+      // Network-level error (DNS, TLS, AbortError/timeout). This is a Google
+      // infrastructure issue, not a client credential failure — surface as 503
+      // so callers and observability tooling can distinguish outages from bad tokens.
+      throw new ServiceUnavailableError('Google token endpoint unavailable');
     }
 
     if (!response.ok) {
-      // Non-2xx: do NOT include the response body (may contain OAuth error codes
-      // that hint at client_secret validity). Log at caller's discretion.
+      // 5xx — Google-side server error; treat as a transient upstream failure.
+      // 4xx — bad request or invalid credentials from the client side.
+      // Neither case should expose the response body (may contain OAuth error
+      // codes that hint at client_secret validity).
+      if (response.status >= 500) {
+        throw new ServiceUnavailableError('Google token endpoint error');
+      }
       throw new UnauthorizedError('token exchange failed');
     }
 

@@ -5,14 +5,15 @@
  * verify that:
  *   - client_secret is sent in the POST body (required by Google's token
  *     endpoint) but NEVER appears in the returned result or errors.
- *   - Non-2xx responses surface as UnauthorizedError without leaking the body.
- *   - Network failures surface as UnauthorizedError.
+ *   - 4xx responses surface as UnauthorizedError without leaking the body.
+ *   - 5xx responses surface as ServiceUnavailableError (Google-side outage).
+ *   - Network failures and timeouts surface as ServiceUnavailableError.
  *   - Malformed JSON response surfaces as UnauthorizedError.
  *   - A well-formed 200 response maps cleanly to GoogleTokenExchangeResult.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { GoogleTokenExchangeHttpClient } from '../../src/adapters/http/google-token-exchange-client';
-import { UnauthorizedError } from '../../src/domain/errors';
+import { ServiceUnavailableError, UnauthorizedError } from '../../src/domain/errors';
 
 const CONFIG = {
   clientId: 'test-client-id.apps.googleusercontent.com',
@@ -104,7 +105,10 @@ describe('GoogleTokenExchangeHttpClient — success', () => {
 describe('GoogleTokenExchangeHttpClient — error handling', () => {
   it('throws UnauthorizedError on a 400 response (invalid_grant)', async () => {
     mockFetch(
-      makeJsonResponse({ error: 'invalid_grant', error_description: 'Code was already redeemed' }, 400),
+      makeJsonResponse(
+        { error: 'invalid_grant', error_description: 'Code was already redeemed' },
+        400,
+      ),
     );
     const client = new GoogleTokenExchangeHttpClient(CONFIG);
     await expect(client.exchange(EXCHANGE_PARAMS)).rejects.toBeInstanceOf(UnauthorizedError);
@@ -116,23 +120,26 @@ describe('GoogleTokenExchangeHttpClient — error handling', () => {
     await expect(client.exchange(EXCHANGE_PARAMS)).rejects.toBeInstanceOf(UnauthorizedError);
   });
 
-  it('throws UnauthorizedError on a 500 server error', async () => {
+  it('throws ServiceUnavailableError on a 500 server error (Google outage)', async () => {
     mockFetch(makeJsonResponse({ error: 'server_error' }, 500));
     const client = new GoogleTokenExchangeHttpClient(CONFIG);
-    await expect(client.exchange(EXCHANGE_PARAMS)).rejects.toBeInstanceOf(UnauthorizedError);
+    await expect(client.exchange(EXCHANGE_PARAMS)).rejects.toBeInstanceOf(ServiceUnavailableError);
   });
 
-  it('throws UnauthorizedError on a network failure (fetch rejects)', async () => {
+  it('throws ServiceUnavailableError on a 503 response (Google outage)', async () => {
+    mockFetch(makeJsonResponse({ error: 'service_unavailable' }, 503));
+    const client = new GoogleTokenExchangeHttpClient(CONFIG);
+    await expect(client.exchange(EXCHANGE_PARAMS)).rejects.toBeInstanceOf(ServiceUnavailableError);
+  });
+
+  it('throws ServiceUnavailableError on a network failure (fetch rejects)', async () => {
     makeFetchError();
     const client = new GoogleTokenExchangeHttpClient(CONFIG);
-    await expect(client.exchange(EXCHANGE_PARAMS)).rejects.toBeInstanceOf(UnauthorizedError);
+    await expect(client.exchange(EXCHANGE_PARAMS)).rejects.toBeInstanceOf(ServiceUnavailableError);
   });
 
   it('throws UnauthorizedError on malformed JSON in 200 response', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue(new Response('not-json', { status: 200 })),
-    );
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('not-json', { status: 200 })));
     const client = new GoogleTokenExchangeHttpClient(CONFIG);
     await expect(client.exchange(EXCHANGE_PARAMS)).rejects.toBeInstanceOf(UnauthorizedError);
   });

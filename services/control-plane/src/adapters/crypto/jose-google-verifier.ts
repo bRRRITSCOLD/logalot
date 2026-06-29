@@ -1,7 +1,17 @@
-import { type FlattenedJWSInput, type JWTHeaderParameters, createRemoteJWKSet, jwtVerify } from 'jose';
-import type { KeyLike } from 'jose';
-import { UnauthorizedError } from '../../domain/errors';
+import {
+  createRemoteJWKSet,
+  type FlattenedJWSInput,
+  type JWTHeaderParameters,
+  errors as joseErrors,
+  jwtVerify,
+  type KeyLike,
+} from 'jose';
 import type { GoogleIdTokenClaims, GoogleIdTokenVerifier } from '../../app/ports';
+import { ServiceUnavailableError, UnauthorizedError } from '../../domain/errors';
+
+// JWKS_COOLDOWN_SECONDS is added as clockTolerance to tolerate minor clock
+// drift between the control-plane and Google's token-signing infrastructure.
+const CLOCK_TOLERANCE_SECONDS = 30;
 
 // Google's canonical OIDC issuers (both are valid per Google's spec).
 const GOOGLE_ISSUERS = ['https://accounts.google.com', 'accounts.google.com'] as const;
@@ -54,29 +64,39 @@ export class JoseGoogleIdTokenVerifier implements GoogleIdTokenVerifier {
         algorithms: ['RS256'],
         audience: this.clientId,
         issuer: GOOGLE_ISSUERS as unknown as string[],
+        // Tolerate minor clock drift between control-plane and Google.
+        clockTolerance: CLOCK_TOLERANCE_SECONDS,
       });
       payload = result.payload as Record<string, unknown>;
     } catch (err) {
-      // Surface jose's typed errors as generic UnauthorizedError so the caller
-      // never leaks which specific check failed (timing channels aside, the
-      // message is safe to log internally but not to return to the client).
+      // Distinguish transient upstream failures from genuine auth rejections so
+      // that Google JWKS outages do not appear as 401s in observability tooling.
+      //   - JWKSTimeout: Google's JWKS endpoint did not respond in time → 503.
+      //   - Any non-JOSEError (raw TypeError/network error from fetch) → 503.
+      //   - All other JOSEErrors (bad sig, expired, wrong iss/aud, etc.) → 401.
+      console.error('[jose-google-verifier] id_token verification failed:', err);
+      if (err instanceof joseErrors.JWKSTimeout || !(err instanceof joseErrors.JOSEError)) {
+        throw new ServiceUnavailableError('Google JWKS endpoint unavailable');
+      }
+      // Surface jose's typed errors as generic 401 so the caller never leaks
+      // which specific check failed to the client.
       throw new UnauthorizedError('invalid id_token');
     }
 
     // email_verified must be explicitly true — absence or false is rejected.
-    if (payload['email_verified'] !== true) {
+    if (payload.email_verified !== true) {
       throw new UnauthorizedError('invalid id_token');
     }
 
     // Nonce must be present and match the value we generated at authorize time.
     // This binds the id_token to the specific authorization request, preventing
     // replay of a token from a different flow.
-    if (typeof payload['nonce'] !== 'string' || payload['nonce'] !== expectedNonce) {
+    if (typeof payload.nonce !== 'string' || payload.nonce !== expectedNonce) {
       throw new UnauthorizedError('invalid id_token');
     }
 
-    const email = payload['email'];
-    const sub = payload['sub'];
+    const email = payload.email;
+    const sub = payload.sub;
     if (typeof email !== 'string' || typeof sub !== 'string') {
       throw new UnauthorizedError('invalid id_token');
     }
@@ -85,13 +105,13 @@ export class JoseGoogleIdTokenVerifier implements GoogleIdTokenVerifier {
       sub,
       email,
       email_verified: true,
-      nonce: payload['nonce'] as string,
-      iss: payload['iss'] as string,
-      aud: payload['aud'] as string | string[],
-      iat: payload['iat'] as number,
-      exp: payload['exp'] as number,
-      name: typeof payload['name'] === 'string' ? payload['name'] : undefined,
-      picture: typeof payload['picture'] === 'string' ? payload['picture'] : undefined,
+      nonce: payload.nonce as string,
+      iss: payload.iss as string,
+      aud: payload.aud as string | string[],
+      iat: payload.iat as number,
+      exp: payload.exp as number,
+      name: typeof payload.name === 'string' ? payload.name : undefined,
+      picture: typeof payload.picture === 'string' ? payload.picture : undefined,
     };
   }
 }

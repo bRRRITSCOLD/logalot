@@ -62,3 +62,13 @@ export class ConflictError extends DomainError {
     super(409, 'conflict', message);
   }
 }
+
+// 503 — a required upstream dependency (e.g. Google OAuth) is temporarily
+// unavailable (network failure, DNS error, or 5xx from the remote). Distinct
+// from 401 so callers can distinguish a Google outage from a credential
+// rejection and apply the correct retry / observability strategy.
+export class ServiceUnavailableError extends DomainError {
+  constructor(message = 'service unavailable') {
+    super(503, 'service_unavailable', message);
+  }
+}
