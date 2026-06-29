@@ -21,6 +21,7 @@ import { AlertRuleService } from './app/alert-rule-service';
 import { ApiKeyService } from './app/api-key-service';
 import { AuthService } from './app/auth-service';
 import { DashboardService } from './app/dashboard-service';
+import { OidcAuthenticator } from './app/oidc-authenticator';
 import type {
   GoogleIdTokenVerifier,
   GoogleTokenExchangeClient,
@@ -54,6 +55,7 @@ export interface Container {
   googleIdTokenVerifier: GoogleIdTokenVerifier | undefined;
   /** Google token-exchange client — undefined when Google config is incomplete. */
   googleTokenExchangeClient: GoogleTokenExchangeClient | undefined;
+  oidcAuthenticator: OidcAuthenticator;
   /** Release infrastructure resources (Redis connection, etc.) on graceful shutdown. */
   shutdown: () => Promise<void>;
 }
@@ -128,6 +130,17 @@ export function buildContainer(pool: Pool, config: Config): Container {
           clientSecret: config.googleClientSecret,
         })
       : undefined;
+  // OidcAuthenticator — beginAuthorize (issue #95). clientId and redirectUri
+  // are required in production; they are optional in config so tests that don't
+  // exercise the OIDC path don't need to supply them.
+  const oidcAuthenticator = new OidcAuthenticator({
+    tenants: tenantRepo,
+    stateStore: oauthStateStore,
+    clientId: config.googleOidcClientId ?? '',
+    redirectUri: config.googleOidcRedirectUri ?? '',
+    authEndpoint: config.googleOidcAuthEndpoint,
+    stateTtlSeconds: config.oauthStateTtlSeconds,
+  });
 
   return {
     services,
@@ -135,6 +148,7 @@ export function buildContainer(pool: Pool, config: Config): Container {
     oauthStateStore,
     googleIdTokenVerifier,
     googleTokenExchangeClient,
+    oidcAuthenticator,
     shutdown: async () => {
       if (redisClient) await redisClient.quit();
     },

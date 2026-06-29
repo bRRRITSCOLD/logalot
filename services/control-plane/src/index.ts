@@ -9,11 +9,17 @@ import { buildContainer } from './container';
 async function main(): Promise<void> {
   const config = loadConfig();
   const pool = createPool(config.databaseUrl);
-  const { services, tokenService, shutdown: shutdownContainer } = buildContainer(pool, config);
+  const {
+    services,
+    tokenService,
+    oidcAuthenticator,
+    shutdown: shutdownContainer,
+  } = buildContainer(pool, config);
 
   const app = buildServer({
     services,
     tokenService,
+    oidcAuthenticator,
     ping: async () => {
       await pool.query('SELECT 1');
       return true;

@@ -29,6 +29,18 @@ const EnvSchema = z.object({
   GOOGLE_CLIENT_ID: z.string().optional(),
   GOOGLE_CLIENT_SECRET: z.string().optional(),
   GOOGLE_REDIRECT_URI: z.string().optional(),
+  // Google OIDC (issue #95). All three are required when the authorize endpoint is
+  // exercised; they are optional at startup so tests that don't hit that path don't
+  // need to provide them. Validated eagerly only when the route is invoked.
+  GOOGLE_OIDC_CLIENT_ID: z.string().optional(),
+  // Server-side redirect URI registered in the Google Cloud Console. FIXED — never
+  // derived from the request (ADR-0007: open-redirect prevention).
+  GOOGLE_OIDC_REDIRECT_URI: z.string().url().optional(),
+  // Override the authorization endpoint for local testing/mocking.
+  GOOGLE_OIDC_AUTH_ENDPOINT: z
+    .string()
+    .url()
+    .default('https://accounts.google.com/o/oauth2/v2/auth'),
 });
 
 export interface Config {
@@ -50,6 +62,12 @@ export interface Config {
   googleClientSecret: string | undefined;
   /** Registered redirect URI for the Google OAuth callback. */
   googleRedirectUri: string | undefined;
+  /** Google OIDC client ID (required when the authorize endpoint is invoked). */
+  googleOidcClientId: string | undefined;
+  /** Server-side redirect URI registered in Google Cloud Console (required when the authorize endpoint is invoked). */
+  googleOidcRedirectUri: string | undefined;
+  /** Google OIDC authorization endpoint URL (defaults to accounts.google.com). */
+  googleOidcAuthEndpoint: string;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -69,5 +87,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     googleClientId: parsed.GOOGLE_CLIENT_ID,
     googleClientSecret: parsed.GOOGLE_CLIENT_SECRET,
     googleRedirectUri: parsed.GOOGLE_REDIRECT_URI,
+    googleOidcClientId: parsed.GOOGLE_OIDC_CLIENT_ID,
+    googleOidcRedirectUri: parsed.GOOGLE_OIDC_REDIRECT_URI,
+    googleOidcAuthEndpoint: parsed.GOOGLE_OIDC_AUTH_ENDPOINT,
   };
 }

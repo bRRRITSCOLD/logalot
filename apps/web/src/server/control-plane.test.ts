@@ -6,6 +6,8 @@ import {
   cpAuthedSend,
   cpLogin,
   cpLogout,
+  cpOidcAuthorize,
+  cpOidcCallback,
   cpRefresh,
 } from './control-plane';
 
@@ -221,5 +223,56 @@ describe('cpAuthedSend (write proxy)', () => {
     await expect(
       cpAuthedSend('t', 'PATCH', '/v1/users/u1', z.unknown(), { role: 'tenant_admin' }),
     ).rejects.toMatchObject({ name: 'ControlPlaneError', status: 403, code: 'forbidden' });
+  });
+});
+
+describe('cpOidcAuthorize', () => {
+  it('POSTs to /v1/auth/oidc/:tenantSlug/authorize and returns the redirect URL', async () => {
+    const redirectUrl = 'https://accounts.google.com/o/oauth2/v2/auth?client_id=x';
+    const fetchMock = mockFetch(200, { redirectUrl });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await cpOidcAuthorize({ tenantSlug: 'acme' });
+
+    expect(result).toEqual({ redirectUrl });
+    const [url, init] = fetchMock.mock.calls[0] ?? [];
+    expect(url).toBe('http://cp.test:8082/v1/auth/oidc/acme/authorize');
+    expect((init as RequestInit).method).toBe('POST');
+    expect(JSON.parse(String((init as RequestInit).body))).toMatchObject({ tenantSlug: 'acme' });
+  });
+
+  it('maps a 4xx to a ControlPlaneError', async () => {
+    vi.stubGlobal('fetch', mockFetch(404, { error: 'not_found', message: 'tenant not found' }));
+    await expect(cpOidcAuthorize({ tenantSlug: 'ghost' })).rejects.toMatchObject({
+      name: 'ControlPlaneError',
+      status: 404,
+      code: 'not_found',
+    });
+  });
+});
+
+describe('cpOidcCallback', () => {
+  it('POSTs to /v1/auth/oidc/:tenantSlug/callback and parses the token pair', async () => {
+    const fetchMock = mockFetch(200, tokenPair);
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await cpOidcCallback({ tenantSlug: 'acme', code: 'auth-code', state: 'st' });
+
+    expect(result).toEqual(tokenPair);
+    const [url, init] = fetchMock.mock.calls[0] ?? [];
+    expect(url).toBe('http://cp.test:8082/v1/auth/oidc/acme/callback');
+    expect((init as RequestInit).method).toBe('POST');
+    expect(JSON.parse(String((init as RequestInit).body))).toMatchObject({
+      tenantSlug: 'acme',
+      code: 'auth-code',
+      state: 'st',
+    });
+  });
+
+  it('maps a 400 (invalid state / expired) to a ControlPlaneError', async () => {
+    vi.stubGlobal('fetch', mockFetch(400, { error: 'invalid_state', message: 'state mismatch' }));
+    await expect(
+      cpOidcCallback({ tenantSlug: 'acme', code: 'c', state: 's' }),
+    ).rejects.toMatchObject({ status: 400, code: 'invalid_state' });
   });
 });
