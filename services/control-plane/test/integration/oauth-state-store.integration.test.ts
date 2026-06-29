@@ -1,5 +1,5 @@
 import { RedisContainer, type StartedRedisContainer } from '@testcontainers/redis';
-import Redis from 'ioredis';
+import type Redis from 'ioredis';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createRedisClient } from '../../src/adapters/redis/client';
 import { RedisOAuthStateStore } from '../../src/adapters/redis/redis-oauth-state-store';

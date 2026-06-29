@@ -263,7 +263,7 @@ describe('AuthService', () => {
     // 'admin@acme.co' cannot log in typing 'Admin@Acme.co'.
     const session = await service.login({
       tenantSlug: 'acme',
-      email: 'Admin@Acme.co',  // Mixed-case — normalized → 'admin@acme.co'
+      email: 'Admin@Acme.co', // Mixed-case — normalized → 'admin@acme.co'
       password: 'pw',
     });
     expect(session.userId).toBe('user-1');
