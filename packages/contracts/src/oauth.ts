@@ -2,32 +2,32 @@ import { z } from 'zod';
 import { tenantPublicIdSchema } from './tenant.js';
 
 /**
- * returnTo must be a relative path — absolute URLs, protocol-relative `//`,
- * and Windows-style `\\` paths are all rejected to prevent open-redirect
- * attacks after the OIDC callback completes.
+ * returnTo must be a relative path starting with a single `/` (not `//` or
+ * `/\`).  We use an allow-list regex after trimming so that leading whitespace
+ * or control characters cannot smuggle in an absolute URL or protocol-relative
+ * path — common open-redirect bypasses that a deny-list cannot enumerate
+ * exhaustively.
  *
- * Valid: `/dashboard`, `/tenant/acme/logs`
- * Invalid: `https://evil.example`, `//evil.example`, `\\evil`
+ * Valid:   `/dashboard`, `/tenant/acme/logs?page=2`
+ * Invalid: `https://evil.example`, `//evil.example`, `/\evil`, ` https://evil`
  */
 const returnToSchema = z
   .string()
+  .trim()
   .min(1)
   .max(2000)
   .refine(
-    (v) =>
-      !v.startsWith('//') &&
-      !v.startsWith('\\') &&
-      !/^[a-zA-Z][a-zA-Z\d+\-.]*:/.test(v), // no scheme (absolute URL)
-    'returnTo must be a relative path — absolute URLs and protocol-relative paths are not allowed',
+    (v) => /^\/(?![/\\])/.test(v),
+    'returnTo must be a relative path starting with a single "/"',
   );
 
 /**
  * oidcAuthorizeRequest — sent by the client (web app) to the control-plane
  * `/auth/oidc/:tenantSlug/authorize` endpoint to initiate the OIDC flow.
  *
- * tenantSlug is in the URL path so it surfaces as a query/body param here
- * only when the caller needs to pass it out-of-band (e.g. in query string
- * before the redirect). The authoritative value always comes from the URL.
+ * `tenantSlug` identifies which tenant's IdP to redirect to and is required
+ * in the request body. `returnTo` optionally preserves the originally
+ * requested URL so the user lands on the right page after login.
  */
 export const oidcAuthorizeRequestSchema = z
   .object({
@@ -61,12 +61,12 @@ export const oidcCallbackRequestSchema = z
   .object({
     tenantSlug: tenantPublicIdSchema,
     /** Authorization code issued by the IdP — exchanged for tokens server-side. */
-    code: z.string().min(1),
+    code: z.string().min(1).max(4096),
     /**
      * Opaque value echoed from the original authorization request; the
      * server validates it against the session to prevent CSRF.
      */
-    state: z.string().min(1),
+    state: z.string().min(1).max(1024),
   })
   .strict();
 export type OidcCallbackRequest = z.infer<typeof oidcCallbackRequestSchema>;

@@ -67,6 +67,50 @@ describe('oidcAuthorizeRequestSchema', () => {
     expect(result.success).toBe(false);
   });
 
+  it('rejects /\\ returnTo (backslash bypass — browsers normalize to //)', () => {
+    const result = oidcAuthorizeRequestSchema.safeParse({
+      tenantSlug: 'acme-corp',
+      returnTo: '/\\evil.example',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects returnTo with leading whitespace before https:// (whitespace bypass)', () => {
+    const result = oidcAuthorizeRequestSchema.safeParse({
+      tenantSlug: 'acme-corp',
+      returnTo: ' https://evil.example',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects returnTo with leading tab before javascript: (control-char bypass)', () => {
+    const result = oidcAuthorizeRequestSchema.safeParse({
+      tenantSlug: 'acme-corp',
+      returnTo: '\tjavascript:alert(1)',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a bare-relative returnTo without leading slash', () => {
+    const result = oidcAuthorizeRequestSchema.safeParse({
+      tenantSlug: 'acme-corp',
+      returnTo: 'evil.example/path',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('trims leading/trailing whitespace before validating returnTo', () => {
+    // A value like "  /dashboard  " should be trimmed and accepted as "/dashboard"
+    const result = oidcAuthorizeRequestSchema.safeParse({
+      tenantSlug: 'acme-corp',
+      returnTo: '  /dashboard  ',
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.returnTo).toBe('/dashboard');
+    }
+  });
+
   it('rejects an invalid tenantSlug', () => {
     const result = oidcAuthorizeRequestSchema.safeParse({ tenantSlug: 'UPPER-CASE' });
     expect(result.success).toBe(false);
@@ -150,6 +194,16 @@ describe('oidcCallbackRequestSchema', () => {
 
   it('rejects extra fields (strict)', () => {
     const result = oidcCallbackRequestSchema.safeParse({ ...valid, extra: 'field' });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a code that exceeds 4096 characters', () => {
+    const result = oidcCallbackRequestSchema.safeParse({ ...valid, code: 'a'.repeat(4097) });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a state that exceeds 1024 characters', () => {
+    const result = oidcCallbackRequestSchema.safeParse({ ...valid, state: 'a'.repeat(1025) });
     expect(result.success).toBe(false);
   });
 });
