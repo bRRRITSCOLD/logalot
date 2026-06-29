@@ -1,0 +1,125 @@
+# Caddyfile — logalot AWS deployment (ADR-0009, ADR-0010, R16)
+#
+# TLS is obtained automatically from Let's Encrypt via ACME HTTP-01 on port 80.
+# The domain and ACME contact email are injected at runtime from the container
+# environment (docker-compose.aws.yml sets LOGALOT_DOMAIN and LOGALOT_TLS_EMAIL).
+#
+# Security posture (R16):
+#   - HTTP redirects to HTTPS automatically (Caddy default).
+#   - HSTS with a 2-year max-age + includeSubDomains + preload directive.
+#   - X-Content-Type-Options, X-Frame-Options, and Referrer-Policy headers.
+#
+# Reverse-proxy routing:
+#   /v1/ingest*      -> ingest-service:8080  (authenticated log ingestion)
+#   /v1/tail*        -> query-service:8081   (live-tail SSE; long-lived connections)
+#   /v1/query*       -> query-service:8081   (hot search + cold query)
+#   /auth*           -> control-plane:8082   (OIDC authorize/callback, ADR-0008)
+#   /api/*           -> control-plane:8082   (tenants, users, keys, RBAC REST API)
+#   everything else  -> web:3000             (TanStack Start BFF + SSR UI)
+#
+# Validate locally before deployment (requires LOGALOT_DOMAIN and LOGALOT_TLS_EMAIL):
+#   LOGALOT_DOMAIN=app.example.com LOGALOT_TLS_EMAIL=ops@example.com \
+#   docker run --rm \
+#     -e LOGALOT_DOMAIN -e LOGALOT_TLS_EMAIL \
+#     -v "$PWD/infra/aws/Caddyfile:/etc/caddy/Caddyfile:ro" \
+#     caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile
+{
+	email {$LOGALOT_TLS_EMAIL}
+	acme_ca https://acme-v02.api.letsencrypt.org/directory
+}
+
+{$LOGALOT_DOMAIN} {
+	# ── Security headers (R16 HSTS / hardening) ───────────────────────────────
+	header {
+		# HSTS: 2-year max-age, includeSubDomains, preload-eligible (ADR-0010 / R16).
+		Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+		# Prevent MIME-type sniffing.
+		X-Content-Type-Options "nosniff"
+		# Deny framing (clickjacking protection).
+		X-Frame-Options "DENY"
+		# Minimal referrer for privacy; same-origin only for same-scheme navigations.
+		Referrer-Policy "strict-origin-when-cross-origin"
+		# Strip the Server header Caddy would otherwise add.
+		-Server
+	}
+
+	# ── Ingest API (/v1/ingest*) ──────────────────────────────────────────────
+	# High-throughput authenticated log ingestion (ADR-0004). Keep timeouts
+	# generous for large batch payloads.
+	handle /v1/ingest* {
+		reverse_proxy ingest-service:8080 {
+			transport http {
+				dial_timeout 5s
+				response_header_timeout 30s
+			}
+		}
+	}
+
+	# ── Live tail SSE (/v1/tail*) ─────────────────────────────────────────────
+	# Server-Sent Events: disable buffering so events flow to the browser in real
+	# time (ADR-0006, NFR-3.2 < 2 s end-to-end). flush_interval -1 flushes each
+	# chunk immediately; response_header_timeout 0 lifts the per-request header
+	# deadline so long-lived SSE connections are not killed.
+	handle /v1/tail* {
+		reverse_proxy query-service:8081 {
+			flush_interval -1
+			transport http {
+				dial_timeout 5s
+				response_header_timeout 0
+				read_timeout 0
+			}
+		}
+	}
+
+	# ── Hot + cold query (/v1/query*) ─────────────────────────────────────────
+	handle /v1/query* {
+		reverse_proxy query-service:8081 {
+			transport http {
+				dial_timeout 5s
+				response_header_timeout 60s
+			}
+		}
+	}
+
+	# ── OAuth authorize / callback (/auth*) ───────────────────────────────────
+	# Google OIDC flow: browser is redirected here by Google after consent
+	# (ADR-0008). control-plane validates the code+state and issues a session.
+	handle /auth* {
+		reverse_proxy control-plane:8082 {
+			transport http {
+				dial_timeout 5s
+				response_header_timeout 30s
+			}
+		}
+	}
+
+	# ── control-plane REST API (/api/*) ───────────────────────────────────────
+	# Tenants, users, API keys, RBAC, alert rules — management surface.
+	handle /api/* {
+		reverse_proxy control-plane:8082 {
+			transport http {
+				dial_timeout 5s
+				response_header_timeout 30s
+			}
+		}
+	}
+
+	# ── Web BFF + SSR UI (catch-all) ──────────────────────────────────────────
+	# TanStack Start (React SSR + server functions). Must be last so the specific
+	# path matchers above take priority.
+	handle {
+		reverse_proxy web:3000 {
+			transport http {
+				dial_timeout 5s
+				response_header_timeout 30s
+			}
+		}
+	}
+
+	# Structured request log — one line per request, includes status + latency.
+	log {
+		output stdout
+		format json
+		level INFO
+	}
+}
