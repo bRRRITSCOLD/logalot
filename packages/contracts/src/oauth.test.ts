@@ -161,7 +161,7 @@ describe('oidcAuthorizeRequestSchema', () => {
 describe('oidcAuthorizeResponseSchema', () => {
   it('accepts a valid IdP redirect URL', () => {
     const result = oidcAuthorizeResponseSchema.safeParse({
-      redirectUrl: 'https://idp.example.com/authorize?client_id=abc&state=xyz',
+      redirectUrl: 'https://accounts.google.com/o/oauth2/v2/auth?client_id=abc&state=xyz',
     });
     expect(result.success).toBe(true);
   });
@@ -170,10 +170,17 @@ describe('oidcAuthorizeResponseSchema', () => {
     const result = oidcAuthorizeResponseSchema.safeParse({ redirectUrl: 'not-a-url' });
     expect(result.success).toBe(false);
   });
+  it('rejects a redirectUrl that does not target accounts.google.com (defense-in-depth open-redirect guard)', () => {
+    // Even a syntactically valid URL must be rejected if it points at a non-Google host.
+    const result = oidcAuthorizeResponseSchema.safeParse({
+      redirectUrl: 'https://evil.example.com/authorize?client_id=abc&state=xyz',
+    });
+    expect(result.success).toBe(false);
+  });
 
   it('rejects extra fields (strict)', () => {
     const result = oidcAuthorizeResponseSchema.safeParse({
-      redirectUrl: 'https://idp.example.com/auth',
+      redirectUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
       extra: 'field',
     });
     expect(result.success).toBe(false);
