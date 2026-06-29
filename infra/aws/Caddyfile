@@ -12,10 +12,23 @@
 # Reverse-proxy routing:
 #   /v1/ingest*      -> ingest-service:8080  (authenticated log ingestion)
 #   /v1/tail*        -> query-service:8081   (live-tail SSE; long-lived connections)
-#   /v1/query*       -> query-service:8081   (hot search + cold query)
-#   /auth*           -> control-plane:8082   (OIDC authorize/callback, ADR-0008)
-#   /api/*           -> control-plane:8082   (tenants, users, keys, RBAC REST API)
+#   /v1/search*      -> query-service:8081   (hot search)
+#   /v1/panel-data*  -> query-service:8081   (dashboard panel data)
 #   everything else  -> web:3000             (TanStack Start BFF + SSR UI)
+#
+# /api/* and /auth* are intentionally NOT intercepted here:
+#
+#   /api/* — served by the web BFF (web:3000, same origin). The browser's
+#   live-tail EventSource connects to /api/tail and the web liveness probe is
+#   /api/healthz, both handled by web. Forwarding /api/* to control-plane would
+#   hit nonexistent routes (control-plane serves /v1/*) and break the live tail.
+#   The BFF calls control-plane over the compose network at /v1/auth/* and
+#   /v1/{tenants,users,...} server-side — the browser never talks to control-plane
+#   directly.
+#
+#   /auth* — control-plane's OIDC callback routes (/v1/auth/*) are invoked
+#   server-side by the web BFF, not the browser. No browser-facing /auth*
+#   routes exist on control-plane yet; add an explicit handle here once they do.
 #
 # Validate locally before deployment (requires LOGALOT_DOMAIN and LOGALOT_TLS_EMAIL):
 #   LOGALOT_DOMAIN=app.example.com LOGALOT_TLS_EMAIL=ops@example.com \
@@ -23,6 +36,18 @@
 #     -e LOGALOT_DOMAIN -e LOGALOT_TLS_EMAIL \
 #     -v "$PWD/infra/aws/Caddyfile:/etc/caddy/Caddyfile:ro" \
 #     caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile
+
+# ── Reusable transport snippet ─────────────────────────────────────────────────
+# Standard 5 s connect / 30 s response timeout for short-lived HTTP calls.
+# Imported via `import transport_standard` inside reverse_proxy blocks.
+# Long-lived SSE (live tail) uses its own inline transport configuration.
+(transport_standard) {
+	transport http {
+		dial_timeout 5s
+		response_header_timeout 30s
+	}
+}
+
 {
 	email {$LOGALOT_TLS_EMAIL}
 	acme_ca https://acme-v02.api.letsencrypt.org/directory
@@ -48,10 +73,7 @@
 	# generous for large batch payloads.
 	handle /v1/ingest* {
 		reverse_proxy ingest-service:8080 {
-			transport http {
-				dial_timeout 5s
-				response_header_timeout 30s
-			}
+			import transport_standard
 		}
 	}
 
@@ -71,48 +93,31 @@
 		}
 	}
 
-	# ── Hot + cold query (/v1/query*) ─────────────────────────────────────────
-	handle /v1/query* {
+	# ── Hot search (/v1/search*) ──────────────────────────────────────────────
+	# Programmatic log search (hot tier). Matches query-service's /v1/search
+	# endpoint (query-service:8081).
+	handle /v1/search* {
 		reverse_proxy query-service:8081 {
-			transport http {
-				dial_timeout 5s
-				response_header_timeout 60s
-			}
+			import transport_standard
 		}
 	}
 
-	# ── OAuth authorize / callback (/auth*) ───────────────────────────────────
-	# Google OIDC flow: browser is redirected here by Google after consent
-	# (ADR-0008). control-plane validates the code+state and issues a session.
-	handle /auth* {
-		reverse_proxy control-plane:8082 {
-			transport http {
-				dial_timeout 5s
-				response_header_timeout 30s
-			}
-		}
-	}
-
-	# ── control-plane REST API (/api/*) ───────────────────────────────────────
-	# Tenants, users, API keys, RBAC, alert rules — management surface.
-	handle /api/* {
-		reverse_proxy control-plane:8082 {
-			transport http {
-				dial_timeout 5s
-				response_header_timeout 30s
-			}
+	# ── Dashboard panel data (/v1/panel-data*) ────────────────────────────────
+	# Dashboard panel queries routed to query-service:8081 /v1/panel-data.
+	handle /v1/panel-data* {
+		reverse_proxy query-service:8081 {
+			import transport_standard
 		}
 	}
 
 	# ── Web BFF + SSR UI (catch-all) ──────────────────────────────────────────
 	# TanStack Start (React SSR + server functions). Must be last so the specific
 	# path matchers above take priority.
+	# Handles all remaining traffic including /api/* (BFF routes: /api/tail,
+	# /api/healthz) and all SSR pages and static assets.
 	handle {
 		reverse_proxy web:3000 {
-			transport http {
-				dial_timeout 5s
-				response_header_timeout 30s
-			}
+			import transport_standard
 		}
 	}
 

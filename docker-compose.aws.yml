@@ -21,6 +21,12 @@
 
 name: logalot
 
+# ── YAML anchors ──────────────────────────────────────────────────────────────
+# Shared values referenced by multiple services to avoid drift.
+# x-* extension fields are ignored by Docker Compose.
+x-app-db: &app-db >-
+  postgres://logalot_app:${LOGALOT_APP_PASSWORD:-logalot_app}@postgres:5432/${POSTGRES_DB}?sslmode=disable
+
 services:
   # ---------------------------------------------------------------------------
   # Infrastructure backing stores
@@ -119,8 +125,7 @@ services:
     restart: unless-stopped
     environment:
       # NOSUPERUSER logalot_app role — FORCE ROW LEVEL SECURITY governs it.
-      LOGALOT_APP_DATABASE_URL: >-
-        postgres://logalot_app:${LOGALOT_APP_PASSWORD:-logalot_app}@postgres:5432/${POSTGRES_DB}?sslmode=disable
+      LOGALOT_APP_DATABASE_URL: *app-db
       RABBITMQ_HOST: rabbitmq
       RABBITMQ_PORT: "5672"
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
@@ -153,8 +158,7 @@ services:
     container_name: logalot-processor
     restart: unless-stopped
     environment:
-      LOGALOT_APP_DATABASE_URL: >-
-        postgres://logalot_app:${LOGALOT_APP_PASSWORD:-logalot_app}@postgres:5432/${POSTGRES_DB}?sslmode=disable
+      LOGALOT_APP_DATABASE_URL: *app-db
       RABBITMQ_HOST: rabbitmq
       RABBITMQ_PORT: "5672"
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
@@ -189,8 +193,7 @@ services:
     container_name: logalot-query-service
     restart: unless-stopped
     environment:
-      LOGALOT_APP_DATABASE_URL: >-
-        postgres://logalot_app:${LOGALOT_APP_PASSWORD:-logalot_app}@postgres:5432/${POSTGRES_DB}?sslmode=disable
+      LOGALOT_APP_DATABASE_URL: *app-db
       REDIS_HOST: redis
       REDIS_PORT: "6379"
       REDIS_PASSWORD: ${REDIS_PASSWORD}
@@ -222,8 +225,7 @@ services:
     restart: unless-stopped
     environment:
       # Two-role pattern (model.md §4.5): logalot_app (RLS) + logalot_evaluator (BYPASSRLS).
-      LOGALOT_APP_DATABASE_URL: >-
-        postgres://logalot_app:${LOGALOT_APP_PASSWORD:-logalot_app}@postgres:5432/${POSTGRES_DB}?sslmode=disable
+      LOGALOT_APP_DATABASE_URL: *app-db
       LOGALOT_EVALUATOR_DATABASE_URL: >-
         postgres://logalot_evaluator:${LOGALOT_EVALUATOR_PASSWORD:-logalot_evaluator}@postgres:5432/${POSTGRES_DB}?sslmode=disable
       ALERT_NOTIFIER: ${ALERT_NOTIFIER:-logsink}
@@ -270,8 +272,7 @@ services:
     restart: unless-stopped
     environment:
       NODE_ENV: production
-      LOGALOT_APP_DATABASE_URL: >-
-        postgres://logalot_app:${LOGALOT_APP_PASSWORD:-logalot_app}@postgres:5432/${POSTGRES_DB}?sslmode=disable
+      LOGALOT_APP_DATABASE_URL: *app-db
       JWT_SECRET: ${JWT_SECRET}
       # Redis for the OAuth in-flight state store (issue #89); required in
       # production/multi-replica; in-memory fallback is single-process dev only.
