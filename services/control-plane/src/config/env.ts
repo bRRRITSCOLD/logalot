@@ -19,9 +19,9 @@ const EnvSchema = z.object({
     .default(60 * 60 * 24 * 7),
   BCRYPT_COST: z.coerce.number().int().min(4).max(15).default(10),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
-  // Redis — OAuth in-flight state store (issue #89). Optional in development;
-  // required in production when the OAuth flow is enabled. Defaults to the
-  // compose-stack value if not set.
+  // Redis — OAuth in-flight state store (issue #89). Optional: when unset the
+  // service falls back to the in-memory store (suitable for single-process dev/test
+  // only). Set to a Redis URL in production and any multi-replica deployment.
   REDIS_URL: z.string().optional(),
   OAUTH_STATE_TTL_SECONDS: z.coerce.number().int().positive().default(600),
 });

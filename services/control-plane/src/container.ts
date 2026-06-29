@@ -43,6 +43,8 @@ export interface Container {
   services: Services;
   tokenService: TokenService;
   oauthStateStore: OAuthStateStore;
+  /** Release infrastructure resources (Redis connection, etc.) on graceful shutdown. */
+  shutdown: () => Promise<void>;
 }
 
 // buildContainer is the composition root: it wires the concrete adapters into the
@@ -93,9 +95,21 @@ export function buildContainer(pool: Pool, config: Config): Container {
   // OAuth state store — Redis when REDIS_URL is configured, in-memory fake otherwise.
   // The in-memory store is safe for single-process dev/test; use Redis in production
   // and any multi-replica deployment so state survives between request handlers.
-  const oauthStateStore: OAuthStateStore = config.redisUrl
-    ? new RedisOAuthStateStore(createRedisClient(config.redisUrl))
+  //
+  // The Redis client is retained so the composition root can close the connection on
+  // graceful shutdown (see the `shutdown` field). The caller is responsible for
+  // invoking container.shutdown() before process exit.
+  const redisClient = config.redisUrl ? createRedisClient(config.redisUrl) : undefined;
+  const oauthStateStore: OAuthStateStore = redisClient
+    ? new RedisOAuthStateStore(redisClient)
     : new InMemoryOAuthStateStore();
 
-  return { services, tokenService, oauthStateStore };
+  return {
+    services,
+    tokenService,
+    oauthStateStore,
+    shutdown: async () => {
+      if (redisClient) await redisClient.quit();
+    },
+  };
 }
