@@ -8,6 +8,7 @@ import {
   loginRequestSchema,
   logoutRequestSchema,
   oidcAuthorizeRequestSchema,
+  oidcCallbackRequestSchema,
   refreshRequestSchema,
   updateAlertRuleRequestSchema,
   updateDashboardRequestSchema,
@@ -76,6 +77,22 @@ export function registerRoutes(app: FastifyInstance, deps: RouteDeps): void {
       returnTo: body.returnTo,
     });
     return reply.code(200).send(result);
+  });
+
+  // POST /v1/auth/oidc/google/callback — consume IdP callback, complete the
+  // OIDC flow, and return a session.
+  // Body: { tenantSlug, code, state } (oidcCallbackRequestSchema).
+  // The `tenantSlug` is included in the body (not the path) because the BFF
+  // relays it from the original authorize request; the route is registered as
+  // a public endpoint (no preHandler auth).
+  app.post('/v1/auth/oidc/google/callback', async (req, reply) => {
+    const body = parse(oidcCallbackRequestSchema, req.body);
+    const result = await oidcAuthenticator.handleCallback({
+      code: body.code,
+      state: body.state,
+    });
+    // Return session tokens plus returnTo so the client can redirect.
+    return reply.code(200).send({ ...result.tokens, returnTo: result.returnTo });
   });
 
   // ── Auth (public) ────────────────────────────────────────────────────────
