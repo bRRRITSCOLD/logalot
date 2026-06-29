@@ -26,9 +26,10 @@
 #   /v1/{tenants,users,...} server-side — the browser never talks to control-plane
 #   directly.
 #
-#   /auth* — control-plane's OIDC callback routes (/v1/auth/*) are invoked
-#   server-side by the web BFF, not the browser. No browser-facing /auth*
-#   routes exist on control-plane yet; add an explicit handle here once they do.
+#   /auth* — The browser-facing Google OIDC callback (/auth/google/callback) is
+#   served by the web BFF (web:3000) via the catch-all handle below. The BFF then
+#   calls control-plane server-side over the compose network at /v1/auth/*.
+#   No explicit /auth* handle is needed here; the catch-all covers it (issue #110).
 #
 # Validate locally before deployment (requires LOGALOT_DOMAIN and LOGALOT_TLS_EMAIL):
 #   LOGALOT_DOMAIN=app.example.com LOGALOT_TLS_EMAIL=ops@example.com \

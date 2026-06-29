@@ -241,6 +241,11 @@ COOKIE_SEAL_KEY=$${COOKIE_SEAL_KEY}
 # ── Google OAuth ──────────────────────────────────────────────────────────────
 GOOGLE_CLIENT_ID=$${GOOGLE_CLIENT_ID}
 GOOGLE_CLIENT_SECRET=$${GOOGLE_CLIENT_SECRET}
+# Fixed server-side redirect URI registered in the Google Cloud Console.
+# MUST be https://<domain>/auth/google/callback (ADR-0007, R16 / issue #110).
+# NEVER derived from the request — the registered value must match exactly.
+# Derived from var.domain_name (same Terraform source of truth as LOGALOT_DOMAIN).
+GOOGLE_OIDC_REDIRECT_URI=https://${domain_name}/auth/google/callback
 
 # ── AWS / cold tier ───────────────────────────────────────────────────────────
 AWS_REGION=$${AWS_REGION}
@@ -254,10 +259,10 @@ RETENTION_ENABLED=false
 RETENTION_DRY_RUN=false
 
 # ── Caddy ─────────────────────────────────────────────────────────────────────
-# LOGALOT_DOMAIN and LOGALOT_TLS_EMAIL must be set before compose up.
-# Replace with your real domain and ops email.
-LOGALOT_DOMAIN=logalot.example.com
-LOGALOT_TLS_EMAIL=ops@example.com
+# Injected by Terraform templatefile() from var.domain_name and var.alert_email
+# (ADR-0010, issue #110). No manual post-boot edit is required.
+LOGALOT_DOMAIN=${domain_name}
+LOGALOT_TLS_EMAIL=${alert_email}
 
 # ── Images ────────────────────────────────────────────────────────────────────
 IMAGE_TAG=${image_tag}
