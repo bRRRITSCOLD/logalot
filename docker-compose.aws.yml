@@ -278,6 +278,16 @@ services:
       # production/multi-replica; in-memory fallback is single-process dev only.
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
       CONTROL_PLANE_PORT: "8082"
+      # Google OAuth 2.0 / OIDC (issue #110: live Google e2e on provisioned domain).
+      # Values are fetched from SSM SecureStrings at boot by user-data (ADR-0010).
+      # GOOGLE_CLIENT_ID is the public OAuth 2.0 client ID; safe to pass as env.
+      # GOOGLE_CLIENT_SECRET is a secret; never logged by the service (R8).
+      # GOOGLE_OIDC_REDIRECT_URI is the fixed server-side callback URI registered
+      # in the Google Cloud Console — MUST match exactly (ADR-0007 / open-redirect).
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
+      GOOGLE_OIDC_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+      GOOGLE_OIDC_REDIRECT_URI: ${GOOGLE_OIDC_REDIRECT_URI}
     networks:
       - logalot
     # ADR-0011: estimated RSS ~180 MB; 256 m cap + 512 m swap ceiling.

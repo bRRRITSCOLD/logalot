@@ -75,6 +75,12 @@ resource "aws_instance" "main" {
       glue_db               = aws_glue_catalog_database.cold.name
       app_version           = var.app_version
       image_tag             = var.image_tag
+      # Domain + TLS contact injected so user-data can write the real values into
+      # .env without a manual post-boot edit (issue #110: live Google e2e demo).
+      # domain_name drives both LOGALOT_DOMAIN (Caddy TLS) and the fixed
+      # GOOGLE_OIDC_REDIRECT_URI that must be registered in the Google Console.
+      domain_name           = var.domain_name
+      alert_email           = var.alert_email
     }
   )
 
