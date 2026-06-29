@@ -8,16 +8,25 @@
 #
 # Pipeline:
 #   1. `builder`  — install ALL deps (including devDeps needed by Vite/TS), then
-#                   run `vite build` to produce the TanStack Start / Vinxi server
-#                   bundle under .output/.
-#   2. `runtime`  — Node 22 Alpine, copies only the built .output/ artifact.
-#                   The Nitro/Vinxi bundle embeds all dependencies; no node_modules
-#                   are copied unless the bundle externalises a package at runtime
-#                   (verified: `docker run` + /api/healthz probe confirms startup).
-#
-# The design-tokens package (workspace dep) has a prebuild script (build-tokens.mjs)
-# invoked via the `prebuild` hook in the web package; it runs automatically when
-# `pnpm --filter @logalot/web build` is called inside the builder.
+#                   run `pnpm --filter @logalot/web build` which:
+#                     (a) pre-build: runs build-tokens.mjs to emit src/styles/tokens.css
+#                     (b) `vite build`: TanStack Start (Vite plugin, NOT Nitro/Vinxi)
+#                         produces two environments:
+#                           apps/web/dist/server/server.js   — Node.js ESM fetch handler
+#                           apps/web/dist/server/assets/     — server-side split chunks
+#                           apps/web/dist/client/assets/     — hashed browser JS/CSS
+#   2. `runtime`  — Node 22 Alpine.  Copies the artefacts required to run:
+#                     • node_modules/              root pnpm virtual store (.pnpm/)
+#                     • apps/web/node_modules/     per-app symlinks → virtual store
+#                     • apps/web/dist/             build output (server + client)
+#                     • packages/contracts/        resolves @logalot/contracts symlink
+#                   node_modules ARE required at runtime: vite build (SSR environment)
+#                   externalises `react` and `@tanstack/react-router` — they are NOT
+#                   bundled into dist/server/server.js and must be resolvable via
+#                   Node.js module-resolution at start-up.
+#                   `srvx` (promoted to a direct dep of @logalot/web) provides the
+#                   HTTP-server adapter: it imports server.js's default export (a
+#                   Web-fetch handler) and serves it over Node.js HTTP.
 
 ARG NODE_VERSION=22
 
@@ -39,12 +48,13 @@ COPY apps/web/package.json                ./apps/web/
 RUN pnpm install --frozen-lockfile --filter @logalot/web...
 
 # Copy source AFTER deps to maximise cache reuse on code-only changes.
-COPY packages/contracts   ./packages/contracts
+COPY packages/contracts     ./packages/contracts
 COPY packages/design-tokens ./packages/design-tokens
-COPY apps/web             ./apps/web
+COPY apps/web               ./apps/web
 
-# Build — `prebuild` in apps/web/package.json runs build-tokens.mjs first.
-# TanStack Start (Vinxi) emits a production Node.js server to .output/.
+# Build — prebuild hook runs build-tokens.mjs first, then vite build emits:
+#   apps/web/dist/server/server.js   Node.js ESM fetch handler
+#   apps/web/dist/client/assets/     browser JS/CSS chunks
 RUN pnpm --filter @logalot/web build
 
 # ---- runtime -----------------------------------------------------------------
@@ -54,16 +64,33 @@ RUN apk add --no-cache wget \
  && addgroup -S logalot \
  && adduser  -S -G logalot logalot
 
+# WORKDIR mirrors the workspace root so that pnpm symlinks in
+# apps/web/node_modules/ (relative: ../../node_modules/.pnpm/…) resolve
+# correctly under /app.
 WORKDIR /app
 
-# Only the generated server bundle is needed at runtime — no source, no devDeps.
-COPY --from=builder /build/apps/web/.output ./.output
+# Root pnpm virtual store — every package is here (react, @tanstack/*, srvx…).
+# dist/server/server.js imports react and @tanstack/react-router as external
+# bare specifiers; Node.js walks up from the file to this directory to find them.
+COPY --from=builder /build/node_modules          ./node_modules
 
-# The Vinxi/Nitro bundle inlines all runtime dependencies; node_modules are not
-# copied. This assumption MUST be verified by running the container and confirming
-# the /api/healthz probe responds before merging. If any dep is externalised by the
-# Nitro preset, the container will crash at startup — uncomment the line below:
-# COPY --from=builder /build/node_modules ./node_modules
+# Per-app symlinks that point back into the virtual store above.
+# Includes srvx and node_modules/.bin/srvx created by the direct-dep install.
+COPY --from=builder /build/apps/web/node_modules ./apps/web/node_modules
+
+# package.json provides "type":"module" so Node.js treats server.js as ESM
+# without the parse-twice performance penalty.
+COPY --from=builder /build/apps/web/package.json  ./apps/web/package.json
+
+# The production build artefacts (server bundle + browser chunks).
+COPY --from=builder /build/apps/web/dist         ./apps/web/dist
+
+# Resolve the @logalot/contracts workspace symlink present in node_modules.
+COPY --from=builder /build/packages/contracts    ./packages/contracts
+
+# pnpm workspace resolution reads these at startup.
+COPY --from=builder /build/package.json          ./package.json
+COPY --from=builder /build/pnpm-workspace.yaml   ./pnpm-workspace.yaml
 
 USER logalot:logalot
 
@@ -74,7 +101,10 @@ EXPOSE 3000
 HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=3 \
   CMD wget -qO- http://localhost:3000/api/healthz || exit 1
 
-# TanStack Start / Vinxi emits the server entry at .output/server/index.mjs.
-# PORT env var is read by the Nitro server and defaults to 3000.
+# PORT defaults to 3000; srvx reads process.env.PORT automatically.
+# --prod  enables graceful shutdown and sets NODE_ENV=production.
+# --dir   tells srvx to root discovery at apps/web/dist; it auto-discovers
+#         apps/web/dist/server/server.js via its "server/server" default-entry rule.
+# --static serves browser chunks from apps/web/dist/client/ at URL prefix /assets/.
 ENV PORT=3000
-ENTRYPOINT ["node", ".output/server/index.mjs"]
+ENTRYPOINT ["apps/web/node_modules/.bin/srvx", "--prod", "--dir", "apps/web/dist", "--static", "client"]
