@@ -1,4 +1,5 @@
 import type { Pool } from 'pg';
+import { ConsoleOAuthAuditLogger } from './adapters/audit/console-oauth-audit-logger';
 import { BcryptHasher } from './adapters/crypto/bcrypt-hasher';
 import { JoseGoogleIdTokenVerifier } from './adapters/crypto/jose-google-verifier';
 import { JoseTokenService } from './adapters/crypto/jose-token-service';
@@ -132,7 +133,8 @@ export function buildContainer(pool: Pool, config: Config): Container {
           clientSecret: config.googleClientSecret,
         })
       : undefined;
-  // OidcAuthenticator — beginAuthorize (issue #95) + handleCallback (issue #96).
+  // OidcAuthenticator — beginAuthorize (issue #95) + handleCallback (issue #96) +
+  // account-linking + audit (issue #97).
   // clientId and redirectUri are required in production; they are optional in
   // config so tests that don't exercise the OIDC path don't need to provide them.
   // The callback-half deps (tokenExchangeClient, idTokenVerifier, oauthIdentities)
@@ -162,6 +164,9 @@ export function buildContainer(pool: Pool, config: Config): Container {
     ids: idGenerator,
     clock,
     refreshTtlSeconds: config.refreshTokenTtlSeconds,
+    // Structured audit logger — ConsoleOAuthAuditLogger writes one JSON line per
+    // callback outcome to stderr (privacy-safe: only hashed sub is logged).
+    auditLogger: new ConsoleOAuthAuditLogger(),
   });
 
   return {
