@@ -58,7 +58,7 @@ GO_SERVICES := ingest-service processor query-service alert-evaluator retention-
 	migrate-up migrate-down migrate-version migrate-create \
 	slice-up slice-down slice-logs slice-demo slice-test mimic-logs mimic-logs-stream \
 	dev dev-up dev-down dev-logs \
-	cold-tier-spike cold-tier-spike-athena \
+	cold-tier-spike cold-tier-spike-athena cold-smoke-aws \
 	go-sync go-build go-test go-fmt go-lint \
 	node-install node-test node-lint node-typecheck \
 	test lint \
@@ -216,6 +216,14 @@ cold-tier-spike: .env
 # no Glue catalog bridge, no Presto functions, no injected-projection enforcement. See docs/data/spikes/014-.
 cold-tier-spike-athena: .env
 	go test -tags=floci_spike -run TestAthenaProjectionFidelity -v -timeout 300s ./tests/cold-tier-spike/...
+
+## cold-smoke-aws: run the real-AWS cold-tier smoke canary (decision 016 §7, issue #107)
+# Requires: real AWS credentials + resources provisioned by infra/aws (terraform apply).
+# Required env vars: COLD_BUCKET, COLD_GLUE_DB, COLD_ATHENA_RESULT_BUCKET.
+# Optional: COLD_ATHENA_WORKGROUP (default: primary), AWS_REGION (default: us-east-1).
+# The test skips cleanly when these vars are absent so normal local runs are unaffected.
+cold-smoke-aws:
+	go test -tags=cold_smoke_aws -run TestColdTierSmoke_AWS -v -timeout 10m ./tests/cold-tier-smoke/...
 
 # ----------------------------------------------------------------------------
 # Monorepo CI helpers. CI (.github/workflows/ci.yml) calls these same targets,
