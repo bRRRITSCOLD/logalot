@@ -1,0 +1,254 @@
+#!/usr/bin/env bash
+# user-data.sh.tftpl — EC2 cloud-init bootstrap script
+#
+# ADR-0009 / ADR-0010 / ADR-0011
+# Template variables (substituted by Terraform templatefile()):
+#   project    = ${project}
+#   env        = ${env}
+#   aws_region = ${aws_region}
+#
+# Execution order:
+#   1. System tuning: swap, kernel params
+#   2. Package install: Docker CE, AWS CLI v2, CloudWatch agent
+#   3. Docker Compose plugin
+#   4. SSM SecureString → /home/ec2-user/logalot/.env
+#   5. docker compose -f docker-compose.aws.yml up -d
+#   6. CloudWatch agent start
+#
+# Idempotency: each block checks its own pre-condition before running, so
+# re-runs (e.g. after an instance restart or taint) are safe.
+
+set -euo pipefail
+
+PROJECT="${project}"
+ENV="${env}"
+AWS_REGION="${aws_region}"
+APP_DIR="/home/ec2-user/logalot"
+ENV_FILE="$APP_DIR/.env"
+LOG_FILE="/var/log/user-data.log"
+
+# Redirect all output to the log file AND to the console (visible in
+# EC2 system log / SSM Run Command output).
+exec > >(tee -a "$LOG_FILE") 2>&1
+
+echo "[$(date -u +%FT%TZ)] === logalot user-data start ==="
+
+###############################################################################
+# 1. Swap — 2 GiB swap file on the gp3 root volume
+#    ADR-0011: t4g.small has 2 GiB RAM; swap gives burst headroom to prevent
+#    OOM kills under cold-compaction spikes.
+###############################################################################
+SWAPFILE="/swapfile"
+if [ ! -f "$SWAPFILE" ]; then
+  echo "[$(date -u +%FT%TZ)] Creating 2 GiB swap file …"
+  fallocate -l 2G "$SWAPFILE" || dd if=/dev/zero of="$SWAPFILE" bs=1M count=2048 status=progress
+  chmod 600 "$SWAPFILE"
+  mkswap "$SWAPFILE"
+  swapon "$SWAPFILE"
+  echo "$SWAPFILE none swap sw 0 0" >> /etc/fstab
+  echo "[$(date -u +%FT%TZ)] Swap enabled."
+else
+  echo "[$(date -u +%FT%TZ)] Swap file already exists — skipping."
+fi
+
+# Tune swappiness: defer swap usage; only swapout under real pressure.
+sysctl -w vm.swappiness=10
+echo "vm.swappiness=10" >> /etc/sysctl.d/99-logalot.conf
+
+###############################################################################
+# 2. Package install
+###############################################################################
+echo "[$(date -u +%FT%TZ)] Updating packages …"
+dnf update -y --quiet
+
+# Docker CE (Amazon Linux 2023 uses the docker package from the AL2023 repo).
+if ! command -v docker &>/dev/null; then
+  echo "[$(date -u +%FT%TZ)] Installing Docker …"
+  dnf install -y docker
+  systemctl enable --now docker
+  usermod -aG docker ec2-user
+else
+  echo "[$(date -u +%FT%TZ)] Docker already installed."
+fi
+
+# AWS CLI v2 (pre-installed on AL2023 AMIs; ensure it is up to date).
+echo "[$(date -u +%FT%TZ)] Ensuring AWS CLI v2 …"
+dnf install -y aws-cli --quiet 2>/dev/null || true
+
+# jq — used to parse SSM GetParametersByPath JSON.
+if ! command -v jq &>/dev/null; then
+  dnf install -y jq --quiet
+fi
+
+# Amazon CloudWatch agent — ARM64 package.
+if ! systemctl is-active --quiet amazon-cloudwatch-agent 2>/dev/null; then
+  echo "[$(date -u +%FT%TZ)] Installing CloudWatch agent …"
+  dnf install -y amazon-cloudwatch-agent --quiet 2>/dev/null || \
+    rpm -ivh "https://s3.$${AWS_REGION}.amazonaws.com/amazoncloudwatch-agent/$${AWS_REGION}/arm64/latest/amazon-cloudwatch-agent.rpm" 2>/dev/null || true
+fi
+
+###############################################################################
+# 3. Docker Compose plugin (v2 bundled with Docker CE on AL2023; verify/install)
+###############################################################################
+if ! docker compose version &>/dev/null; then
+  echo "[$(date -u +%FT%TZ)] Installing Docker Compose plugin …"
+  COMPOSE_DIR="/usr/local/lib/docker/cli-plugins"
+  mkdir -p "$COMPOSE_DIR"
+  COMPOSE_VERSION="v2.27.1"
+  COMPOSE_URL="https://github.com/docker/compose/releases/download/$${COMPOSE_VERSION}/docker-compose-linux-aarch64"
+  curl -fsSL "$COMPOSE_URL" -o "$${COMPOSE_DIR}/docker-compose"
+  chmod +x "$${COMPOSE_DIR}/docker-compose"
+else
+  echo "[$(date -u +%FT%TZ)] Docker Compose plugin already present: $(docker compose version)."
+fi
+
+###############################################################################
+# 4. Clone / update the logalot repo
+#    In PoC the repo is fetched from GitHub.  A CI/CD alternative is to bake
+#    images and the compose file into an S3 artifact or AMI.
+###############################################################################
+if [ ! -d "$APP_DIR/.git" ]; then
+  echo "[$(date -u +%FT%TZ)] Cloning logalot repo …"
+  sudo -u ec2-user git clone https://github.com/bRRRITSCOLD/logalot.git "$APP_DIR"
+else
+  echo "[$(date -u +%FT%TZ)] Repo exists — pulling latest …"
+  sudo -u ec2-user git -C "$APP_DIR" pull --ff-only
+fi
+
+###############################################################################
+# 5. SSM SecureString parameters → .env
+#    ADR-0010: secrets live in SSM; user-data decrypts them at boot using the
+#    EC2 instance role (AmazonSSMManagedInstanceCore + least-priv ssm_read).
+#    The resulting .env is chmod 600 and owned by ec2-user.
+###############################################################################
+echo "[$(date -u +%FT%TZ)] Fetching SSM parameters → $ENV_FILE …"
+
+SSM_PREFIX="/logalot/$${ENV}"
+
+# Helper: fetch a single SecureString by name.
+ssm_get() {
+  aws ssm get-parameter \
+    --region "$AWS_REGION" \
+    --name "$${SSM_PREFIX}/$1" \
+    --with-decryption \
+    --query "Parameter.Value" \
+    --output text 2>/dev/null || echo "REPLACE_ME"
+}
+
+POSTGRES_PASSWORD="$(ssm_get postgres/password)"
+REDIS_PASSWORD="$(ssm_get redis/password)"
+RABBITMQ_PASSWORD="$(ssm_get rabbitmq/password)"
+GOOGLE_CLIENT_ID="$(ssm_get oauth/google/client_id)"
+GOOGLE_CLIENT_SECRET="$(ssm_get oauth/google/client_secret)"
+JWT_SECRET="$(ssm_get auth/jwt_signing_key)"
+REFRESH_TOKEN_PEPPER="$(ssm_get auth/refresh_token_pepper)"
+COOKIE_SEAL_KEY="$(ssm_get web/cookie_seal_key)"
+
+# Derive S3 / Athena names from the project/env convention (matches s3.tf).
+COLD_BUCKET="$${PROJECT}-$${ENV}-cold"
+ATHENA_RESULTS_BUCKET="$${PROJECT}-$${ENV}-athena-results"
+
+cat > "$ENV_FILE" <<EOF
+# Generated by user-data at $(date -u +%FT%TZ). Do not edit manually.
+# Re-run user-data (or cloud-init) to refresh.
+
+# ── Postgres ──────────────────────────────────────────────────────────────────
+POSTGRES_USER=logalot_app
+POSTGRES_PASSWORD=$${POSTGRES_PASSWORD}
+POSTGRES_DB=logalot
+
+# ── Redis ─────────────────────────────────────────────────────────────────────
+REDIS_PASSWORD=$${REDIS_PASSWORD}
+
+# ── RabbitMQ ──────────────────────────────────────────────────────────────────
+RABBITMQ_DEFAULT_USER=logalot
+RABBITMQ_DEFAULT_PASS=$${RABBITMQ_PASSWORD}
+
+# ── Auth / session ────────────────────────────────────────────────────────────
+JWT_SECRET=$${JWT_SECRET}
+REFRESH_TOKEN_PEPPER=$${REFRESH_TOKEN_PEPPER}
+COOKIE_SEAL_KEY=$${COOKIE_SEAL_KEY}
+
+# ── Google OAuth ──────────────────────────────────────────────────────────────
+GOOGLE_CLIENT_ID=$${GOOGLE_CLIENT_ID}
+GOOGLE_CLIENT_SECRET=$${GOOGLE_CLIENT_SECRET}
+
+# ── AWS / cold tier ───────────────────────────────────────────────────────────
+AWS_REGION=$${AWS_REGION}
+COLD_S3_BUCKET=$${COLD_BUCKET}
+COLD_ATHENA_RESULT_BUCKET=$${ATHENA_RESULTS_BUCKET}
+COLD_GLUE_DB=logalot_cold
+COLD_ATHENA_WORKGROUP=primary
+# Feature-flag: flip to true after cold_smoke_aws test passes (ADR-0005).
+COLD_ENABLED=false
+RETENTION_ENABLED=false
+RETENTION_DRY_RUN=false
+
+# ── Caddy ─────────────────────────────────────────────────────────────────────
+# LOGALOT_DOMAIN and LOGALOT_TLS_EMAIL must be set before compose up.
+# Replace with your real domain and ops email.
+LOGALOT_DOMAIN=logalot.example.com
+LOGALOT_TLS_EMAIL=ops@example.com
+
+# ── Images ────────────────────────────────────────────────────────────────────
+IMAGE_TAG=latest
+EOF
+
+chmod 600 "$ENV_FILE"
+chown ec2-user:ec2-user "$ENV_FILE"
+echo "[$(date -u +%FT%TZ)] .env written."
+
+###############################################################################
+# 6. docker compose up
+###############################################################################
+echo "[$(date -u +%FT%TZ)] Starting logalot stack …"
+sudo -u ec2-user docker compose \
+  --project-directory "$APP_DIR" \
+  -f "$APP_DIR/docker-compose.aws.yml" \
+  --env-file "$ENV_FILE" \
+  up -d --pull always 2>&1 | tee -a "$LOG_FILE"
+
+echo "[$(date -u +%FT%TZ)] docker compose up complete."
+
+###############################################################################
+# 7. CloudWatch agent — memory + disk metrics (ADR-0011)
+#    Config is written inline; the agent publishes mem_used_percent to the
+#    CWAgent namespace so the high_mem alarm (observability.tf) can fire.
+###############################################################################
+CW_CONFIG_DIR="/opt/aws/amazon-cloudwatch-agent/etc"
+mkdir -p "$CW_CONFIG_DIR"
+
+cat > "$${CW_CONFIG_DIR}/amazon-cloudwatch-agent.json" <<'CWEOF'
+{
+  "metrics": {
+    "namespace": "CWAgent",
+    "append_dimensions": {
+      "InstanceId": "$${aws:InstanceId}"
+    },
+    "metrics_collected": {
+      "mem": {
+        "measurement": ["mem_used_percent"],
+        "metrics_collection_interval": 60
+      },
+      "disk": {
+        "measurement": ["disk_used_percent"],
+        "resources": ["/"],
+        "metrics_collection_interval": 60
+      },
+      "swap": {
+        "measurement": ["swap_used_percent"],
+        "metrics_collection_interval": 60
+      }
+    }
+  }
+}
+CWEOF
+
+/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+  -a fetch-config \
+  -m ec2 \
+  -s \
+  -c "file:$${CW_CONFIG_DIR}/amazon-cloudwatch-agent.json" 2>&1 | tee -a "$LOG_FILE" || \
+  echo "[$(date -u +%FT%TZ)] WARNING: CloudWatch agent config failed — check agent installation."
+
+echo "[$(date -u +%FT%TZ)] === logalot user-data complete ==="
