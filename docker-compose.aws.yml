@@ -206,7 +206,12 @@ services:
       COLD_S3_BUCKET: ${COLD_S3_BUCKET}
       COLD_GLUE_DB: ${COLD_GLUE_DB:-logalot_cold}
       COLD_ATHENA_RESULT_BUCKET: ${COLD_ATHENA_RESULT_BUCKET}
-      COLD_ATHENA_WORKGROUP: ${COLD_ATHENA_WORKGROUP:-primary}
+      # NOTE: COLD_ATHENA_WORKGROUP is intentionally omitted — query-service does
+      # not read it (no ColdAthenaWorkgroup field in config; coldstore.New is called
+      # without WithWorkgroup and uses the hardcoded default "primary"). Only the
+      # processor reads COLD_ATHENA_WORKGROUP. Add it here only if/when query-service
+      # is wired to honour a configurable workgroup (requires Config field +
+      # coldstore.WithWorkgroup call in cmd/query-service/main.go).
       AWS_REGION: ${AWS_REGION}
       AWS_DEFAULT_REGION: ${AWS_REGION}
       # No AWS_ENDPOINT_URL — real S3/Athena (not floci) in the AWS env.

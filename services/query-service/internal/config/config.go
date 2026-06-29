@@ -29,12 +29,14 @@ type Config struct {
 	ShutdownGrace time.Duration
 
 	// Cold-read routing (AC#2 / ADR-0003 / cold-tier.md §5.2).
-	// COLD_SEARCH_ENABLED is now true in production — cold_smoke_aws CI gate
-	// passed; query-service routes searches > HotDays to Athena (closes #63 AC#3).
+	// COLD_SEARCH_ENABLED is enabled in production via docker-compose.aws.yml /
+	// user-data.sh.tftpl — cold_smoke_aws CI gate passed; query-service routes
+	// searches > HotDays to Athena (closes #63 AC#3). In-code default is false.
 
 	// ColdSearchEnabled gates cold-read routing (COLD_SEARCH_ENABLED env var).
-	// Default TRUE in production (docker-compose.aws.yml / user-data.sh.tftpl).
-	// Set to "false" to fall back to Postgres-only path for debugging.
+	// Enabled via deploy env (docker-compose.aws.yml / user-data.sh.tftpl);
+	// the in-code default remains false (fail-safe). Set to "false" to fall
+	// back to Postgres-only path for debugging.
 	ColdSearchEnabled bool
 	// HotDays is the global hot-partition horizon for routing decisions.
 	// Default 30 (app.DefaultHotDays). Used only when ColdSearchEnabled=true.

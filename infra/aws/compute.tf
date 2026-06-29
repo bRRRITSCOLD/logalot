@@ -48,11 +48,11 @@ data "aws_ami" "al2023_arm64" {
 ###############################################################################
 
 resource "aws_instance" "main" {
-  ami                         = data.aws_ami.al2023_arm64.id
-  instance_type               = "t4g.small"
-  subnet_id                   = aws_subnet.public.id
-  vpc_security_group_ids      = [aws_security_group.app.id]
-  iam_instance_profile        = aws_iam_instance_profile.ec2_instance.name
+  ami                    = data.aws_ami.al2023_arm64.id
+  instance_type          = "t4g.small"
+  subnet_id              = aws_subnet.public.id
+  vpc_security_group_ids = [aws_security_group.app.id]
+  iam_instance_profile   = aws_iam_instance_profile.ec2_instance.name
   # Keep the auto-assigned public IP so the instance has outbound internet
   # access from first boot (when user-data runs network-dependent commands like
   # `dnf update`, `git clone`, and `docker compose --pull always`).  The EIP

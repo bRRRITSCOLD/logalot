@@ -34,8 +34,9 @@ type Config struct {
 	DrainTimeout time.Duration
 
 	// Cold-tier configuration (ADR-0005, decision 016).
-	// ColdEnabled gates the cold-tier tee. Default true — the real-AWS smoke test
-	// (cold_smoke_aws) passed; cold-tier is live in production (closes #63 AC#3).
+	// ColdEnabled gates the cold-tier tee. Enabled via deploy env
+	// (docker-compose.aws.yml / user-data.sh.tftpl); in-code default is false.
+	// cold_smoke_aws passed; cold-tier is live in production (closes #63 AC#3).
 	ColdEnabled bool
 	// ColdBucket is the S3 bucket for Parquet cold objects (e.g. "logalot-cold").
 	ColdBucket string
