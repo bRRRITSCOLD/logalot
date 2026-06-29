@@ -9,6 +9,8 @@ import type {
   GoogleIdTokenVerifier,
   GoogleTokenExchangeClient,
   IdGenerator,
+  OAuthAuditEvent,
+  OAuthAuditLogger,
   OAuthIdentityRepository,
   OAuthStateStore,
   RefreshTokenRepository,
@@ -91,6 +93,12 @@ export interface OidcAuthenticatorDeps {
   clock: Clock;
   /** Refresh-token lifetime in seconds. */
   refreshTtlSeconds: number;
+  /**
+   * Structured audit logger for OIDC callback outcomes.
+   * Defaults to a no-op when absent (backwards-compatible for tests that don't
+   * assert on audit events).
+   */
+  auditLogger?: OAuthAuditLogger;
 }
 
 // OidcAuthenticator owns the OIDC authorization-initiation half of the
@@ -111,11 +119,17 @@ export interface OidcAuthenticatorDeps {
 //   - returnTo is validated against the same allowlist as returnToSchema in
 //     @logalot/contracts: relative path, single leading /, no control chars.
 //     Anything that fails falls back to DEFAULT_RETURN_TO.
+// NO_OP_AUDIT_LOGGER is used when no auditLogger is injected — backwards-
+// compatible default that never throws.
+const NO_OP_AUDIT_LOGGER: OAuthAuditLogger = { log: () => {} };
+
 export class OidcAuthenticator {
   private readonly stateTtlSeconds: number;
+  private readonly auditLogger: OAuthAuditLogger;
 
   constructor(private readonly deps: OidcAuthenticatorDeps) {
     this.stateTtlSeconds = deps.stateTtlSeconds ?? OAUTH_STATE_TTL_SECONDS;
+    this.auditLogger = deps.auditLogger ?? NO_OP_AUDIT_LOGGER;
   }
 
   async beginAuthorize(cmd: OidcAuthorizeCommand): Promise<OidcAuthorizeResult> {
@@ -183,6 +197,9 @@ export class OidcAuthenticator {
   //   - state consumption is atomic (OAuthStateStore.consume is retrieve-and-delete).
   //   - The nonce in the state record must equal the nonce in the verified id_token claims.
   //   - No secret material (idToken, code_verifier) is ever returned or logged.
+  //
+  // Audit: every exit path emits an OAuthAuditEvent via the injected auditLogger.
+  // The raw provider_sub is NEVER logged — only its SHA-256 hex digest (hashedSub).
   async handleCallback(cmd: OidcCallbackCommand): Promise<OidcCallbackResult> {
     const { deps } = this;
 
@@ -190,6 +207,12 @@ export class OidcAuthenticator {
     //    MUST happen BEFORE any outbound call to Google (acceptance criteria AC-1, R11).
     const stateRecord = await deps.stateStore.consume(cmd.state);
     if (!stateRecord) {
+      this.audit({
+        tenantId: null,
+        userId: null,
+        hashedSub: null,
+        outcome: 'reject_invalid_state',
+      });
       throw new UnauthorizedError('invalid or expired OAuth state');
     }
 
@@ -200,6 +223,7 @@ export class OidcAuthenticator {
 
     if (!codeVerifier || !nonce) {
       // Corrupt state record — should never happen in a correct flow.
+      this.audit({ tenantId, userId: null, hashedSub: null, outcome: 'reject_invalid_state' });
       throw new UnauthorizedError('malformed OAuth state record');
     }
 
@@ -217,6 +241,7 @@ export class OidcAuthenticator {
       // Distinguish a genuine Google outage (5xx / network) from an auth rejection
       // (4xx). Both become 401 from the caller's perspective — we never expose which
       // Google endpoint was contacted or what it returned.
+      this.audit({ tenantId, userId: null, hashedSub: null, outcome: 'reject_exchange_failure' });
       if (err instanceof ServiceUnavailableError) throw err;
       throw new UnauthorizedError('token exchange failed');
     }
@@ -229,13 +254,18 @@ export class OidcAuthenticator {
     try {
       claims = await deps.idTokenVerifier.verify(idToken, nonce);
     } catch (err) {
+      this.audit({ tenantId, userId: null, hashedSub: null, outcome: 'reject_invalid_token' });
       if (err instanceof ServiceUnavailableError) throw err;
       throw new UnauthorizedError('id_token verification failed');
     }
 
+    // Sub is now known — pre-compute the hashed value for all remaining audit calls.
+    const hashedSub = hashProviderSub(claims.sub);
+
     // 4. Resolve identity within the tenant (invite-only: no self-signup).
     const normalizedEmail = normalizeEmail(claims.email);
     let userId: string;
+    let isFirstLink: boolean;
 
     const existingIdentity = await deps.oauthIdentities.findByProviderSub(
       tenantId,
@@ -245,11 +275,13 @@ export class OidcAuthenticator {
 
     if (existingIdentity) {
       userId = existingIdentity.userId;
+      isFirstLink = false;
     } else {
       // First login for this Google account — look up the provisioned user by email.
       // invite-only: if no user exists for this email, reject with 401.
       const userRecord = await deps.users.findCredentialsByEmail(tenantId, normalizedEmail);
       if (!userRecord) {
+        this.audit({ tenantId, userId: null, hashedSub, outcome: 'reject_no_provisioned_user' });
         throw new UnauthorizedError('no provisioned account for this Google identity');
       }
       // Link the Google identity to the existing user (idempotent on 23505).
@@ -260,11 +292,13 @@ export class OidcAuthenticator {
         email: normalizedEmail,
       });
       userId = linked.userId;
+      isFirstLink = true;
     }
 
     // 5. Load user credentials (status + role) — required for session claims.
     const record = await deps.users.findCredentialsById(tenantId, userId);
     if (record?.status !== 'active' || record.role === null) {
+      this.audit({ tenantId, userId, hashedSub, outcome: 'reject_account_inactive' });
       throw new UnauthorizedError('account is not active');
     }
 
@@ -280,7 +314,32 @@ export class OidcAuthenticator {
 
     // 6. Mint session: access JWT + rotating refresh token.
     const tokens = await this.mintSession(tenantId, record.id, record.role);
+
+    // 7. Emit success audit event (first_link or login).
+    this.audit({
+      tenantId,
+      userId: record.id,
+      hashedSub,
+      outcome: isFirstLink ? 'first_link' : 'login',
+    });
+
     return { tokens, returnTo };
+  }
+
+  // audit emits a structured OAuthAuditEvent via the injected logger. Failures
+  // in the logger are swallowed — audit logging must never abort the auth flow.
+  private audit(
+    fields: Pick<OAuthAuditEvent, 'tenantId' | 'userId' | 'hashedSub' | 'outcome'>,
+  ): void {
+    try {
+      this.auditLogger.log({
+        ...fields,
+        provider: 'google',
+        ts: this.deps.clock.now(),
+      });
+    } catch {
+      // Non-fatal: audit failure must never propagate to the caller.
+    }
   }
 
   // mintSession issues a short-lived access JWT and a stateful rotating refresh
@@ -317,6 +376,13 @@ export class OidcAuthenticator {
 // RFC 7636 §4.2: BASE64URL(SHA256(ASCII(code_verifier))).
 function codeVerifierToChallenge(verifier: string): string {
   return createHash('sha256').update(verifier, 'ascii').digest('base64url');
+}
+
+// hashProviderSub returns the SHA-256 hex digest of a provider subject
+// identifier (Google's stable `sub`). The raw sub is NEVER logged — only this
+// digest — so the audit trail is a privacy-safe correlator (threat model R17).
+function hashProviderSub(sub: string): string {
+  return createHash('sha256').update(sub, 'utf8').digest('hex');
 }
 
 // sanitizeReturnTo applies the same allowlist as returnToSchema in

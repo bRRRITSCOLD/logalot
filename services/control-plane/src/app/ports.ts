@@ -382,6 +382,47 @@ export interface GoogleTokenExchangeClient {
   }): Promise<GoogleTokenExchangeResult>;
 }
 
+// ── OAuthAuditLogger — structured audit trail for the OIDC auth flow ──────────
+// Emitted on every outcome (success or rejection) of handleCallback. The audit
+// record intentionally does NOT carry the raw provider_sub — only its SHA-256
+// hex digest (hashedSub) — so the log is a privacy-safe audit trail: you can
+// correlate events for a given Google account across tenants without revealing
+// the sub itself (privacy-by-design, threat model R17).
+//
+// Outcomes:
+//   first_link     — Google account linked for the first time in this tenant; session minted.
+//   login          — Returning user resolved by (provider, sub); session minted.
+//   reject_invalid_state    — state missing / expired / already consumed; ZERO Google calls.
+//   reject_exchange_failure — Google token endpoint returned an error.
+//   reject_invalid_token    — id_token failed alg/iss/aud/exp/nonce verification.
+//   reject_no_provisioned_user — no email-matched user in this tenant (invite-only guard).
+//   reject_account_inactive    — user exists but is suspended / role-stripped.
+
+export type OAuthAuditOutcome =
+  | 'first_link'
+  | 'login'
+  | 'reject_invalid_state'
+  | 'reject_exchange_failure'
+  | 'reject_invalid_token'
+  | 'reject_no_provisioned_user'
+  | 'reject_account_inactive';
+
+export interface OAuthAuditEvent {
+  /** Tenant that owns the auth flow — null only on reject_invalid_state (state is absent). */
+  tenantId: string | null;
+  /** Resolved user id — present only on 'first_link' and 'login' outcomes. */
+  userId: string | null;
+  provider: 'google';
+  /** SHA-256 hex digest of provider_sub — null when sub is not yet known (e.g. invalid state). */
+  hashedSub: string | null;
+  outcome: OAuthAuditOutcome;
+  ts: Date;
+}
+
+export interface OAuthAuditLogger {
+  log(event: OAuthAuditEvent): void;
+}
+
 // ── OAuthIdentity repository (migration 000017) ────────────────────────────────
 // Stores the link between an existing logalot user and an external OIDC identity
 // (Google for v1). Invite-only: linkFirst() NEVER creates a user — it only writes
