@@ -121,6 +121,16 @@ resource "aws_ssm_parameter" "rabbitmq_password" {
 # and the full /logalot/<env>/* path.  No ssm:* / Resource:* permitted.
 ###############################################################################
 
+###############################################################################
+# KMS alias data source — resolves alias/aws/ssm to the underlying key ARN.
+# IAM does not resolve alias ARNs in Resource elements, so kms:Decrypt must
+# reference the actual key ARN (ADR-0010, R8).
+###############################################################################
+
+data "aws_kms_alias" "ssm" {
+  name = "alias/aws/ssm"
+}
+
 data "aws_iam_policy_document" "ec2_assume_role" {
   statement {
     effect = "Allow"
@@ -158,7 +168,8 @@ data "aws_iam_policy_document" "ssm_read" {
   }
 
   # Allow decryption of SecureString values with the default aws/ssm KMS key.
-  # Alias ARN format: arn:aws:kms:<region>:<account>:alias/aws/ssm
+  # Uses target_key_arn because IAM does not resolve alias ARNs in Resource
+  # elements — kms:Decrypt on an alias ARN grants no effective permission.
   statement {
     sid    = "KMSDecryptSSM"
     effect = "Allow"
@@ -166,7 +177,7 @@ data "aws_iam_policy_document" "ssm_read" {
     actions = ["kms:Decrypt"]
 
     resources = [
-      "arn:aws:kms:${var.aws_region}:${data.aws_caller_identity.current.account_id}:alias/aws/ssm",
+      data.aws_kms_alias.ssm.target_key_arn,
     ]
   }
 }

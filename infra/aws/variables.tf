@@ -46,12 +46,28 @@ variable "eip_public_ip" {
   description = "Public IP of the EC2 Elastic IP. Set to aws_eip.instance.public_ip once ec2.tf is provisioned."
   type        = string
   default     = ""
+
+  # Forward-wiring: intentionally empty until ec2.tf is provisioned. Apply with
+  # -target flags or supply the real IP to avoid aws_route53_record getting
+  # records=[""] which would fail or silently produce a broken record.
+  validation {
+    condition     = var.eip_public_ip == "" || can(regex("^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$", var.eip_public_ip))
+    error_message = "eip_public_ip must be a valid IPv4 address or empty string (forward-wiring placeholder)."
+  }
 }
 
 variable "ec2_instance_id" {
   description = "EC2 instance ID used for CloudWatch alarm dimensions. Set to aws_instance.main.id once ec2.tf is provisioned."
   type        = string
   default     = ""
+
+  # Forward-wiring: intentionally empty until ec2.tf is provisioned. Apply with
+  # -target flags or supply the real instance ID to avoid CloudWatch alarm
+  # dimensions keying on InstanceId="" (permanently INSUFFICIENT_DATA).
+  validation {
+    condition     = var.ec2_instance_id == "" || can(regex("^i-[0-9a-f]+$", var.ec2_instance_id))
+    error_message = "ec2_instance_id must be a valid EC2 instance ID (i-...) or empty string (forward-wiring placeholder)."
+  }
 }
 
 variable "alert_email" {

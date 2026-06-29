@@ -7,8 +7,8 @@
 ###############################################################################
 
 locals {
-  cold_bucket_name    = "${var.project}-${var.env}-cold"
-  athena_bucket_name  = "${var.project}-${var.env}-athena-results"
+  cold_bucket_name   = "${var.project}-${var.env}-cold"
+  athena_bucket_name = "${var.project}-${var.env}-athena-results"
 }
 
 ###############################################################################
@@ -58,6 +58,8 @@ resource "aws_s3_bucket_lifecycle_configuration" "cold" {
   rule {
     id     = "expire-cold-data"
     status = "Enabled"
+
+    filter {}
 
     expiration {
       days = var.cold_retention_days
@@ -142,6 +144,8 @@ resource "aws_s3_bucket_lifecycle_configuration" "athena_results" {
   rule {
     id     = "expire-athena-results"
     status = "Enabled"
+
+    filter {}
 
     expiration {
       days = 7
