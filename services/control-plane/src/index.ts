@@ -13,6 +13,7 @@ async function main(): Promise<void> {
     services,
     tokenService,
     oidcAuthenticator,
+    redisClient,
     shutdown: shutdownContainer,
   } = buildContainer(pool, config);
 
@@ -25,6 +26,12 @@ async function main(): Promise<void> {
       return true;
     },
     logLevel: config.logLevel,
+    // Share the OAuth state-store Redis client with @fastify/rate-limit so that
+    // per-IP counters are consistent across replicas without opening a second
+    // connection.  Undefined in dev (in-memory fallback is used automatically).
+    redis: redisClient,
+    oidcRateLimitMax: config.oidcRateLimitMax,
+    oidcRateLimitWindowMs: config.oidcRateLimitWindowMs,
   });
 
   const shutdown = async (signal: string): Promise<void> => {
