@@ -53,15 +53,26 @@ resource "aws_instance" "main" {
   subnet_id                   = aws_subnet.public.id
   vpc_security_group_ids      = [aws_security_group.app.id]
   iam_instance_profile        = aws_iam_instance_profile.ec2_instance.name
-  associate_public_ip_address = false # traffic routed through EIP only
+  # Keep the auto-assigned public IP so the instance has outbound internet
+  # access from first boot (when user-data runs network-dependent commands like
+  # `dnf update`, `git clone`, and `docker compose --pull always`).  The EIP
+  # is attached asynchronously by aws_eip_association AFTER the instance reaches
+  # "running", so relying on the EIP alone would leave user-data without a
+  # route to the internet during the critical bootstrap window.  The subnet
+  # default (map_public_ip_on_launch = true) already does this; the explicit
+  # `true` here makes the intent clear.
+  associate_public_ip_address = true
 
   # user-data: Docker, swap, SSM → .env, compose up
   user_data = templatefile(
     "${path.module}/templates/user-data.sh.tftpl",
     {
-      project    = var.project
-      env        = var.env
-      aws_region = var.aws_region
+      project               = var.project
+      env                   = var.env
+      aws_region            = var.aws_region
+      cold_bucket           = aws_s3_bucket.cold.bucket
+      athena_results_bucket = aws_s3_bucket.athena_results.bucket
+      glue_db               = aws_glue_catalog_database.cold.name
     }
   )
 
