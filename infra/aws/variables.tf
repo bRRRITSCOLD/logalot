@@ -25,3 +25,36 @@ variable "state_bucket" {
   description = "Name of the S3 bucket that holds Terraform state. Created by infra/aws/bootstrap before first apply."
   type        = string
 }
+
+variable "cold_retention_days" {
+  description = "Number of days before cold-tier Parquet objects are expired by S3 lifecycle (ADR-0009/0005)."
+  type        = number
+  default     = 90
+
+  validation {
+    condition     = var.cold_retention_days >= 1
+    error_message = "cold_retention_days must be at least 1."
+  }
+}
+
+variable "domain_name" {
+  description = "Primary domain name for the logalot PoC (e.g. logalot.example.com). Required for Google OAuth redirect URI and TLS (ADR-0010)."
+  type        = string
+}
+
+variable "eip_public_ip" {
+  description = "Public IP of the EC2 Elastic IP. Set to aws_eip.instance.public_ip once ec2.tf is provisioned."
+  type        = string
+  default     = ""
+}
+
+variable "ec2_instance_id" {
+  description = "EC2 instance ID used for CloudWatch alarm dimensions. Set to aws_instance.main.id once ec2.tf is provisioned."
+  type        = string
+  default     = ""
+}
+
+variable "alert_email" {
+  description = "Email address for CloudWatch and Budget alert notifications (ADR-0011)."
+  type        = string
+}

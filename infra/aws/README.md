@@ -59,16 +59,39 @@ terraform apply -var-file=poc.tfvars
 
 ```
 infra/aws/
-  backend.tf       # S3 backend: key, encrypt=true, use_lockfile=true
-  versions.tf      # required_version >= 1.10, provider versions
-  variables.tf     # input variables (region, project, env, state_bucket)
-  providers.tf     # aws provider with default tags
-  README.md        # this file
-  bootstrap/       # one-time state-bucket creation (local state only)
+  backend.tf          # S3 backend: key, encrypt=true, use_lockfile=true
+  versions.tf         # required_version >= 1.10, provider versions
+  variables.tf        # input variables (region, project, env, etc.)
+  providers.tf        # aws provider with default tags
+  s3.tf               # cold-tier + Athena-results buckets (private/encrypted/versioned/lifecycle)
+  glue.tf             # Glue catalog database + Athena workgroup (pay-per-scan cold queries)
+  ssm.tf              # SSM SecureString parameter placeholders + least-privilege IAM instance profile
+  dns.tf              # Route53 hosted zone + A record → EIP (ADR-0010)
+  observability.tf    # CloudWatch OOM alarm + AWS Budget $30 @ 80/100% (ADR-0011)
+  poc.tfvars.example  # copy to poc.tfvars (gitignored), fill in real values
+  README.md           # this file
+  bootstrap/          # one-time state-bucket creation (local state only)
     main.tf
     variables.tf
     outputs.tf
 ```
+
+## Secrets (SSM Parameter Store)
+
+Secret parameters are created as `SecureString` placeholders by Terraform.
+Write real values out-of-band **before** `docker compose up` on the instance:
+
+```bash
+aws ssm put-parameter \
+  --name "/logalot/poc/oauth/google/client_secret" \
+  --type SecureString \
+  --value "<real_secret>" \
+  --overwrite
+```
+
+The EC2 instance role (`logalot-poc-ec2-instance`) is scoped to
+`ssm:GetParameter*` on `/logalot/<env>/*` only — no wildcard resource or
+action (ADR-0010, R8).
 
 ## CI
 

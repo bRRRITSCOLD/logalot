@@ -3,3 +3,18 @@ aws_region   = "us-east-1"
 project      = "logalot"
 env          = "poc"
 state_bucket = "logalot-poc-tf-state-<account_id>"
+
+# ── S3 / cold tier ───────────────────────────────────────────────────────────
+cold_retention_days = 90
+
+# ── DNS / TLS ─────────────────────────────────────────────────────────────────
+# Must match the domain registered with your DNS registrar.
+# Google OAuth redirect URI and Caddy ACME cert use this domain (ADR-0010).
+domain_name = "logalot.example.com"
+
+# ── EC2 wiring (populated after ec2.tf is applied) ───────────────────────────
+# eip_public_ip   = "<EIP public IP>"   # aws_eip.instance.public_ip
+# ec2_instance_id = "<instance-id>"     # aws_instance.main.id
+
+# ── Alerts ───────────────────────────────────────────────────────────────────
+alert_email = "ops@example.com"
