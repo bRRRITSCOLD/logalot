@@ -1,6 +1,7 @@
 import type { Pool } from 'pg';
 import type { NewOAuthIdentity, OAuthIdentityRef, OAuthIdentityRepository } from '../../app/ports';
 import type { OAuthIdentity, OAuthProvider } from '../../domain/entities';
+import { ConflictError } from '../../domain/errors';
 import { isUniqueViolation, withTenantTx } from './tenant-tx';
 
 interface DbRow {
@@ -78,12 +79,22 @@ export class PgOAuthIdentityRepository implements OAuthIdentityRepository {
         const row = res.rows[0] as { id: string; user_id: string };
         return { id: row.id, userId: row.user_id };
       } catch (err) {
-        // 23505 on (tenant_id, provider, provider_sub): a concurrent first-link
-        // already won. Roll back to the savepoint to clear the aborted state,
-        // then re-resolve within the same armed tenant context so the caller
-        // gets the winner's ref idempotently. Under READ COMMITTED the winner
-        // row is visible as soon as the conflicting tx commits, which is
-        // guaranteed by the time we receive the 23505.
+        // A 23505 here can be EITHER of the table's two UNIQUE constraints, and
+        // they mean opposite things — so we must distinguish, not assume:
+        //
+        //   (a) UNIQUE(tenant_id, provider, provider_sub) — a concurrent first-link
+        //       for the SAME sub already won. Idempotent: roll back to the savepoint
+        //       and re-resolve by (provider, provider_sub) to return the winner's ref.
+        //       Under READ COMMITTED the winner row is visible by the time we receive
+        //       the 23505.
+        //
+        //   (b) UNIQUE(tenant_id, user_id, provider) — this user is ALREADY linked to a
+        //       DIFFERENT Google sub in this tenant (an attempt to re-pin the account to
+        //       a new identity). The re-SELECT by the NEW (provider, provider_sub) then
+        //       finds ZERO rows. This is a security-relevant rejection (threat model R13:
+        //       sub-pinned), NOT an idempotent retry — surface it as a ConflictError so
+        //       the app layer rejects with 401 instead of dereferencing rows[0] (which
+        //       would throw and 500 — the bug this guards against).
         if (isUniqueViolation(err)) {
           await client.query('ROLLBACK TO SAVEPOINT link_first');
           const existing = await client.query<{ id: string; user_id: string }>(
@@ -92,7 +103,12 @@ export class PgOAuthIdentityRepository implements OAuthIdentityRepository {
               WHERE provider = $1 AND provider_sub = $2`,
             [input.provider, input.providerSub],
           );
-          const row = existing.rows[0] as { id: string; user_id: string };
+          const row = existing.rows[0];
+          if (!row) {
+            throw new ConflictError(
+              'user is already linked to a different identity for this provider',
+            );
+          }
           return { id: row.id, userId: row.user_id };
         }
         throw err;

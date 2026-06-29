@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PgOAuthIdentityRepository } from '../../src/adapters/postgres/oauth-identity-repository';
+import { ConflictError } from '../../src/domain/errors';
 import { armedQuery, type ItEnv, setupEnv, teardownEnv } from './helpers';
 
 // Docker-backed integration suite for OAuthIdentityRepository (issue #91).
@@ -149,6 +150,32 @@ describe('OAuthIdentityRepository integration', () => {
     // Must return the SAME row (no ConflictError thrown).
     expect(secondRef.id).toBe(firstRef!.id);
     expect(secondRef.userId).toBe(firstRef!.userId);
+  });
+
+  // A DIFFERENT sub for an already-linked user trips UNIQUE(tenant_id, user_id,
+  // provider) — NOT the (provider, sub) uniqueness. The 23505 handler's re-SELECT
+  // by the NEW sub then finds zero rows, so linkFirst MUST surface a ConflictError
+  // (the app layer maps it to 401) rather than dereferencing an undefined row and
+  // throwing — the bug behind issue #106's R13 rejection path (sub-pinned).
+  it('linkFirst rejects a DIFFERENT sub for an already-linked user with ConflictError (sub-pinned)', async () => {
+    // userAId is already pinned to sub '1001' from the first-link test above.
+    await expect(
+      repo.linkFirst(tenantAId, {
+        userId: userAId,
+        provider: 'google',
+        providerSub: '2002-different',
+        email: 'alice@a.co',
+      }),
+    ).rejects.toBeInstanceOf(ConflictError);
+
+    // No second identity row was created for the user — the original pin stands.
+    const rows = await armedQuery<{ provider_sub: string }>(
+      env.appPool,
+      tenantAId,
+      `SELECT provider_sub FROM oauth_identities WHERE provider = 'google' AND user_id = $1`,
+      [userAId],
+    );
+    expect(rows.map((r) => r.provider_sub)).toEqual(['1001']);
   });
 
   // touchLastLogin: updates last_login_at under RLS.
