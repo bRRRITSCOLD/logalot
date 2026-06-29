@@ -117,9 +117,17 @@ describe('startGoogleSignin', () => {
 
     expect(result).toEqual({ ok: true, redirectUrl });
     // State MUST be bound to this browser before redirecting.
-    expect(mockSetCookie).toHaveBeenCalledWith(OIDC_STATE_COOKIE, 'csrf-token-abc', expect.any(Object));
+    expect(mockSetCookie).toHaveBeenCalledWith(
+      OIDC_STATE_COOKIE,
+      'csrf-token-abc',
+      expect.any(Object),
+    );
     expect(mockSetCookie).toHaveBeenCalledWith(OIDC_TENANT_COOKIE, 'acme', expect.any(Object));
-    expect(mockSetCookie).toHaveBeenCalledWith(OIDC_RETURN_COOKIE, '/dashboard', expect.any(Object));
+    expect(mockSetCookie).toHaveBeenCalledWith(
+      OIDC_RETURN_COOKIE,
+      '/dashboard',
+      expect.any(Object),
+    );
   });
 
   it('does not set a return cookie when returnTo is absent', async () => {

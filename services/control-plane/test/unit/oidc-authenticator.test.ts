@@ -195,9 +195,7 @@ describe('OidcAuthenticator.beginAuthorize', () => {
     });
 
     it('uses the configured stateTtlSeconds', async () => {
-      const customSut = new OidcAuthenticator(
-        makeDeps({ stateStore, stateTtlSeconds: 300 }),
-      );
+      const customSut = new OidcAuthenticator(makeDeps({ stateStore, stateTtlSeconds: 300 }));
       const { redirectUrl } = await customSut.beginAuthorize({ tenantSlug: 'acme' });
       const state = new URL(redirectUrl).searchParams.get('state') ?? '';
       const entry = stateStore._peek(state);
