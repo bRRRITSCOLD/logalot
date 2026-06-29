@@ -120,6 +120,33 @@ within 2s; search latency assertion as in NFR-1.
 - **YAGNI on infra:** RabbitMQ (already chosen) is the broker; Redis (already present) is the tail
   bus and cache. No Kafka/Kinesis introduced (ADR-0004, ADR-0006).
 
+### NFR-4 (deployment) — AWS PoC monthly spend is a hard, numeric budget
+
+Cost is **first-class** for the AWS PoC deployment, with a concrete ceiling and an enforced guardrail
+(ADR-0009, ADR-0010, **ADR-0011**).
+
+| # | Requirement | Target |
+|---|---|---|
+| 4.4 | Total AWS spend (PoC) | **~$15–30/month**; recommended config lands **≈ $21/mo** (ADR-0011) |
+| 4.5 | Enforced guardrail | **AWS Budget** at **$30/mo**, alerts at 80% ($24) / 100% ($30) + forecast overage |
+| 4.6 | No standing managed-service bills | Self-host Postgres/Redis/RabbitMQ on the box; **no RDS/ElastiCache/MQ/NAT/ALB** |
+| 4.7 | Bounded storage growth | S3 **lifecycle expiry** on cold Parquet + Athena results (ADR-0005/0009) |
+| 4.8 | Cost-discipline per decision | Every infra ADR states its explicit **cost tradeoff** |
+
+**How the architecture meets it (ADR-0011).**
+- One **t4g.small** Graviton EC2 runs the whole stack via compose; itemized estimate ≈ **$21/mo** (EC2 $12.26
+  + public IPv4 $3.65 + 30 GB gp3 $2.40 + S3/Athena ~$0.32 + Route53 $0.50 + transfer ~$1 + CloudWatch ~$0.50
+  + snapshots ~$0.20). SSM secrets, Budgets, and Let's Encrypt TLS are **$0**.
+- Deliberately avoided **>$100/mo** of cost: NAT gateway (~$32), RDS/ElastiCache/MQ (~$40+), ALB (~$16),
+  Secrets Manager (~$3–4), EKS (~$73). See ADR-0011's avoidance table.
+- **Instance sizing** is the cheap-but-reversible call: t4g.small (2 GiB) fits the ~1.8 GB footprint with
+  mem-limits + a swap file; an EC2 resize to t4g.medium (4 GiB) is a ~2-minute stop/start with no data
+  migration, taken **on evidence** (OOM / sustained >90% memory), not speculatively.
+
+**Fitness function:** an **AWS Budget alarm** at $30 (80%/100% + forecast) is the continuous guard; a
+**CloudWatch memory/`OOMKilled` alarm** is the trigger to resize. `terraform destroy` is the clean
+cost-to-zero switch for ephemeral environments.
+
 ---
 
 ## NFR-5 Security

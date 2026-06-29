@@ -31,8 +31,10 @@ Both are proof-of-concept scope. Cost efficiency is a first-class non-functional
 - New OIDC `Authenticator` adapter in control-plane (the port ADR-0007 pre-built for SSO).
 - `POST /auth/oidc/google/callback` endpoint: code exchange + `id_token` verification + email→user match + session mint.
 - web: "Sign in with Google" button, redirect initiation, callback route, BFF forwarding of `code` to control-plane.
-- New `oauth_identities` table (RLS, `UNIQUE(provider, provider_sub)`), migration `000016`.
+- New `oauth_identities` table (RLS, `UNIQUE(provider, provider_sub)`), migration `000017` (000016 already taken by retention-worker).
 - Account linking: match Google `email` (require `email_verified=true`) to an existing provisioned user; store `google_sub` on first link; match on `sub` thereafter.
+- **Tenant resolution (Phase-1 outcome):** "Sign in with Google" lives on the tenant-scoped login page; the server-side `state` carries the tenant hint (mirrors the password path's `tenantSlug`). First link scopes the email match to that tenant; subsequent logins resolve by `sub` and cross-check the linked tenant == `state` tenant (mismatch → 401). PoC keeps `UNIQUE(provider, provider_sub)` global — one Google account links to exactly one logalot user; multi-tenant membership via one Google account is a documented limitation (relax to `UNIQUE(tenant_id, provider, provider_sub)` only if needed).
+- **PKCE (S256)** enforced even for the confidential server-side client (defense-in-depth); `state`/`nonce`/`code_verifier` generated and stored in control-plane Redis (single-use, delete-on-consume), web BFF is a thin relay.
 
 **Track B — AWS IaC**
 - Terraform configuration provisioning: 1× t4g.small (Graviton/ARM) EC2 in a public subnet behind an Internet Gateway (no NAT), security group restricted to 443 (+ controlled admin access).
@@ -102,4 +104,4 @@ Both are proof-of-concept scope. Cost efficiency is a first-class non-functional
 
 - Exact EC2 instance size (t4g.small vs t4g.medium) — depends on combined container memory footprint; size in Phase 1.
 - Whether nonce/state are stored in Redis (already present) or signed cookies — decide in Phase 1.
-- Migration ordering vs other in-flight schema changes — confirm in Phase 2 (latest migration is 000015).
+- Migration ordering: `oauth_identities` = `000017` (000016 = retention-worker). Confirm no other in-flight schema work in Phase 2.
