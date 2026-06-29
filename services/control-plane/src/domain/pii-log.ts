@@ -7,9 +7,13 @@ import { createHash } from 'node:crypto';
 // stable fingerprint that lets you correlate log lines for the same identity
 // without exposing the underlying PII.
 //
-// 8 hex chars = 32 bits of output — low enough collision risk for log
-// correlation across millions of events, high enough not to be brute-forced
-// into the original email in a log-theft scenario.
+// 8 hex chars = 32 bits of output — suitable for log correlation (low enough
+// collision probability across millions of events to be useful).  Note: this is
+// an UNSALTED hash, so a known or guessable input (e.g. a common corporate
+// email address) CAN be confirmed by a dictionary/rainbow-table lookup if logs
+// are stolen.  The digest is intentionally sized for correlation, not
+// confidentiality — it is not a substitute for encryption or access controls on
+// the log store itself.
 //
 // Usage:
 //   req.log.info({ subHash: piiHash(claims.sub) }, 'oidc callback: identity resolved')

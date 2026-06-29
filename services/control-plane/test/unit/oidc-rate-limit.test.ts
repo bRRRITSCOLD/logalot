@@ -62,11 +62,32 @@ async function buildTestServer(
     oidcAuthenticator,
     ping: async () => true,
     logger: false,
+    // trustProxy is disabled in unit tests that inject directly (no real proxy
+    // header).  The distinct-IP isolation test overrides this via a separate
+    // server built with trustProxy: 1.
+    trustProxy: false,
     oidcRateLimitMax,
     oidcRateLimitWindowMs: 60_000,
   });
   await app.ready();
   return { app, oidcAuthenticator };
+}
+
+// makeCaptureStream returns a pino-compatible destination stream that
+// accumulates every JSON log line.  Pass it as `logger: { level, stream }` to
+// buildServer so the in-process pino instance writes to it.  Each entry is
+// a newline-terminated JSON string; we join and search the raw text to keep
+// the assertion logic independent of the pino schema version.
+function makeCaptureStream(): { stream: { write(msg: string): void }; lines: string[] } {
+  const lines: string[] = [];
+  return {
+    lines,
+    stream: {
+      write(msg: string) {
+        lines.push(msg.trim());
+      },
+    },
+  };
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -154,28 +175,144 @@ describe('OIDC route rate limiting', () => {
       }
     });
   });
+
+  describe('per-IP isolation (trustProxy)', () => {
+    // This test verifies that the rate-limit keyGenerator correctly isolates
+    // counters per client IP when X-Forwarded-For is trusted (trustProxy: 1).
+    // Without trustProxy, all clients share the proxy's socket address as the
+    // key — one abusive caller would exhaust the budget for everyone.
+    it('two distinct X-Forwarded-For IPs get independent rate-limit counters', async () => {
+      const oidcAuthenticator = makeStubOidcAuthenticator();
+      // Build a server with trustProxy: 1 so req.ip reads from XFF.
+      const proxyApp = buildServer({
+        services: makeStubServices(),
+        tokenService: makeStubTokenService(),
+        oidcAuthenticator,
+        ping: async () => true,
+        logger: false,
+        trustProxy: 1,
+        oidcRateLimitMax: 1,
+        oidcRateLimitWindowMs: 60_000,
+      });
+      await proxyApp.ready();
+
+      try {
+        // IP-A exhausts its budget (max=1).
+        await proxyApp.inject({
+          method: 'POST',
+          url: '/v1/auth/oidc/google/authorize',
+          payload: { tenantSlug: 'acme' },
+          headers: { 'x-forwarded-for': '10.0.0.1' },
+        });
+
+        // IP-A's second request must be rate-limited.
+        const resA = await proxyApp.inject({
+          method: 'POST',
+          url: '/v1/auth/oidc/google/authorize',
+          payload: { tenantSlug: 'acme' },
+          headers: { 'x-forwarded-for': '10.0.0.1' },
+        });
+        expect(resA.statusCode).toBe(429);
+
+        // IP-B's first request must NOT be rate-limited (independent counter).
+        const resB = await proxyApp.inject({
+          method: 'POST',
+          url: '/v1/auth/oidc/google/authorize',
+          payload: { tenantSlug: 'acme' },
+          headers: { 'x-forwarded-for': '10.0.0.2' },
+        });
+        expect(resB.statusCode).not.toBe(429);
+      } finally {
+        await proxyApp.close();
+      }
+    });
+  });
 });
 
 describe('OIDC route: no PII in logs', () => {
-  it('callback handler does not expose code or state in log output', async () => {
-    const logs: string[] = [];
-    const { app } = await buildTestServer(100);
+  // This test drives the authorize and callback routes against a server that
+  // writes structured logs to an in-memory stream (not logger:false) so we can
+  // inspect every JSON log line emitted during a full login flow and assert that
+  // no raw secret or unmasked PII appears.
+  //
+  // The pino redact path-list in buildServer is a defence-in-depth layer for
+  // body fields accidentally passed to req.log.  This test validates the
+  // primary layer: the route handlers themselves must never pass raw
+  // code/state/id_token/email to req.log.*.
+  //
+  // Technique: Fastify accepts `logger: { level, stream }` where `stream` is any
+  // object with `write(msg: string)`.  Pino calls stream.write() once per log
+  // entry with a newline-terminated JSON line, giving us real log capture without
+  // Docker or a pino transport.
+  it('authorize + callback do not log raw code, state, id_token, client_secret, or sub', async () => {
+    const { stream, lines } = makeCaptureStream();
 
-    // Override the logger to capture output.
-    // Since logger: false is set in buildTestServer, we cannot inspect pino.
-    // Instead, we verify via the stub: the oidcAuthenticator is called with
-    // the raw code+state (business logic), but the route never includes them
-    // in log calls — the test for this is structural (code review) + piiHash
-    // unit tests confirm the hash helper is used.
-    //
-    // This test exists as a documentation contract and to catch regressions
-    // if someone adds req.log.info({ code }) in the callback route.
-    void logs; // acknowledged — see pii-log.test.ts for hash correctness
+    const rawCode = 'super-secret-auth-code';
+    const rawState = 'anti-csrf-state-token';
 
-    await app.close();
-    // If we reach here without capturing raw PII in structured logs, the
-    // invariant holds.  Full log capture integration tests require Docker +
-    // a real pino transport (covered by the integration suite).
-    expect(true).toBe(true);
+    // A stable userId value so we can assert it does not appear raw in logs.
+    const stubUserId = '0123456789abcdef0123456789abcdef';
+    const oidcAuthenticator: OidcAuthenticator = {
+      beginAuthorize: vi.fn().mockResolvedValue({ redirectUrl: 'https://accounts.google.com/auth' }),
+      handleCallback: vi.fn().mockResolvedValue({
+        tokens: {
+          accessToken: 'access',
+          refreshToken: 'refresh',
+          expiresIn: 900,
+          tokenType: 'Bearer',
+          role: 'member',
+          tenantId: 'tenant-uuid',
+          userId: stubUserId,
+        },
+        returnTo: '/',
+      }),
+    } as unknown as OidcAuthenticator;
+
+    const app = buildServer({
+      services: makeStubServices(),
+      tokenService: makeStubTokenService(),
+      oidcAuthenticator,
+      ping: async () => true,
+      // Pass a pino-compatible stream so all log entries are captured.
+      logger: { level: 'info', stream },
+      trustProxy: false,
+      oidcRateLimitMax: 100,
+      oidcRateLimitWindowMs: 60_000,
+    });
+    await app.ready();
+
+    try {
+      // Drive POST /authorize
+      await app.inject({
+        method: 'POST',
+        url: '/v1/auth/oidc/google/authorize',
+        payload: { tenantSlug: 'acme' },
+      });
+
+      // Drive POST /callback with raw secrets in the body
+      await app.inject({
+        method: 'POST',
+        url: '/v1/auth/oidc/google/callback',
+        payload: { tenantSlug: 'acme', code: rawCode, state: rawState },
+      });
+    } finally {
+      await app.close();
+    }
+
+    const allLogs = lines.join('\n');
+
+    // Raw secrets and PII must NOT appear in any log line.
+    expect(allLogs).not.toContain(rawCode);
+    expect(allLogs).not.toContain(rawState);
+    expect(allLogs).not.toContain(stubUserId);
+    expect(allLogs).not.toContain('id_token');
+    expect(allLogs).not.toContain('client_secret');
+
+    // The logs MUST contain hashed identifiers (8-char hex strings) for
+    // correlation — confirming that piiHash() was actually called by the routes.
+    const hasStHash = lines.some((line) => /"stateHash":"[0-9a-f]{8}"/.test(line));
+    const hasSubHash = lines.some((line) => /"subHash":"[0-9a-f]{8}"/.test(line));
+    expect(hasStHash).toBe(true);
+    expect(hasSubHash).toBe(true);
   });
 });

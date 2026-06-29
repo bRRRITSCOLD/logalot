@@ -25,6 +25,12 @@ export interface BuildServerOptions extends RouteDeps {
   // Defaults to 20 req / 60 000 ms.
   oidcRateLimitMax?: number;
   oidcRateLimitWindowMs?: number;
+  // How many proxy hops to trust when reading X-Forwarded-For.
+  // In production the control-plane runs behind a single Caddy TLS-terminating
+  // reverse proxy, so the default of 1 means Fastify reads the real client IP
+  // from the leftmost XFF entry added by Caddy.  Pass false in unit tests that
+  // inject requests directly (app.inject() uses the loopback address as the key).
+  trustProxy?: FastifyServerOptions['trustProxy'];
 }
 
 // buildServer assembles the Fastify HTTP adapter: structured logging with secret
@@ -33,6 +39,19 @@ export interface BuildServerOptions extends RouteDeps {
 // control the lifecycle.
 export function buildServer(opts: BuildServerOptions): FastifyInstance {
   const app = Fastify({
+    // trustProxy: tell Fastify to read the real client IP from X-Forwarded-For
+    // rather than using the TCP connection's socket address.  The control-plane
+    // runs behind a single Caddy TLS-terminating reverse proxy (infra/aws/security.tf),
+    // so trusting 1 hop is both correct and safe — an attacker cannot inject a
+    // spoofed XFF header that Caddy would forward unchallenged.
+    //
+    // Without trustProxy=1 the per-IP rate-limit keyGenerator (req.ip) resolves
+    // to Caddy's loopback/internal address for every client, collapsing all
+    // per-IP counters into a single shared bucket and breaking the isolation
+    // guarantee of acceptance criterion R6.
+    //
+    // Callers (tests) may override via opts.trustProxy.
+    trustProxy: opts.trustProxy ?? 1,
     // Redact credentials so tokens/passwords never reach the logs (ADR-0007,
     // NFR-5: secrets are never logged). Fastify does not log request bodies by
     // default, so passwords/secrets in bodies stay out of the logs too.
