@@ -51,7 +51,7 @@ variable "eip_public_ip" {
   # -target flags or supply the real IP to avoid aws_route53_record getting
   # records=[""] which would fail or silently produce a broken record.
   validation {
-    condition     = var.eip_public_ip == "" || can(regex("^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$", var.eip_public_ip))
+    condition     = var.eip_public_ip == "" || can(regex("^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$", var.eip_public_ip))
     error_message = "eip_public_ip must be a valid IPv4 address or empty string (forward-wiring placeholder)."
   }
 }
