@@ -6,6 +6,8 @@ import Fastify, {
 import { DomainError } from '../../domain/errors';
 import { type RouteDeps, registerRoutes } from './routes';
 
+// BuildServerOptions re-exports RouteDeps to keep the server layer thin — all
+// route dependencies are threaded through unchanged.
 export interface BuildServerOptions extends RouteDeps {
   // Log level for the default redacting logger. Ignored when `logger` is given.
   logLevel?: string;

@@ -1,9 +1,11 @@
 import type { Pool } from 'pg';
 import { BcryptHasher } from './adapters/crypto/bcrypt-hasher';
+import { JoseGoogleIdTokenVerifier } from './adapters/crypto/jose-google-verifier';
 import { JoseTokenService } from './adapters/crypto/jose-token-service';
 import { NodeKeyMaterialGenerator } from './adapters/crypto/node-key-material';
 import { NodeIdGenerator, NodeSecretGenerator } from './adapters/crypto/node-random';
 import { SystemClock } from './adapters/crypto/system-clock';
+import { GoogleTokenExchangeHttpClient } from './adapters/http/google-token-exchange-client';
 import { PgAlertRuleRepository } from './adapters/postgres/alert-rule-repository';
 import { PgApiKeyRepository } from './adapters/postgres/api-key-repository';
 import { PgDashboardRepository } from './adapters/postgres/dashboard-repository';
@@ -19,7 +21,13 @@ import { AlertRuleService } from './app/alert-rule-service';
 import { ApiKeyService } from './app/api-key-service';
 import { AuthService } from './app/auth-service';
 import { DashboardService } from './app/dashboard-service';
-import type { OAuthStateStore, TokenService } from './app/ports';
+import { OidcAuthenticator } from './app/oidc-authenticator';
+import type {
+  GoogleIdTokenVerifier,
+  GoogleTokenExchangeClient,
+  OAuthStateStore,
+  TokenService,
+} from './app/ports';
 import { RetentionService } from './app/retention-service';
 import { SavedQueryService } from './app/saved-query-service';
 import { TenantService } from './app/tenant-service';
@@ -43,6 +51,11 @@ export interface Container {
   services: Services;
   tokenService: TokenService;
   oauthStateStore: OAuthStateStore;
+  /** Google id_token verifier — undefined when GOOGLE_CLIENT_ID is not configured. */
+  googleIdTokenVerifier: GoogleIdTokenVerifier | undefined;
+  /** Google token-exchange client — undefined when Google config is incomplete. */
+  googleTokenExchangeClient: GoogleTokenExchangeClient | undefined;
+  oidcAuthenticator: OidcAuthenticator;
   /** Release infrastructure resources (Redis connection, etc.) on graceful shutdown. */
   shutdown: () => Promise<void>;
 }
@@ -104,10 +117,38 @@ export function buildContainer(pool: Pool, config: Config): Container {
     ? new RedisOAuthStateStore(redisClient)
     : new InMemoryOAuthStateStore();
 
+  // Google OAuth adapters — only wired when both client_id and client_secret are
+  // configured. Absence in dev/test is expected; routes guard against undefined.
+  const googleIdTokenVerifier: GoogleIdTokenVerifier | undefined = config.googleClientId
+    ? new JoseGoogleIdTokenVerifier({ clientId: config.googleClientId })
+    : undefined;
+
+  const googleTokenExchangeClient: GoogleTokenExchangeClient | undefined =
+    config.googleClientId && config.googleClientSecret
+      ? new GoogleTokenExchangeHttpClient({
+          clientId: config.googleClientId,
+          clientSecret: config.googleClientSecret,
+        })
+      : undefined;
+  // OidcAuthenticator — beginAuthorize (issue #95). clientId and redirectUri
+  // are required in production; they are optional in config so tests that don't
+  // exercise the OIDC path don't need to supply them.
+  const oidcAuthenticator = new OidcAuthenticator({
+    tenants: tenantRepo,
+    stateStore: oauthStateStore,
+    clientId: config.googleOidcClientId ?? '',
+    redirectUri: config.googleOidcRedirectUri ?? '',
+    authEndpoint: config.googleOidcAuthEndpoint,
+    stateTtlSeconds: config.oauthStateTtlSeconds,
+  });
+
   return {
     services,
     tokenService,
     oauthStateStore,
+    googleIdTokenVerifier,
+    googleTokenExchangeClient,
+    oidcAuthenticator,
     shutdown: async () => {
       if (redisClient) await redisClient.quit();
     },

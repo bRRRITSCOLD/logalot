@@ -1,4 +1,12 @@
-import { type LoginRequest, type TokenPair, tokenPairSchema } from '@logalot/contracts';
+import {
+  type LoginRequest,
+  type OidcAuthorizeRequest,
+  type OidcAuthorizeResponse,
+  type OidcCallbackRequest,
+  oidcAuthorizeResponseSchema,
+  type TokenPair,
+  tokenPairSchema,
+} from '@logalot/contracts';
 import type { ZodType } from 'zod';
 
 // BFF -> control-plane HTTP client. This is the ONLY module that talks to the
@@ -137,4 +145,32 @@ export async function cpAuthedSend<T>(
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
   });
   return schema.parse(responseBody);
+}
+
+// ── OIDC / SSO relay ─────────────────────────────────────────────────────────
+// The BFF is a thin relay for the OIDC flow: it calls the control-plane's
+// authorize/callback endpoints and lets the CP own all OIDC secrets, state
+// management, and token exchange (T08/T09). The web layer never sees or stores
+// any IdP secret.
+
+/**
+ * Relay an OIDC authorize request to the control-plane.
+ * Returns the IdP redirect URL the browser must be sent to.
+ */
+export function cpOidcAuthorize(body: OidcAuthorizeRequest): Promise<OidcAuthorizeResponse> {
+  return cpFetch(`/v1/auth/oidc/${encodeURIComponent(body.tenantSlug)}/authorize`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  }).then((b) => oidcAuthorizeResponseSchema.parse(b));
+}
+
+/**
+ * Relay the OIDC callback (code + state from the IdP) to the control-plane for
+ * validation and token exchange.  Returns the issued token pair on success.
+ */
+export function cpOidcCallback(body: OidcCallbackRequest): Promise<TokenPair> {
+  return cpFetch(`/v1/auth/oidc/${encodeURIComponent(body.tenantSlug)}/callback`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  }).then((b) => tokenPairSchema.parse(b));
 }
