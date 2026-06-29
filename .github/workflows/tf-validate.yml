@@ -1,0 +1,50 @@
+name: tf-validate
+
+on:
+  pull_request:
+    paths:
+      - "infra/aws/**"
+  push:
+    branches: [main]
+    paths:
+      - "infra/aws/**"
+
+concurrency:
+  group: tf-validate-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  tf-validate:
+    name: terraform init / validate / fmt
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        dir:
+          - infra/aws
+          - infra/aws/bootstrap
+
+    defaults:
+      run:
+        working-directory: ${{ matrix.dir }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          # Must match the required_version constraint in versions.tf (>= 1.10).
+          terraform_version: "1.10.5"
+
+      - name: terraform init (no backend)
+        run: terraform init -backend=false
+
+      - name: terraform validate
+        run: terraform validate
+
+      - name: terraform fmt check
+        run: terraform fmt -check -recursive
