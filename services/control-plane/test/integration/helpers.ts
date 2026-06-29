@@ -67,10 +67,11 @@ export async function setupEnv(): Promise<ItEnv> {
     BCRYPT_COST: '4',
   } as NodeJS.ProcessEnv);
 
-  const { services, tokenService } = buildContainer(appPool, config);
+  const { services, tokenService, oidcAuthenticator } = buildContainer(appPool, config);
   const app = buildServer({
     services,
     tokenService,
+    oidcAuthenticator,
     ping: async () => true,
     logger: false,
   });
