@@ -325,6 +325,63 @@ export interface RefreshTokenRepository {
   revokeFamily(tenantId: string, familyId: string, now: Date): Promise<void>;
 }
 
+// ── Google OIDC id_token verifier + token-exchange client (issue #94) ─────────
+
+// GoogleIdTokenClaims is the verified, strongly-typed claim set extracted from a
+// Google OIDC id_token. Only the fields the auth flow actually consumes are
+// declared here; the raw JWT may carry more. email_verified is always present in
+// Google id_tokens and is required to be true before the claims are returned.
+export interface GoogleIdTokenClaims {
+  /** Stable Google account identifier (provider_sub). */
+  sub: string;
+  email: string;
+  email_verified: boolean;
+  /** The nonce the control-plane embedded at authorize time, needed to prevent replay. */
+  nonce: string;
+  iss: string;
+  aud: string | string[];
+  iat: number;
+  exp: number;
+  name?: string;
+  picture?: string;
+}
+
+// GoogleIdTokenVerifier verifies a raw Google id_token (RS256 only) against
+// Google's published JWKS. Enforces:
+//   - alg=RS256 (none/HS* rejected at the JOSE layer before signature check)
+//   - iss = https://accounts.google.com
+//   - aud = configured GOOGLE_CLIENT_ID
+//   - exp (jose enforces automatically)
+//   - email_verified = true
+//   - nonce equality (constant-time compare not needed — nonce is public)
+// client_secret and id_token are NEVER logged or returned.
+export interface GoogleIdTokenVerifier {
+  verify(idToken: string, expectedNonce: string): Promise<GoogleIdTokenClaims>;
+}
+
+// GoogleTokenExchangeResult is the subset of Google's token-endpoint response
+// the auth flow needs. client_secret is consumed inside the adapter and never
+// propagates outward.
+export interface GoogleTokenExchangeResult {
+  /** Raw id_token JWT — caller should immediately verify it via GoogleIdTokenVerifier. */
+  idToken: string;
+  accessToken: string;
+  tokenType: string;
+  expiresIn: number;
+  scope?: string;
+}
+
+// GoogleTokenExchangeClient exchanges a Google authorization code (PKCE flow) for
+// a token pair. The client_secret is injected from config (SSM-backed in
+// production) and is never logged or returned to callers.
+export interface GoogleTokenExchangeClient {
+  exchange(params: {
+    code: string;
+    redirectUri: string;
+    codeVerifier: string;
+  }): Promise<GoogleTokenExchangeResult>;
+}
+
 // ── OAuthIdentity repository (migration 000017) ────────────────────────────────
 // Stores the link between an existing logalot user and an external OIDC identity
 // (Google for v1). Invite-only: linkFirst() NEVER creates a user — it only writes
