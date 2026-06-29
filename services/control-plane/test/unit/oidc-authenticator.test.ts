@@ -233,7 +233,8 @@ describe('OidcAuthenticator.beginAuthorize', () => {
       const state = new URL(redirectUrl).searchParams.get('state') ?? '';
       const entry = stateStore._peek(state);
       expect(entry).toBeDefined();
-      const record = entry?.record;
+      if (!entry) throw new Error('expected state record to be stored');
+      const record = entry.record;
       expect(record.tenantId).toBe(TENANT.id);
       expect(record.meta.provider).toBe('google');
       expect(record.meta.codeVerifier).toBeTruthy();
