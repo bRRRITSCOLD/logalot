@@ -60,7 +60,7 @@ GO_SERVICES := ingest-service processor query-service alert-evaluator retention-
 	dev dev-up dev-down dev-logs \
 	cold-tier-spike cold-tier-spike-athena \
 	go-sync go-build go-test go-fmt go-lint \
-	node-install node-test node-lint \
+	node-install node-test node-lint node-typecheck \
 	test lint \
 	buildx-go buildx-control-plane buildx-web buildx-all
 
@@ -256,6 +256,13 @@ node-test:
 ## node-lint: run biome across the repo
 node-lint:
 	pnpm lint
+
+## node-typecheck: run tsc --noEmit on packages with stable typecheck (control-plane, contracts)
+# NOTE: apps/web is excluded — its tsc needs TanStack route-tree codegen (vite build)
+# and currently has latent type errors; gating it is tracked separately.
+node-typecheck:
+	pnpm --filter @logalot/control-plane exec tsc --noEmit
+	pnpm --filter @logalot/contracts exec tsc --noEmit
 
 ## test: run all Go + Node tests
 test: go-test node-test
