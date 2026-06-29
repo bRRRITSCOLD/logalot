@@ -6,11 +6,14 @@
 #   docker build -f Dockerfile.control-plane -t logalot/control-plane .
 #   docker buildx build --platform linux/arm64 -f Dockerfile.control-plane -t logalot/control-plane .
 #
-# The builder installs only production dependencies via pnpm's filtered install
-# (--filter and --prod prune devDependencies). The final image is Node 22 Alpine
-# (~50 MB) running tsx as a non-root user. tsx is kept in the runtime image
-# because the control-plane uses it directly (no separate tsc compile step; the
-# tsconfig sets "noEmit": true).
+# The builder installs all workspace dependencies (including devDependencies) via
+# pnpm's filtered install (--filter scopes to control-plane and its workspace deps).
+# The final image is Node 22 Alpine running tsx as a non-root user. tsx is a
+# devDependency but is required at runtime because the control-plane uses it
+# directly (no separate tsc compile step; tsconfig sets "noEmit": true).
+# NOTE: the runtime image ships tsx and other devDeps (vitest, typescript, etc.).
+# To fully prune devDeps from the runtime, move tsx to `dependencies` in
+# services/control-plane/package.json and use `--prod` in a separate install stage.
 
 ARG NODE_VERSION=22
 
@@ -20,8 +23,8 @@ ARG NODE_VERSION
 
 WORKDIR /build
 
-# Install pnpm via corepack (matches packageManager field in root package.json).
-RUN corepack enable && corepack prepare pnpm@latest --activate
+# Install pnpm via corepack — version pinned to match packageManager in root package.json.
+RUN corepack enable && corepack prepare pnpm@10.33.2 --activate
 
 # Copy workspace manifests first — layer-cached until any package.json changes.
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./

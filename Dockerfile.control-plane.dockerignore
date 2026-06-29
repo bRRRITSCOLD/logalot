@@ -23,15 +23,18 @@ docs
 # Go workspace — not needed for this build
 go.work
 go.work.sum
-services/ingest-service
-services/processor
-services/query-service
-services/retention-worker
-services/alert-evaluator
 pkg
+# Exclude all services, then allow only control-plane back in.
+# Using a blanket exclude avoids the need to enumerate each Go service individually
+# and ensures newly added services are pruned from the context automatically.
+services
+!services/control-plane
 
 # Frontend app — not needed for control-plane
 apps
+
+# Go tools — not needed for this build
+tools
 
 # Biome / test config at root
 biome.json

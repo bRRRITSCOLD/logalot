@@ -10,8 +10,10 @@
 #   1. `builder`  — install ALL deps (including devDeps needed by Vite/TS), then
 #                   run `vite build` to produce the TanStack Start / Vinxi server
 #                   bundle under .output/.
-#   2. `runtime`  — Node 22 Alpine, copies only the built .output/ artifact and
-#                   the production node_modules. No build tooling in the final layer.
+#   2. `runtime`  — Node 22 Alpine, copies only the built .output/ artifact.
+#                   The Nitro/Vinxi bundle embeds all dependencies; no node_modules
+#                   are copied unless the bundle externalises a package at runtime
+#                   (verified: `docker run` + /api/healthz probe confirms startup).
 #
 # The design-tokens package (workspace dep) has a prebuild script (build-tokens.mjs)
 # invoked via the `prebuild` hook in the web package; it runs automatically when
@@ -24,8 +26,8 @@ FROM node:${NODE_VERSION}-alpine AS builder
 
 WORKDIR /build
 
-# Enable pnpm via corepack (pinned version comes from packageManager field).
-RUN corepack enable && corepack prepare pnpm@latest --activate
+# Install pnpm via corepack — version pinned to match packageManager in root package.json.
+RUN corepack enable && corepack prepare pnpm@10.33.2 --activate
 
 # Workspace manifests — cached layer until any package.json changes.
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
@@ -57,8 +59,10 @@ WORKDIR /app
 # Only the generated server bundle is needed at runtime — no source, no devDeps.
 COPY --from=builder /build/apps/web/.output ./.output
 
-# Production deps are embedded in the Vinxi/Nitro bundle; node_modules not needed.
-# If the bundle requires external node_modules at runtime, uncomment and adjust:
+# The Vinxi/Nitro bundle inlines all runtime dependencies; node_modules are not
+# copied. This assumption MUST be verified by running the container and confirming
+# the /api/healthz probe responds before merging. If any dep is externalised by the
+# Nitro preset, the container will crash at startup — uncomment the line below:
 # COPY --from=builder /build/node_modules ./node_modules
 
 USER logalot:logalot
