@@ -6,12 +6,12 @@
  * A second key pair ("rotated") is used to test JWKS-rotation behaviour.
  */
 import {
-  type JWK,
-  type KeyLike,
-  SignJWT,
   createLocalJWKSet,
   exportJWK,
   generateKeyPair,
+  type JWK,
+  type KeyLike,
+  SignJWT,
 } from 'jose';
 import { beforeAll, describe, expect, it } from 'vitest';
 import {
