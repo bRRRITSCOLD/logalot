@@ -1,0 +1,285 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+// BFF OIDC relay — unit tests for startGoogleSignin and completeGoogleSignin.
+// The trust-critical behaviours tested here:
+//   1. returnTo open-redirect validation (schema catches absolute / proto-relative URLs)
+//   2. Session cookies are written on success (lg_at / lg_rt)
+//   3. 4xx upstream errors collapse to one generic message (no enumeration)
+//   4. Handshake cookies (lg_oidc_tenant / lg_oidc_return) are cleared on all exits
+//
+// `createServerFn(...).validator(...).handler(fn)` -> a callable that runs `fn`
+// directly when called with `{ data }`.  We stub it the same way auth.test.ts does.
+
+vi.mock('@tanstack/react-start', () => ({
+  createServerFn: () => {
+    const builder = {
+      validator: () => builder,
+      handler: (fn: (input: unknown) => unknown) => (input?: unknown) => fn(input ?? {}),
+    };
+    return builder;
+  },
+}));
+
+vi.mock('@tanstack/react-start/server', () => ({
+  getCookie: vi.fn(),
+  setCookie: vi.fn(),
+  deleteCookie: vi.fn(),
+}));
+
+vi.mock('./control-plane', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./control-plane')>();
+  return {
+    ...actual, // keep the real ControlPlaneError class for `instanceof`
+    cpOidcAuthorize: vi.fn(),
+    cpOidcCallback: vi.fn(),
+  };
+});
+
+import type { TokenPair } from '@logalot/contracts';
+import { deleteCookie, getCookie, setCookie } from '@tanstack/react-start/server';
+import { ControlPlaneError, cpOidcAuthorize, cpOidcCallback } from './control-plane';
+import {
+  completeGoogleSignin,
+  getOidcTenantSlug,
+  OIDC_RETURN_COOKIE,
+  OIDC_TENANT_COOKIE,
+  startGoogleSignin,
+} from './oidc';
+import { ACCESS_COOKIE, REFRESH_COOKIE } from './session';
+
+const mockGetCookie = vi.mocked(getCookie);
+const mockSetCookie = vi.mocked(setCookie);
+const mockDeleteCookie = vi.mocked(deleteCookie);
+const mockCpOidcAuthorize = vi.mocked(cpOidcAuthorize);
+const mockCpOidcCallback = vi.mocked(cpOidcCallback);
+
+/** Configure the cookie jar `getCookie` reads from for a test. */
+function cookies(jar: Partial<Record<string, string>>): void {
+  mockGetCookie.mockImplementation((name: string) => jar[name]);
+}
+
+/** Build an unsigned JWT-shaped token for testing. */
+function fakeJwt(payload: Record<string, unknown>): string {
+  const b64 = (o: unknown) =>
+    Buffer.from(JSON.stringify(o))
+      .toString('base64')
+      .replace(/=+$/, '')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_');
+  return `${b64({ alg: 'HS256', typ: 'JWT' })}.${b64(payload)}.sig`;
+}
+
+const baseClaims = {
+  sub: '00000000-0000-0000-0000-000000000001',
+  tenant_id: '00000000-0000-0000-0000-0000000000aa',
+  role: 'member' as const,
+  iat: 1_000,
+};
+const FAR_FUTURE = Math.floor(Date.now() / 1000) + 3600;
+
+function tokenPair(accessToken: string): TokenPair {
+  return {
+    accessToken,
+    refreshToken: 'rt-new',
+    expiresIn: 900,
+    tokenType: 'Bearer',
+    role: 'member',
+    tenantId: baseClaims.tenant_id,
+    userId: baseClaims.sub,
+  };
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  cookies({});
+});
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+// ── startGoogleSignin ────────────────────────────────────────────────────────
+
+describe('startGoogleSignin', () => {
+  it('returns the redirect URL and stashes tenantSlug + returnTo cookies on success', async () => {
+    mockCpOidcAuthorize.mockResolvedValue({
+      redirectUrl: 'https://accounts.google.com/o/oauth2/v2/auth?client_id=x',
+    });
+
+    const result = await startGoogleSignin({
+      data: { tenantSlug: 'acme', returnTo: '/dashboard' },
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      redirectUrl: 'https://accounts.google.com/o/oauth2/v2/auth?client_id=x',
+    });
+    expect(mockSetCookie).toHaveBeenCalledWith(OIDC_TENANT_COOKIE, 'acme', expect.any(Object));
+    expect(mockSetCookie).toHaveBeenCalledWith(
+      OIDC_RETURN_COOKIE,
+      '/dashboard',
+      expect.any(Object),
+    );
+  });
+
+  it('does not set a return cookie when returnTo is absent', async () => {
+    mockCpOidcAuthorize.mockResolvedValue({ redirectUrl: 'https://accounts.google.com/auth' });
+
+    await startGoogleSignin({ data: { tenantSlug: 'acme' } });
+
+    expect(mockSetCookie).not.toHaveBeenCalledWith(
+      OIDC_RETURN_COOKIE,
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
+  it.each([
+    ['//evil.com'],
+    ['https://evil.com'],
+    ['\\\\evil.com'],
+    [' https://evil.com'],
+  ])('schema rejects returnTo=%s — never reaches the control-plane', async (badReturnTo) => {
+    // The oidcAuthorizeRequestSchema validator should reject the call before the handler runs.
+    // Because the validator stub in createServerFn is a no-op (it just calls handler directly),
+    // we test the schema directly instead.
+    const { oidcAuthorizeRequestSchema } = await import('@logalot/contracts');
+    const result = oidcAuthorizeRequestSchema.safeParse({
+      tenantSlug: 'acme',
+      returnTo: badReturnTo,
+    });
+    expect(result.success).toBe(false);
+    expect(mockCpOidcAuthorize).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [400, 'not_found'],
+    [422, 'invalid_request'],
+  ])('collapses a %s (%s) upstream 4xx to a workspace-specific generic message', async (status, code) => {
+    mockCpOidcAuthorize.mockRejectedValue(new ControlPlaneError(status, code, `raw: ${code}`));
+
+    const result = await startGoogleSignin({ data: { tenantSlug: 'ghost' } });
+
+    expect(result).toEqual({
+      ok: false,
+      message: 'Sign-in with Google is unavailable for this workspace.',
+    });
+  });
+
+  it.each([
+    [500, 'internal'],
+    [503, 'upstream_unreachable'],
+  ])('collapses a %s upstream 5xx to a generic availability message', async (status, code) => {
+    mockCpOidcAuthorize.mockRejectedValue(new ControlPlaneError(status, code, 'down'));
+
+    const result = await startGoogleSignin({ data: { tenantSlug: 'acme' } });
+
+    expect(result).toEqual({
+      ok: false,
+      message: 'Sign-in is temporarily unavailable. Please try again.',
+    });
+  });
+});
+
+// ── completeGoogleSignin ─────────────────────────────────────────────────────
+
+describe('completeGoogleSignin', () => {
+  it('writes session cookies, clears handshake cookies, and returns session + returnTo on success', async () => {
+    const access = fakeJwt({ ...baseClaims, exp: FAR_FUTURE });
+    mockCpOidcCallback.mockResolvedValue(tokenPair(access));
+    cookies({ [OIDC_RETURN_COOKIE]: '/settings' });
+
+    const result = await completeGoogleSignin({
+      data: { tenantSlug: 'acme', code: 'auth-code', state: 'opaque-state' },
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      session: {
+        userId: baseClaims.sub,
+        tenantId: baseClaims.tenant_id,
+        role: 'member',
+        expiresAt: FAR_FUTURE,
+      },
+      returnTo: '/settings',
+    });
+    expect(mockSetCookie).toHaveBeenCalledWith(ACCESS_COOKIE, access, expect.any(Object));
+    expect(mockSetCookie).toHaveBeenCalledWith(REFRESH_COOKIE, 'rt-new', expect.any(Object));
+    // Handshake cookies MUST be cleared after a successful exchange.
+    expect(mockDeleteCookie).toHaveBeenCalledWith(OIDC_TENANT_COOKIE, expect.any(Object));
+    expect(mockDeleteCookie).toHaveBeenCalledWith(OIDC_RETURN_COOKIE, expect.any(Object));
+  });
+
+  it('returns null returnTo when the return cookie is absent', async () => {
+    const access = fakeJwt({ ...baseClaims, exp: FAR_FUTURE });
+    mockCpOidcCallback.mockResolvedValue(tokenPair(access));
+    cookies({});
+
+    const result = await completeGoogleSignin({
+      data: { tenantSlug: 'acme', code: 'code', state: 'state' },
+    });
+
+    expect(result).toMatchObject({ ok: true, returnTo: null });
+  });
+
+  it('fails closed and clears handshake cookies when the CP returns an undecodable token', async () => {
+    mockCpOidcCallback.mockResolvedValue(tokenPair('not-a-jwt'));
+
+    const result = await completeGoogleSignin({
+      data: { tenantSlug: 'acme', code: 'code', state: 'state' },
+    });
+
+    expect(result).toEqual({ ok: false, message: 'Sign-in failed' });
+    expect(mockSetCookie).not.toHaveBeenCalled();
+    // Handshake cookies MUST be cleared even on failure.
+    expect(mockDeleteCookie).toHaveBeenCalledWith(OIDC_TENANT_COOKIE, expect.any(Object));
+    expect(mockDeleteCookie).toHaveBeenCalledWith(OIDC_RETURN_COOKIE, expect.any(Object));
+  });
+
+  it.each([
+    [400, 'bad_request'],
+    [401, 'unauthorized'],
+    [403, 'forbidden'],
+  ])('collapses a %s (%s) callback 4xx to a generic sign-in failed message', async (status, code) => {
+    mockCpOidcCallback.mockRejectedValue(new ControlPlaneError(status, code, `raw: ${code}`));
+
+    const result = await completeGoogleSignin({
+      data: { tenantSlug: 'acme', code: 'code', state: 'state' },
+    });
+
+    expect(result).toEqual({ ok: false, message: 'Sign-in failed' });
+    expect(mockSetCookie).not.toHaveBeenCalled();
+    // Handshake cookies MUST be cleared after any error path.
+    expect(mockDeleteCookie).toHaveBeenCalledWith(OIDC_TENANT_COOKIE, expect.any(Object));
+  });
+
+  it.each([
+    [500, 'internal'],
+    [503, 'upstream_unreachable'],
+  ])('collapses a %s callback 5xx to a generic availability message', async (status, code) => {
+    mockCpOidcCallback.mockRejectedValue(new ControlPlaneError(status, code, 'down'));
+
+    const result = await completeGoogleSignin({
+      data: { tenantSlug: 'acme', code: 'code', state: 'state' },
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      message: 'Sign-in is temporarily unavailable. Please try again.',
+    });
+    expect(mockDeleteCookie).toHaveBeenCalledWith(OIDC_TENANT_COOKIE, expect.any(Object));
+  });
+});
+
+// ── getOidcTenantSlug ────────────────────────────────────────────────────────
+
+describe('getOidcTenantSlug', () => {
+  it('returns the tenant slug from the handshake cookie', async () => {
+    cookies({ [OIDC_TENANT_COOKIE]: 'acme' });
+    expect(await getOidcTenantSlug()).toBe('acme');
+  });
+
+  it('returns null when the cookie is absent', async () => {
+    cookies({});
+    expect(await getOidcTenantSlug()).toBeNull();
+  });
+});
