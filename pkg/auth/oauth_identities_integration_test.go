@@ -34,6 +34,7 @@ import (
 	"runtime"
 	"testing"
 
+	"github.com/bRRRITSCOLD/logalot/pkg/kernel"
 	"github.com/bRRRITSCOLD/logalot/pkg/platform"
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/pgx/v5"
@@ -199,17 +200,35 @@ func TestMigration000017(t *testing.T) {
 	// -------------------------------------------------------------------------
 	t.Run("RLS fail-closed: unarmed session returns 0 rows", func(t *testing.T) {
 		// Insert a valid row as tenant A (armed) so there IS a row to hide.
-		_, err := env.appPool.Exec(ctx, `
-			SET LOCAL app.tenant_id = $1;
+		// Arming via set_config + DML must share the same transaction; SET LOCAL
+		// outside an explicit tx is a silent no-op (kernel/postgres.go §SetLocalTenantStmt).
+		conn, err := env.appPool.Acquire(ctx)
+		if err != nil {
+			t.Fatalf("acquire conn for seed: %v", err)
+		}
+		defer conn.Release()
+
+		tx, err := conn.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin tx for seed: %v", err)
+		}
+		if _, err = tx.Exec(ctx, kernel.SetLocalTenantStmt, tenantA); err != nil {
+			_ = tx.Rollback(ctx)
+			t.Fatalf("arm tenant context: %v", err)
+		}
+		if _, err = tx.Exec(ctx, `
 			INSERT INTO oauth_identities (tenant_id, user_id, provider, provider_sub, email)
 			VALUES ($1, $2, 'google', 'rls-probe-sub', 'probe@t17a.test')
 			ON CONFLICT DO NOTHING
-		`, tenantA, userA)
-		if err != nil {
-			t.Fatalf("arm + insert for RLS probe: %v", err)
+		`, tenantA, userA); err != nil {
+			_ = tx.Rollback(ctx)
+			t.Fatalf("insert for RLS probe: %v", err)
+		}
+		if err = tx.Commit(ctx); err != nil {
+			t.Fatalf("commit seed: %v", err)
 		}
 
-		// Now run in a fresh connection with NO context set.
+		// Now query in a fresh pooled connection with NO context set.
 		var count int
 		err = env.appPool.QueryRow(ctx, `SELECT count(*) FROM oauth_identities`).Scan(&count)
 		if err != nil {
@@ -226,17 +245,24 @@ func TestMigration000017(t *testing.T) {
 	t.Run("RLS WITH CHECK: foreign-tenant INSERT rejected", func(t *testing.T) {
 		// Arm tenant A's context but try to INSERT a row with tenant_id = B.
 		// The WITH CHECK policy (tenant_id = app.current_tenant_id()) must reject it.
+		// Arming and DML share one tx so set_config(is_local=true) stays in scope
+		// (kernel/postgres.go §SetLocalTenantStmt).
 		conn, err := env.appPool.Acquire(ctx)
 		if err != nil {
 			t.Fatalf("acquire conn: %v", err)
 		}
 		defer conn.Release()
 
-		_, err = conn.Exec(ctx, `SET LOCAL app.tenant_id = $1`, tenantA)
+		tx, err := conn.Begin(ctx)
 		if err != nil {
-			t.Fatalf("set tenant context: %v", err)
+			t.Fatalf("begin tx: %v", err)
 		}
-		_, err = conn.Exec(ctx, `
+		defer func() { _ = tx.Rollback(ctx) }() // no-op after commit; cleans up on failure path
+
+		if _, err = tx.Exec(ctx, kernel.SetLocalTenantStmt, tenantA); err != nil {
+			t.Fatalf("arm tenant context: %v", err)
+		}
+		_, err = tx.Exec(ctx, `
 			INSERT INTO oauth_identities (tenant_id, user_id, provider, provider_sub, email)
 			VALUES ($1, $2, 'google', 'cross-tenant-sub', 'cross@t17b.test')
 		`, tenantB, userB)
@@ -254,20 +280,30 @@ func TestMigration000017(t *testing.T) {
 	// AC-4: Per-tenant uniqueness — same (provider, sub) in different tenants (R3 / multi-tenant membership).
 	// -------------------------------------------------------------------------
 	t.Run("per-tenant uniqueness: same sub in different tenants is allowed", func(t *testing.T) {
-		// Insert under tenant A.
+		// Insert under tenant A — arm + DML in one tx.
 		connA, err := env.appPool.Acquire(ctx)
 		if err != nil {
 			t.Fatalf("acquire conn A: %v", err)
 		}
 		defer connA.Release()
-		if _, err = connA.Exec(ctx, `SET LOCAL app.tenant_id = $1`, tenantA); err != nil {
-			t.Fatalf("set context A: %v", err)
+
+		txA, err := connA.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin tx A: %v", err)
 		}
-		if _, err = connA.Exec(ctx, `
+		if _, err = txA.Exec(ctx, kernel.SetLocalTenantStmt, tenantA); err != nil {
+			_ = txA.Rollback(ctx)
+			t.Fatalf("arm context A: %v", err)
+		}
+		if _, err = txA.Exec(ctx, `
 			INSERT INTO oauth_identities (tenant_id, user_id, provider, provider_sub, email)
 			VALUES ($1, $2, 'google', $3, 'shared@t17a.test')
 		`, tenantA, userA, sharedSub); err != nil {
+			_ = txA.Rollback(ctx)
 			t.Fatalf("insert under A: %v", err)
+		}
+		if err = txA.Commit(ctx); err != nil {
+			t.Fatalf("commit A: %v", err)
 		}
 
 		// Insert the SAME (provider, provider_sub) under tenant B — must succeed.
@@ -276,14 +312,24 @@ func TestMigration000017(t *testing.T) {
 			t.Fatalf("acquire conn B: %v", err)
 		}
 		defer connB.Release()
-		if _, err = connB.Exec(ctx, `SET LOCAL app.tenant_id = $1`, tenantB); err != nil {
-			t.Fatalf("set context B: %v", err)
+
+		txB, err := connB.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin tx B: %v", err)
 		}
-		if _, err = connB.Exec(ctx, `
+		if _, err = txB.Exec(ctx, kernel.SetLocalTenantStmt, tenantB); err != nil {
+			_ = txB.Rollback(ctx)
+			t.Fatalf("arm context B: %v", err)
+		}
+		if _, err = txB.Exec(ctx, `
 			INSERT INTO oauth_identities (tenant_id, user_id, provider, provider_sub, email)
 			VALUES ($1, $2, 'google', $3, 'shared@t17b.test')
 		`, tenantB, userB, sharedSub); err != nil {
+			_ = txB.Rollback(ctx)
 			t.Fatalf("insert same sub under B should succeed (multi-tenant membership): %v", err)
+		}
+		if err = txB.Commit(ctx); err != nil {
+			t.Fatalf("commit B: %v", err)
 		}
 	})
 
@@ -299,20 +345,40 @@ func TestMigration000017(t *testing.T) {
 		}
 		defer conn.Release()
 
-		if _, err = conn.Exec(ctx, `SET LOCAL app.tenant_id = $1`, tenantA); err != nil {
-			t.Fatalf("set context: %v", err)
+		// First insert — arm + DML in one tx; must succeed.
+		tx1, err := conn.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin tx1: %v", err)
 		}
-		if _, err = conn.Exec(ctx, `
+		if _, err = tx1.Exec(ctx, kernel.SetLocalTenantStmt, tenantA); err != nil {
+			_ = tx1.Rollback(ctx)
+			t.Fatalf("arm context (first insert): %v", err)
+		}
+		if _, err = tx1.Exec(ctx, `
 			INSERT INTO oauth_identities (tenant_id, user_id, provider, provider_sub, email)
 			VALUES ($1, $2, 'google', $3, 'dup@t17a.test')
 		`, tenantA, userA, dupSub); err != nil {
+			_ = tx1.Rollback(ctx)
 			t.Fatalf("first insert: %v", err)
 		}
-		// Second insert with the same (tenant_id, provider, provider_sub) must fail.
-		_, err = conn.Exec(ctx, `
+		if err = tx1.Commit(ctx); err != nil {
+			t.Fatalf("commit tx1: %v", err)
+		}
+
+		// Second insert with the same (tenant_id, provider, provider_sub) — must fail 23505.
+		tx2, err := conn.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin tx2: %v", err)
+		}
+		if _, err = tx2.Exec(ctx, kernel.SetLocalTenantStmt, tenantA); err != nil {
+			_ = tx2.Rollback(ctx)
+			t.Fatalf("arm context (second insert): %v", err)
+		}
+		_, err = tx2.Exec(ctx, `
 			INSERT INTO oauth_identities (tenant_id, user_id, provider, provider_sub, email)
 			VALUES ($1, $2, 'google', $3, 'dup2@t17a.test')
 		`, tenantA, userA, dupSub)
+		_ = tx2.Rollback(ctx) // always rollback: tx is in error state after the expected failure
 		if err == nil {
 			t.Fatal("expected 23505 (unique_violation) for duplicate sub within tenant, got nil")
 		}
@@ -327,30 +393,50 @@ func TestMigration000017(t *testing.T) {
 	t.Run("RLS SELECT by sub: cross-tenant isolation (R3)", func(t *testing.T) {
 		const selectSub = "google-sub-select-0017"
 
-		// Insert under A.
+		// Insert under A — arm + DML in one tx.
 		connA, err := env.appPool.Acquire(ctx)
 		if err != nil {
 			t.Fatalf("acquire conn A: %v", err)
 		}
 		defer connA.Release()
-		if _, err = connA.Exec(ctx, `SET LOCAL app.tenant_id = $1`, tenantA); err != nil {
-			t.Fatalf("set context A: %v", err)
+
+		txA, err := connA.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin insert tx A: %v", err)
 		}
-		if _, err = connA.Exec(ctx, `
+		if _, err = txA.Exec(ctx, kernel.SetLocalTenantStmt, tenantA); err != nil {
+			_ = txA.Rollback(ctx)
+			t.Fatalf("arm context A (insert): %v", err)
+		}
+		if _, err = txA.Exec(ctx, `
 			INSERT INTO oauth_identities (tenant_id, user_id, provider, provider_sub, email)
 			VALUES ($1, $2, 'google', $3, 'sel@t17a.test')
 		`, tenantA, userA, selectSub); err != nil {
+			_ = txA.Rollback(ctx)
 			t.Fatalf("insert under A: %v", err)
 		}
+		if err = txA.Commit(ctx); err != nil {
+			t.Fatalf("commit insert A: %v", err)
+		}
 
-		// SELECT under A → must see the row.
+		// SELECT under A → must see the row. Arm in a new tx on the same conn.
+		txA2, err := connA.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin select tx A: %v", err)
+		}
+		if _, err = txA2.Exec(ctx, kernel.SetLocalTenantStmt, tenantA); err != nil {
+			_ = txA2.Rollback(ctx)
+			t.Fatalf("arm context A (select): %v", err)
+		}
 		var countA int
-		if err = connA.QueryRow(ctx, `
+		if err = txA2.QueryRow(ctx, `
 			SELECT count(*) FROM oauth_identities
 			WHERE  provider = 'google' AND provider_sub = $1
 		`, selectSub).Scan(&countA); err != nil {
+			_ = txA2.Rollback(ctx)
 			t.Fatalf("select under A: %v", err)
 		}
+		_ = txA2.Commit(ctx)
 		if countA != 1 {
 			t.Errorf("A sees %d row(s) for its own sub, want 1", countA)
 		}
@@ -361,16 +447,24 @@ func TestMigration000017(t *testing.T) {
 			t.Fatalf("acquire conn B: %v", err)
 		}
 		defer connB.Release()
-		if _, err = connB.Exec(ctx, `SET LOCAL app.tenant_id = $1`, tenantB); err != nil {
-			t.Fatalf("set context B: %v", err)
+
+		txB, err := connB.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin select tx B: %v", err)
+		}
+		if _, err = txB.Exec(ctx, kernel.SetLocalTenantStmt, tenantB); err != nil {
+			_ = txB.Rollback(ctx)
+			t.Fatalf("arm context B (select): %v", err)
 		}
 		var countB int
-		if err = connB.QueryRow(ctx, `
+		if err = txB.QueryRow(ctx, `
 			SELECT count(*) FROM oauth_identities
 			WHERE  provider = 'google' AND provider_sub = $1
 		`, selectSub).Scan(&countB); err != nil {
+			_ = txB.Rollback(ctx)
 			t.Fatalf("select under B: %v", err)
 		}
+		_ = txB.Commit(ctx)
 		if countB != 0 {
 			t.Errorf("B sees %d row(s) for A's sub, want 0 (RLS cross-tenant isolation breach)", countB)
 		}
@@ -381,19 +475,27 @@ func TestMigration000017(t *testing.T) {
 	// -------------------------------------------------------------------------
 	t.Run("FK violation: cross-tenant user_id rejected (23503)", func(t *testing.T) {
 		// Arm tenant A but try to reference userB (belongs to tenant B).
+		// The composite FK (tenant_id, user_id) → users(tenant_id, id) must reject
+		// (tenantA, userB) because users(tenantA, userB) does not exist.
 		conn, err := env.appPool.Acquire(ctx)
 		if err != nil {
 			t.Fatalf("acquire conn: %v", err)
 		}
 		defer conn.Release()
 
-		if _, err = conn.Exec(ctx, `SET LOCAL app.tenant_id = $1`, tenantA); err != nil {
-			t.Fatalf("set context: %v", err)
+		tx, err := conn.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin tx: %v", err)
 		}
-		_, err = conn.Exec(ctx, `
+		if _, err = tx.Exec(ctx, kernel.SetLocalTenantStmt, tenantA); err != nil {
+			_ = tx.Rollback(ctx)
+			t.Fatalf("arm tenant context: %v", err)
+		}
+		_, err = tx.Exec(ctx, `
 			INSERT INTO oauth_identities (tenant_id, user_id, provider, provider_sub, email)
 			VALUES ($1, $2, 'google', 'fk-violation-sub', 'fk@t17a.test')
 		`, tenantA, userB) // tenantA + userB is a cross-tenant composite FK violation
+		_ = tx.Rollback(ctx)
 		if err == nil {
 			t.Fatal("expected FK violation (23503) for cross-tenant user_id, got nil")
 		}
