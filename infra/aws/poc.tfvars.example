@@ -3,3 +3,13 @@ aws_region   = "us-east-1"
 project      = "logalot"
 env          = "poc"
 state_bucket = "logalot-poc-tf-state-<account_id>"
+
+# Network (defaults match ADR-0009 topology; override only if CIDRs conflict)
+vpc_cidr           = "10.0.0.0/16"
+public_subnet_cidr = "10.0.1.0/24"
+availability_zone  = "us-east-1a"
+
+# Admin access — leave empty to keep port 22 closed (use SSM Session Manager).
+# Set to your IP/32 only as a fallback when SSM is unavailable.
+# admin_cidr = "203.0.113.10/32"
+admin_cidr = ""

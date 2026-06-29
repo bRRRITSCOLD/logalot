@@ -61,8 +61,12 @@ terraform apply -var-file=poc.tfvars
 infra/aws/
   backend.tf       # S3 backend: key, encrypt=true, use_lockfile=true
   versions.tf      # required_version >= 1.10, provider versions
-  variables.tf     # input variables (region, project, env, state_bucket)
+  variables.tf     # input variables (region, project, env, state_bucket, network, admin_cidr)
   providers.tf     # aws provider with default tags
+  network.tf       # VPC, public subnet, IGW, route table (ADR-0009)
+  security.tf      # EC2 security group: 443+80 open, 22 closed by default (SSM admin)
+  outputs.tf       # exported IDs: vpc, subnet, igw, security group
+  poc.tfvars.example  # copy to poc.tfvars (not committed) and fill in values
   README.md        # this file
   bootstrap/       # one-time state-bucket creation (local state only)
     main.tf
@@ -70,8 +74,25 @@ infra/aws/
     outputs.tf
 ```
 
+## Security group policy
+
+The SG (`security.tf`) opens only **443** and **80** inbound to the world.  Port
+**22 is closed by default** — use **SSM Session Manager** for admin access (no
+IAM key, no open port).  If you need SSH as a fallback, set `admin_cidr` in your
+`poc.tfvars` to your IP (`x.x.x.x/32`).
+
+A static policy assertion script runs in CI (no AWS credentials required):
+
+```bash
+bash scripts/tf-sg-policy-assert.sh infra/aws/security.tf
+```
+
+Asserts:
+- Port 22 has no static `0.0.0.0/0` ingress rule.
+- Port 443 and 80 are open to `0.0.0.0/0`.
+
 ## CI
 
 The `tf-validate` GitHub Actions job (`.github/workflows/tf-validate.yml`) runs
-`terraform init -backend=false`, `terraform validate`, and `terraform fmt -check`
-on every PR touching `infra/aws/**`.
+`terraform init -backend=false`, `terraform validate`, `terraform fmt -check`,
+and the SG policy assertion script on every PR touching `infra/aws/**`.
