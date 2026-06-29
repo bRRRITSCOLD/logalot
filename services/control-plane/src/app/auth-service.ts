@@ -129,7 +129,7 @@ export class AuthService {
     }
 
     const tenant = await this.deps.tenants.findById(parsed.tenantId);
-    if (!tenant || tenant.status !== 'active') {
+    if (tenant?.status !== 'active') {
       await this.deps.refreshTokens.revokeFamily(parsed.tenantId, row.familyId, now);
       throw new UnauthorizedError('invalid refresh token');
     }
