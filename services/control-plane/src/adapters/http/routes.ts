@@ -7,6 +7,7 @@ import {
   createUserRequestSchema,
   loginRequestSchema,
   logoutRequestSchema,
+  oidcAuthorizeRequestSchema,
   refreshRequestSchema,
   updateAlertRuleRequestSchema,
   updateDashboardRequestSchema,
@@ -17,6 +18,7 @@ import {
 } from '@logalot/contracts';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import type { OidcAuthenticator } from '../../app/oidc-authenticator';
 import type { TokenService } from '../../app/ports';
 import type { Services } from '../../container';
 import { makeAuthenticate, requireTenantContext } from './auth-plugin';
@@ -42,6 +44,7 @@ const provisionAdminSchema = z
 export interface RouteDeps {
   services: Services;
   tokenService: TokenService;
+  oidcAuthenticator: OidcAuthenticator;
   // Readiness probe: resolves true when the datastore is reachable.
   ping: () => Promise<boolean>;
 }
@@ -52,7 +55,7 @@ export interface RouteDeps {
 // TenantContext) then requireOperation (edge RBAC). The application services
 // re-assert RBAC and arm RLS independently underneath (defense in depth).
 export function registerRoutes(app: FastifyInstance, deps: RouteDeps): void {
-  const { services, tokenService, ping } = deps;
+  const { services, tokenService, oidcAuthenticator, ping } = deps;
   const authenticate = makeAuthenticate(tokenService);
 
   // ── Health / readiness (public) ──────────────────────────────────────────
@@ -60,6 +63,19 @@ export function registerRoutes(app: FastifyInstance, deps: RouteDeps): void {
   app.get('/readyz', async (_req, reply) => {
     const ready = await ping().catch(() => false);
     return reply.code(ready ? 200 : 503).send({ status: ready ? 'ready' : 'not_ready' });
+  });
+
+  // ── OIDC / OAuth (public) ────────────────────────────────────────────────
+  // POST /v1/auth/oidc/google/authorize — initiate the Google OIDC flow.
+  // Returns a redirectUrl the client must navigate the browser to.
+  // Body: { tenantSlug, returnTo? } (oidcAuthorizeRequestSchema).
+  app.post('/v1/auth/oidc/google/authorize', async (req, reply) => {
+    const body = parse(oidcAuthorizeRequestSchema, req.body);
+    const result = await oidcAuthenticator.beginAuthorize({
+      tenantSlug: body.tenantSlug,
+      returnTo: body.returnTo,
+    });
+    return reply.code(200).send(result);
   });
 
   // ── Auth (public) ────────────────────────────────────────────────────────

@@ -19,6 +19,7 @@ import { AlertRuleService } from './app/alert-rule-service';
 import { ApiKeyService } from './app/api-key-service';
 import { AuthService } from './app/auth-service';
 import { DashboardService } from './app/dashboard-service';
+import { OidcAuthenticator } from './app/oidc-authenticator';
 import type { OAuthStateStore, TokenService } from './app/ports';
 import { RetentionService } from './app/retention-service';
 import { SavedQueryService } from './app/saved-query-service';
@@ -43,6 +44,7 @@ export interface Container {
   services: Services;
   tokenService: TokenService;
   oauthStateStore: OAuthStateStore;
+  oidcAuthenticator: OidcAuthenticator;
   /** Release infrastructure resources (Redis connection, etc.) on graceful shutdown. */
   shutdown: () => Promise<void>;
 }
@@ -104,10 +106,23 @@ export function buildContainer(pool: Pool, config: Config): Container {
     ? new RedisOAuthStateStore(redisClient)
     : new InMemoryOAuthStateStore();
 
+  // OidcAuthenticator — beginAuthorize (issue #95). clientId and redirectUri
+  // are required in production; they are optional in config so tests that don't
+  // exercise the OIDC path don't need to supply them.
+  const oidcAuthenticator = new OidcAuthenticator({
+    tenants: tenantRepo,
+    stateStore: oauthStateStore,
+    clientId: config.googleOidcClientId ?? '',
+    redirectUri: config.googleOidcRedirectUri ?? '',
+    authEndpoint: config.googleOidcAuthEndpoint,
+    stateTtlSeconds: config.oauthStateTtlSeconds,
+  });
+
   return {
     services,
     tokenService,
     oauthStateStore,
+    oidcAuthenticator,
     shutdown: async () => {
       if (redisClient) await redisClient.quit();
     },
