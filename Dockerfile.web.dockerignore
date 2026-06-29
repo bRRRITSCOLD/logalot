@@ -1,0 +1,33 @@
+# Build context filter for Dockerfile.web (TanStack Start BFF + React app).
+# BuildKit picks this up automatically when you pass -f Dockerfile.web.
+#
+# Exclude everything unneeded — Go workspace, infra files, other services —
+# so the daemon only receives the pnpm workspace root + apps/web + its deps
+# (packages/contracts, packages/design-tokens).
+
+# Large / sensitive always-excluded
+.git
+.github
+.claude
+docs
+*.md
+.env
+.env.*
+!.env.example
+
+# Node artefacts — the builder stage re-installs / rebuilds inside the container
+**/node_modules
+**/.output
+**/dist
+
+# Go workspace — not needed for this build
+go.work
+go.work.sum
+services
+pkg
+
+# Tools workspace package — not needed by web
+tools
+
+# Biome / test config at root
+biome.json

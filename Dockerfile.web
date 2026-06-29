@@ -1,0 +1,76 @@
+# Multi-stage Dockerfile for the web TanStack Start BFF + React app.
+#
+# Build context: REPO ROOT (pnpm workspace resolution requires pnpm-workspace.yaml
+# and all workspace packages to be reachable from the build context).
+#
+#   docker build -f Dockerfile.web -t logalot/web .
+#   docker buildx build --platform linux/arm64 -f Dockerfile.web -t logalot/web .
+#
+# Pipeline:
+#   1. `builder`  — install ALL deps (including devDeps needed by Vite/TS), then
+#                   run `vite build` to produce the TanStack Start / Vinxi server
+#                   bundle under .output/.
+#   2. `runtime`  — Node 22 Alpine, copies only the built .output/ artifact and
+#                   the production node_modules. No build tooling in the final layer.
+#
+# The design-tokens package (workspace dep) has a prebuild script (build-tokens.mjs)
+# invoked via the `prebuild` hook in the web package; it runs automatically when
+# `pnpm --filter @logalot/web build` is called inside the builder.
+
+ARG NODE_VERSION=22
+
+# ---- builder -----------------------------------------------------------------
+FROM node:${NODE_VERSION}-alpine AS builder
+
+WORKDIR /build
+
+# Enable pnpm via corepack (pinned version comes from packageManager field).
+RUN corepack enable && corepack prepare pnpm@latest --activate
+
+# Workspace manifests — cached layer until any package.json changes.
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
+COPY packages/contracts/package.json      ./packages/contracts/
+COPY packages/design-tokens/package.json  ./packages/design-tokens/
+COPY apps/web/package.json                ./apps/web/
+
+# Install all deps (devDeps needed: vite, tailwindcss, tsc, etc.).
+RUN pnpm install --frozen-lockfile --filter @logalot/web...
+
+# Copy source AFTER deps to maximise cache reuse on code-only changes.
+COPY packages/contracts   ./packages/contracts
+COPY packages/design-tokens ./packages/design-tokens
+COPY apps/web             ./apps/web
+
+# Build — `prebuild` in apps/web/package.json runs build-tokens.mjs first.
+# TanStack Start (Vinxi) emits a production Node.js server to .output/.
+RUN pnpm --filter @logalot/web build
+
+# ---- runtime -----------------------------------------------------------------
+FROM node:${NODE_VERSION}-alpine AS runtime
+
+RUN apk add --no-cache wget \
+ && addgroup -S logalot \
+ && adduser  -S -G logalot logalot
+
+WORKDIR /app
+
+# Only the generated server bundle is needed at runtime — no source, no devDeps.
+COPY --from=builder /build/apps/web/.output ./.output
+
+# Production deps are embedded in the Vinxi/Nitro bundle; node_modules not needed.
+# If the bundle requires external node_modules at runtime, uncomment and adjust:
+# COPY --from=builder /build/node_modules ./node_modules
+
+USER logalot:logalot
+
+EXPOSE 3000
+
+# Liveness probe — the /api/healthz route returns 200 {"status":"ok"} as soon as
+# the SSR server is accepting connections (defined in apps/web/src/routes/api/healthz.ts).
+HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=3 \
+  CMD wget -qO- http://localhost:3000/api/healthz || exit 1
+
+# TanStack Start / Vinxi emits the server entry at .output/server/index.mjs.
+# PORT env var is read by the Nitro server and defaults to 3000.
+ENV PORT=3000
+ENTRYPOINT ["node", ".output/server/index.mjs"]

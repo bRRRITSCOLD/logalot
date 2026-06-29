@@ -1,0 +1,37 @@
+# Build context filter for Dockerfile.control-plane (Node/Fastify service).
+# BuildKit picks this up automatically when you pass -f Dockerfile.control-plane.
+#
+# Exclude everything by default, then allow only what the Node build needs.
+# This keeps the context lean (~packages/contracts + services/control-plane source)
+# and avoids sending Go artefacts, the frontend bundle, or .git to the daemon.
+
+# Large / sensitive always-excluded
+.git
+.github
+.claude
+docs
+*.md
+.env
+.env.*
+!.env.example
+
+# Node artefacts — the builder stage re-installs inside the container
+**/node_modules
+**/.output
+**/dist
+
+# Go workspace — not needed for this build
+go.work
+go.work.sum
+services/ingest-service
+services/processor
+services/query-service
+services/retention-worker
+services/alert-evaluator
+pkg
+
+# Frontend app — not needed for control-plane
+apps
+
+# Biome / test config at root
+biome.json
