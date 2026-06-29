@@ -1,9 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import {
-  OidcAuthenticator,
-  type OidcAuthenticatorDeps,
-} from '../../src/app/oidc-authenticator';
+import { OidcAuthenticator, type OidcAuthenticatorDeps } from '../../src/app/oidc-authenticator';
 import type {
   AuthRecord,
   Clock,
@@ -158,11 +155,21 @@ class FakeUserRepo implements UserRepository {
   }
 
   // Unused stubs
-  async create(): Promise<never> { throw new Error('stub'); }
-  async list(): Promise<never[]> { return []; }
-  async findById(): Promise<null> { return null; }
-  async update(): Promise<null> { return null; }
-  async delete(): Promise<boolean> { return false; }
+  async create(): Promise<never> {
+    throw new Error('stub');
+  }
+  async list(): Promise<never[]> {
+    return [];
+  }
+  async findById(): Promise<null> {
+    return null;
+  }
+  async update(): Promise<null> {
+    return null;
+  }
+  async delete(): Promise<boolean> {
+    return false;
+  }
 }
 
 // A minimal fake RefreshTokenRepository.
@@ -173,8 +180,12 @@ class FakeRefreshTokenRepo implements RefreshTokenRepository {
     return { id: randomUUID() };
   }
 
-  async findById(): Promise<null> { return null; }
-  async rotate(): Promise<null> { return null; }
+  async findById(): Promise<null> {
+    return null;
+  }
+  async rotate(): Promise<null> {
+    return null;
+  }
   async revokeFamily(): Promise<void> {}
 }
 
@@ -187,7 +198,9 @@ class FakeTokenService implements TokenService {
     };
   }
 
-  async verifyAccess(): Promise<never> { throw new Error('stub'); }
+  async verifyAccess(): Promise<never> {
+    throw new Error('stub');
+  }
 }
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
@@ -219,9 +232,7 @@ function makeUserRecord(overrides?: Partial<AuthRecord>): AuthRecord {
   };
 }
 
-function makeDeps(
-  overrides?: Partial<OidcAuthenticatorDeps>,
-): {
+function makeDeps(overrides?: Partial<OidcAuthenticatorDeps>): {
   sut: OidcAuthenticator;
   stateStore: FakeOAuthStateStore;
   exchangeClient: FakeTokenExchangeClient;

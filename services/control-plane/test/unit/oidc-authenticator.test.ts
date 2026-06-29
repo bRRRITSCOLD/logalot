@@ -90,13 +90,19 @@ const NEVER_CALLED_TOKENS: OidcAuthenticatorDeps['tokens'] = {
   verifyAccess: () => Promise.reject(new Error('not expected in these tests')),
 };
 const NEVER_CALLED_SECRETS: OidcAuthenticatorDeps['secrets'] = {
-  generate: () => { throw new Error('not expected in these tests'); },
+  generate: () => {
+    throw new Error('not expected in these tests');
+  },
 };
 const NEVER_CALLED_IDS: OidcAuthenticatorDeps['ids'] = {
-  uuid: () => { throw new Error('not expected in these tests'); },
+  uuid: () => {
+    throw new Error('not expected in these tests');
+  },
 };
 const NEVER_CALLED_CLOCK: OidcAuthenticatorDeps['clock'] = {
-  now: () => { throw new Error('not expected in these tests'); },
+  now: () => {
+    throw new Error('not expected in these tests');
+  },
 };
 
 function makeDeps(overrides?: Partial<OidcAuthenticatorDeps>): OidcAuthenticatorDeps {
@@ -137,7 +143,7 @@ describe('OidcAuthenticator.beginAuthorize', () => {
   describe('redirect URL params', () => {
     it('returns an absolute URL pointing at the configured auth endpoint', async () => {
       const { redirectUrl } = await sut.beginAuthorize({ tenantSlug: 'acme' });
-      expect(redirectUrl.startsWith(AUTH_ENDPOINT + '?')).toBe(true);
+      expect(redirectUrl.startsWith(`${AUTH_ENDPOINT}?`)).toBe(true);
     });
 
     it('includes code_challenge and code_challenge_method=S256', async () => {
@@ -152,7 +158,7 @@ describe('OidcAuthenticator.beginAuthorize', () => {
       const stateValue = params.get('state') ?? '';
       const stored = stateStore._peek(stateValue);
       expect(stored).toBeDefined();
-      const verifier = stored!.record.meta['codeVerifier'] ?? '';
+      const verifier = stored?.record.meta.codeVerifier ?? '';
       expect(verifier).toBeTruthy();
       const expected = createHash('sha256').update(verifier, 'ascii').digest('base64url');
       expect(challenge).toBe(expected);
@@ -227,12 +233,12 @@ describe('OidcAuthenticator.beginAuthorize', () => {
       const state = new URL(redirectUrl).searchParams.get('state') ?? '';
       const entry = stateStore._peek(state);
       expect(entry).toBeDefined();
-      const record = entry!.record;
+      const record = entry?.record;
       expect(record.tenantId).toBe(TENANT.id);
-      expect(record.meta['provider']).toBe('google');
-      expect(record.meta['codeVerifier']).toBeTruthy();
-      expect(record.meta['nonce']).toBeTruthy();
-      expect(record.meta['returnTo']).toBe('/dashboard');
+      expect(record.meta.provider).toBe('google');
+      expect(record.meta.codeVerifier).toBeTruthy();
+      expect(record.meta.nonce).toBeTruthy();
+      expect(record.meta.returnTo).toBe('/dashboard');
     });
 
     it('record is retrievable exactly once (single-use)', async () => {
@@ -261,7 +267,7 @@ describe('OidcAuthenticator.beginAuthorize', () => {
     async function getStoredReturnTo(returnTo?: string): Promise<string> {
       const { redirectUrl } = await sut.beginAuthorize({ tenantSlug: 'acme', returnTo });
       const state = new URL(redirectUrl).searchParams.get('state') ?? '';
-      return stateStore._peek(state)!.record.meta['returnTo'] ?? '';
+      return stateStore._peek(state)?.record.meta.returnTo ?? '';
     }
 
     it('stores a valid relative path as-is', async () => {

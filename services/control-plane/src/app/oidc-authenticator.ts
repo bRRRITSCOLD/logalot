@@ -2,8 +2,8 @@ import { createHash, randomBytes } from 'node:crypto';
 import { normalizeEmail } from '../domain/email';
 import { NotFoundError, ServiceUnavailableError, UnauthorizedError } from '../domain/errors';
 import { assembleRefreshToken } from '../domain/refresh-token';
-import { sha256 } from '../domain/secret-hash';
 import type { Role } from '../domain/roles';
+import { sha256 } from '../domain/secret-hash';
 import type {
   Clock,
   GoogleIdTokenVerifier,
@@ -121,7 +121,7 @@ export class OidcAuthenticator {
   async beginAuthorize(cmd: OidcAuthorizeCommand): Promise<OidcAuthorizeResult> {
     // 1. Resolve tenant — 404 when slug is unknown or tenant is not active.
     const tenant = await this.deps.tenants.findByPublicId(cmd.tenantSlug);
-    if (!tenant || tenant.status !== 'active') {
+    if (tenant?.status !== 'active') {
       throw new NotFoundError(`tenant '${cmd.tenantSlug}' not found`);
     }
 
@@ -194,9 +194,9 @@ export class OidcAuthenticator {
     }
 
     const { tenantId } = stateRecord;
-    const codeVerifier = stateRecord.meta['codeVerifier'];
-    const nonce = stateRecord.meta['nonce'];
-    const returnTo = stateRecord.meta['returnTo'] ?? '/';
+    const codeVerifier = stateRecord.meta.codeVerifier;
+    const nonce = stateRecord.meta.nonce;
+    const returnTo = stateRecord.meta.returnTo ?? '/';
 
     if (!codeVerifier || !nonce) {
       // Corrupt state record — should never happen in a correct flow.
@@ -223,10 +223,13 @@ export class OidcAuthenticator {
 
     // 3. Verify id_token: alg=RS256, iss, aud, exp (jose layer), nonce equality.
     //    GoogleIdTokenVerifier throws on any mismatch — we catch and re-throw as 401.
+    //    ServiceUnavailableError (Google JWKS unreachable) is re-thrown as 503, not 401,
+    //    consistent with the exchange step above.
     let claims: Awaited<ReturnType<GoogleIdTokenVerifier['verify']>>;
     try {
       claims = await deps.idTokenVerifier.verify(idToken, nonce);
-    } catch {
+    } catch (err) {
+      if (err instanceof ServiceUnavailableError) throw err;
       throw new UnauthorizedError('id_token verification failed');
     }
 
@@ -241,13 +244,6 @@ export class OidcAuthenticator {
     );
 
     if (existingIdentity) {
-      // Returning user — fire-and-forget last-login timestamp update.
-      const now = deps.clock.now();
-      deps.oauthIdentities
-        .touchLastLogin(tenantId, existingIdentity.id, now)
-        .catch(() => {
-          // Non-fatal: login still succeeds even if the touch fails.
-        });
       userId = existingIdentity.userId;
     } else {
       // First login for this Google account — look up the provisioned user by email.
@@ -268,8 +264,18 @@ export class OidcAuthenticator {
 
     // 5. Load user credentials (status + role) — required for session claims.
     const record = await deps.users.findCredentialsById(tenantId, userId);
-    if (!record || record.status !== 'active' || record.role === null) {
+    if (record?.status !== 'active' || record.role === null) {
       throw new UnauthorizedError('account is not active');
+    }
+
+    // Fire-and-forget last-login timestamp update for returning users only.
+    // Placed AFTER the active/role check so a suspended user does not have
+    // last_login_at bumped before the 401 is thrown.
+    if (existingIdentity) {
+      const now = deps.clock.now();
+      deps.oauthIdentities.touchLastLogin(tenantId, existingIdentity.id, now).catch(() => {
+        // Non-fatal: login still succeeds even if the touch fails.
+      });
     }
 
     // 6. Mint session: access JWT + rotating refresh token.
