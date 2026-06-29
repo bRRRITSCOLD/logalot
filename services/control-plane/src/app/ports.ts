@@ -256,6 +256,37 @@ export interface DashboardRepository {
   delete(tenantId: string, id: string): Promise<boolean>;
 }
 
+// ── OAuth in-flight state store (issue #89) ──────────────────────────────────
+// Holds the opaque `state` parameter that the control-plane generates at the
+// start of an OAuth 2.0 Authorization Code flow and verifies on callback.
+// Single-use: consume() atomically retrieves AND deletes in one operation.
+// TTL (~10 min) mirrors the max OAuth round-trip latency (D1).
+
+export interface OAuthStateRecord {
+  /** Opaque random string that is the Redis key (also sent as OAuth `state`). */
+  state: string;
+  /** Tenant/user that initiated the flow — used to bind the callback. */
+  tenantId: string;
+  /** Arbitrary metadata (e.g. provider name, PKCE verifier, redirect uri). */
+  meta: Record<string, string>;
+  /** Wall-clock time the record was created, ISO-8601. */
+  createdAt: string;
+}
+
+export interface OAuthStateStore {
+  /**
+   * Persist an OAuth state record with the given TTL (seconds).
+   * The `record.state` value is used as the storage key.
+   */
+  put(record: OAuthStateRecord, ttlSeconds: number): Promise<void>;
+
+  /**
+   * Atomically retrieve-and-delete the record for `state`.
+   * Returns null when the key is absent (expired or already consumed).
+   */
+  consume(state: string): Promise<OAuthStateRecord | null>;
+}
+
 // Refresh-token persistence (migration 000012). Stored hashed; rotation + family
 // reuse-detection logic lives in AuthService, this port is pure storage.
 export interface NewRefreshToken {
