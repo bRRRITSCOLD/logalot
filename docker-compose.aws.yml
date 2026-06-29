@@ -166,9 +166,9 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: "6379"
       REDIS_PASSWORD: ${REDIS_PASSWORD}
-      # Cold-tier: feature-flagged OFF; flip COLD_ENABLED=true once the
-      # cold_smoke_aws smoke test passes (ADR-0005, decision 016 §6).
-      COLD_ENABLED: ${COLD_ENABLED:-false}
+      # Cold-tier: enabled — cold_smoke_aws CI gate passed (ADR-0005, decision 016 §6, closes #63 AC#3).
+      # Processor tees hot writes to real S3 Parquet + registers Glue partitions.
+      COLD_ENABLED: ${COLD_ENABLED:-true}
       COLD_BUCKET: ${COLD_S3_BUCKET}
       COLD_GLUE_DB: ${COLD_GLUE_DB:-logalot_cold}
       COLD_ATHENA_RESULT_BUCKET: ${COLD_ATHENA_RESULT_BUCKET}
@@ -200,9 +200,21 @@ services:
       # Shared with control-plane: query-service VERIFIES UI session JWTs (#74).
       JWT_SECRET: ${JWT_SECRET}
       QUERY_HTTP_ADDR: ":8081"
+      # Cold-read routing: enabled — cold_smoke_aws CI gate passed (ADR-0005, closes #63 AC#3).
+      # Query-service routes searches spanning > HOT_RETENTION_DAYS to Athena.
+      COLD_SEARCH_ENABLED: ${COLD_SEARCH_ENABLED:-true}
       COLD_S3_BUCKET: ${COLD_S3_BUCKET}
+      COLD_GLUE_DB: ${COLD_GLUE_DB:-logalot_cold}
+      COLD_ATHENA_RESULT_BUCKET: ${COLD_ATHENA_RESULT_BUCKET}
+      # NOTE: COLD_ATHENA_WORKGROUP is intentionally omitted — query-service does
+      # not read it (no ColdAthenaWorkgroup field in config; coldstore.New is called
+      # without WithWorkgroup and uses the hardcoded default "primary"). Only the
+      # processor reads COLD_ATHENA_WORKGROUP. Add it here only if/when query-service
+      # is wired to honour a configurable workgroup (requires Config field +
+      # coldstore.WithWorkgroup call in cmd/query-service/main.go).
       AWS_REGION: ${AWS_REGION}
       AWS_DEFAULT_REGION: ${AWS_REGION}
+      # No AWS_ENDPOINT_URL — real S3/Athena (not floci) in the AWS env.
     networks:
       - logalot
     mem_limit: 96m

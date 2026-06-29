@@ -130,8 +130,8 @@ variable "app_version" {
     but MUST be pinned to an immutable ref before production use to prevent
     supply-chain compromise via mutable branch heads.
   EOT
-  type    = string
-  default = "main"
+  type        = string
+  default     = "main"
 }
 
 variable "image_tag" {
@@ -140,6 +140,6 @@ variable "image_tag" {
     tag (e.g. "v1.2.3") or a digest reference (@sha256:...) in production.
     Defaults to "latest" for PoC convenience only.
   EOT
-  type    = string
-  default = "latest"
+  type        = string
+  default     = "latest"
 }
