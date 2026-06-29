@@ -43,6 +43,7 @@ side-effect (NFR-2), and cold is reconstructable from the queue/DLQ.
 | Identity & Access | **Tenant** | `tenants` | No — registry (see §4) | `000003` |
 | Identity & Access | **User** | `users` + `memberships` (RBAC) | Yes | `000004` |
 | Identity & Access | **ApiKey** | `api_keys` | Yes | `000005` |
+| Identity & Access | **OAuthIdentity** | `oauth_identities` (links user ↔ Google) | Yes | `000017` |
 | Identity & Access | **RetentionPolicy** | `retention_policies` (1:1 tenant) | Yes | `000006` |
 | Workspace | **SavedQuery** | `saved_queries` | Yes | `000007` |
 | Workspace | **Dashboard** | `dashboards` (panels inline JSONB) | Yes | `000008` |
@@ -65,6 +66,7 @@ erDiagram
     tenants ||--o{ users : "owns"
     tenants ||--o{ memberships : "scopes"
     tenants ||--o{ api_keys : "owns"
+    tenants ||--o{ oauth_identities : "owns"
     tenants ||--|| retention_policies : "has"
     tenants ||--o{ saved_queries : "owns"
     tenants ||--o{ dashboards : "owns"
@@ -72,6 +74,7 @@ erDiagram
     tenants ||--o{ log_events : "owns (logical; no FK)"
 
     users ||--o{ memberships : "granted role"
+    users ||--o{ oauth_identities : "linked OIDC identity"
     saved_queries |o..o{ alert_rules : "referenced by id"
     saved_queries |o..o{ dashboards : "panel refs by id"
 
@@ -99,6 +102,15 @@ erDiagram
         bytea key_hash "sha256(secret)"
         text_arr scopes
         timestamptz revoked_at
+    }
+    oauth_identities {
+        uuid id PK
+        uuid tenant_id FK
+        uuid user_id FK
+        oauth_provider provider "google"
+        text provider_sub "Google sub; UK(provider,sub) GLOBAL"
+        text email "link-time snapshot, normalized"
+        timestamptz last_login_at
     }
     retention_policies {
         uuid tenant_id PK,FK
@@ -229,6 +241,64 @@ independently, including the "context unset ⇒ zero rows" backstop.
   `log_events`, so log reads remain RLS-governed. This is consistent with `platform_operator`
   being barred from tenant log content (NFR-5.4).
 
+### 4.6 OIDC identity resolution — the by-sub lookup under RLS (the third chicken-and-egg)
+
+Google OAuth subsequent-login has the **same** "the credential establishes the
+tenant" problem as the api-key lookup (§4.5), but worse: an api key embeds the
+tenant slug, so ingest can resolve `tenants.public_id → id`, arm RLS, then do the
+scoped lookup. A Google `id_token` carries **only** `sub` (+ `email`) — **no
+tenant hint**. And per the threat model (§0, R3), `sub` is *authoritative for
+identity*: subsequent login must resolve `sub → tenant` and then cross-check that
+tenant against the `state` slug, so we cannot simply trust `state` to arm RLS for
+the lookup.
+
+Under `FORCE ROW LEVEL SECURITY`, a `SELECT … WHERE provider_sub = $1` with no
+`app.tenant_id` set returns **zero rows** (fail-closed) — indistinguishable from
+"not linked yet". So the by-sub lookup needs a controlled, minimal RLS bypass.
+
+**Two access paths for `oauth_identities` (both must hold under FORCE RLS):**
+
+| Path | Tenant known? | Mechanism |
+|---|---|---|
+| **First link** | Yes — from verified `state` slug | `SET LOCAL app.tenant_id`, match `users(tenant_id, email)`, **INSERT under RLS**. The global `UNIQUE(provider, provider_sub)` index still enforces across *invisible* tenants (RLS filters reads, not unique enforcement), so a sub already linked anywhere → unique violation → 401/409. |
+| **Subsequent login** | No — `sub` is authoritative | Call **`app.resolve_oauth_identity_by_sub(provider, sub)`** to get `(tenant_id, user_id)`; then `SET LOCAL app.tenant_id = <resolved>`, cross-check vs `state` (mismatch → 401), `UPDATE last_login_at` **under RLS**. |
+
+**Recommended mechanism for the by-sub lookup — `SECURITY DEFINER` resolver
+function (chosen).** `000017` ships
+`app.resolve_oauth_identity_by_sub(p_provider oauth_provider, p_provider_sub text)
+RETURNS TABLE(tenant_id uuid, user_id uuid)`, `STABLE`, `SECURITY DEFINER`, with
+`SET search_path = pg_catalog, public, app` (the 000016 hardening shape). It runs
+as its owner (the migrate/admin role, a superuser in this deployment), which
+bypasses FORCE RLS, and returns **only** the `(tenant_id, user_id)` tuple for an
+**exact** `(provider, sub)` match — never a scan, never another column, never
+another table; the global unique index guarantees ≤ 1 row. `EXECUTE` is **revoked
+from `PUBLIC`** (a SECURITY DEFINER function is public-executable by default) and
+granted to **`logalot_app` only**.
+
+This keeps the control-plane on its **single `logalot_app` pool** (it calls the
+resolver to learn the authoritative tenant, then re-enters that tenant's context
+for everything else), exactly mirroring how the api-key authenticator resolves
+slug→tenant *before* arming RLS (`pkg/auth/authenticator.go`,
+`resolveKey → SET LOCAL → scoped SELECT`).
+
+**Why a function and not a BYPASSRLS role.** The cross-tenant *scanners*
+(alert-evaluator, retention-worker, §4.5) use a dedicated `BYPASSRLS` role because
+they need to read *many* tenants' rows from a *separate* worker process. The OIDC
+lookup is a *single-tuple point lookup* inside the control-plane process, which
+otherwise runs all its writes under RLS — giving that process a second BYPASSRLS
+connection would be a standing footgun (one mis-routed query disables the tenant
+backstop for control-plane). A `SECURITY DEFINER` function gated to one signature
+is the tighter grant. **Documented fallback** (if the migrate/admin role is ever
+de-superuser'd without `BYPASSRLS`, which is what makes the bypass work): switch to
+a dedicated `BYPASSRLS` role granted `SELECT` on `oauth_identities` only, consumed
+by control-plane via a separate small pool for this one lookup.
+
+> **Lead-engineer action:** the control-plane OIDC authenticator must (a) call
+> `app.resolve_oauth_identity_by_sub` *before* arming RLS on the subsequent-login
+> path, (b) treat a unique-violation on first-link INSERT as "already linked
+> elsewhere" (401/409, not a 500), and (c) normalize `id_token.email`
+> identically to user provisioning before the first-link `users` match (see §6).
+
 ---
 
 ## 5. Hot log store — `log_events` in detail (ADR-0003)
@@ -310,3 +380,66 @@ Served by a backward scan of the PK index; cost is independent of page depth.
 - `app.ensure_log_events_partitions(p_days_ahead int DEFAULT 7)` — ensures today..+N exist; runs
   on a schedule so ingest never falls into the default. The migration bootstraps today..+7 so the
   vertical slice works immediately after `migrate up`.
+
+---
+
+## 6. OAuth identity store — `oauth_identities` in detail (ADR-0007, Google OAuth)
+
+Full DDL: [`/migrations/000017_oauth_identities.up.sql`](../../migrations/000017_oauth_identities.up.sql).
+Links an **existing** logalot user to an external OIDC identity (Google in v1).
+**Invite-only:** the table never creates a user — a row appears only when a verified
+Google `id_token` (`email_verified=true`) matches an already-provisioned user
+*inside the tenant carried in the OAuth `state`*. Tenant resolution and the by-sub
+lookup are specified in §4.6; the global-uniqueness invariant is the load-bearing
+decision below.
+
+### 6.1 Column set
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | `uuid` PK `gen_random_uuid()` | Surrogate key. |
+| `tenant_id` | `uuid` NOT NULL → `tenants(id)` | RLS key; leading column of the per-tenant uniqueness and the composite user FK. |
+| `user_id` | `uuid` NOT NULL | The linked logalot user. Same-tenant integrity enforced via the composite FK below (not a bare `users(id)` FK). |
+| `provider` | `oauth_provider` enum NOT NULL DEFAULT `'google'` | House style (enums for closed, load-bearing sets, 000002). Only `'google'` ships; a new provider is one `ALTER TYPE … ADD VALUE`. |
+| `provider_sub` | `text` NOT NULL | Google's stable subject (`sub`) — the **authoritative, immutable** identity key after first link. |
+| `email` | `text` NOT NULL | **Link-time snapshot** of the matched, app-normalized email. Audit/consistency only — **not** a resolution key (identity is pinned to `sub`, threat model R13). |
+| `last_login_at` | `timestamptz` NULL | Bumped on each successful OIDC login (subsequent-login path). |
+| `created_at` / `updated_at` | `timestamptz` NOT NULL `now()` | `updated_at` maintained by `trg_oauth_identities_updated` (the shared `app.set_updated_at()` trigger, like `users`). |
+
+### 6.2 Constraints & indexes
+
+| Constraint / index | Purpose |
+|---|---|
+| `UNIQUE (provider, provider_sub)` — **GLOBAL** | One Google account ↔ exactly one logalot user, **ever**, across all tenants. RLS filters *reads* but **not** unique-index enforcement, so this rejects a duplicate `sub` even against an RLS-invisible tenant's row. Also the index that **backs the by-sub resolver** (point lookup, ≤ 1 row). |
+| `UNIQUE (tenant_id, user_id, provider)` | One linked identity per user per provider (tenant-scoped ⇒ RLS-friendly). Expresses the PoC "one Google account per user" intent; relaxable. |
+| `FOREIGN KEY (tenant_id, user_id) → users(tenant_id, id)` ON DELETE CASCADE | Same-tenant integrity: a link's tenant must equal the user's home tenant (mirrors `memberships`/`refresh_tokens`); deleting the user removes the link. |
+| `tenant_id → tenants(id)` ON DELETE CASCADE | Inline registry FK (matches `refresh_tokens`). |
+| *(no bare `(tenant_id)` index)* | `UNIQUE(tenant_id, user_id, provider)` is tenant-leading and serves tenant-scoped scans; a single-column index would only add write cost (same reasoning as `refresh_tokens`). |
+
+RLS is the identical, audited shape (§4.2): `ENABLE` + `FORCE ROW LEVEL SECURITY`,
+policy `USING / WITH CHECK (tenant_id = app.current_tenant_id())`. The by-sub
+resolver (`app.resolve_oauth_identity_by_sub`, §4.6) is the **only** sanctioned way
+to read a row without an armed tenant, and it returns just `(tenant_id, user_id)`.
+
+### 6.3 Email normalization (threat model R14)
+
+`oauth_identities.email` stores the **already-normalized** email (lowercase + trim +
+NFC), the *same* normalization user provisioning applies — so the first-link match
+`users(tenant_id, normalize(id_token.email))` is apples-to-apples. Normalization
+is an **application-layer** responsibility applied identically at provisioning and
+at OAuth match; it is **not** enforced in the DDL, consistent with `users.email`
+(also plain `text`, normalized in the app). Do not unicode-fold beyond NFC (avoids
+false homograph matches). This column is a snapshot, not a key, so it carries no
+index and no unique constraint of its own.
+
+### 6.4 The global-uniqueness limitation (PoC, locked)
+
+`UNIQUE(provider, provider_sub)` is **global** by decision. Consequence: a person
+who is a member of two tenants (same email → two `users` rows) can Google-login
+**only** to the tenant they linked first; the second tenant remains password-only
+for that Google account. **Documented future change** (not implemented): to support
+multi-tenant membership via one Google account, relax to
+`UNIQUE(tenant_id, provider, provider_sub)` and *always* scope resolution by
+`state.tenant_id` — at which point the tenant is always known on subsequent login,
+and the `SECURITY DEFINER` by-sub resolver (§4.6) can be **dropped** entirely. See
+threat model §0 escalation.

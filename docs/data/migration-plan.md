@@ -31,6 +31,11 @@ migrations/
   000010_log_events.{up,down}.sql                   Hot store: partitioned parent + RLS + default
                                                     partition + lifecycle functions + bootstrap window
   000011_logalot_app_role.{up,down}.sql             NOSUPERUSER, non-BYPASSRLS app login + grants
+  …                                                 000012–000016: refresh_tokens, alert-evaluator,
+                                                    alert_rules query-source, evaluator grant,
+                                                    retention-worker (see /migrations)
+  000017_oauth_identities.{up,down}.sql             OAuthIdentity (RLS) + GLOBAL UNIQUE(provider,sub)
+                                                    + by-sub SECURITY DEFINER resolver (§6)
   seeds/dev_tenant.sql                              dev tenant + admin + API key + retention (manual)
 ```
 
@@ -157,3 +162,56 @@ Mechanics that matter:
   `TenantContext{tenant_id=…d1}` → publish → processor inserts into `log_events` under
   `SET LOCAL app.tenant_id` → live tail on `tail:…d1`. Ingesting for `dev` can never appear under
   any other tenant (RLS + channel naming).
+
+---
+
+## 6. Migration `000017` — Google OAuth identity linking (`oauth_identities`)
+
+Adds the OIDC account-link table (Identity & Access, ADR-0007). Schema detail and
+the access-pattern reasoning live in [`model.md` §6 / §4.6](./model.md); this is the
+operational summary.
+
+**`up` ships:**
+
+- `CREATE TYPE oauth_provider AS ENUM ('google')` — house enum style (000002).
+- `CREATE TABLE oauth_identities` — RLS (`ENABLE` + `FORCE`) with the standard
+  `tenant_id = app.current_tenant_id()` policy; `GLOBAL UNIQUE(provider, provider_sub)`;
+  `UNIQUE(tenant_id, user_id, provider)`; composite FK `(tenant_id, user_id) →
+  users(tenant_id, id)`; `updated_at` trigger.
+- `CREATE FUNCTION app.resolve_oauth_identity_by_sub(oauth_provider, text)
+  RETURNS TABLE(tenant_id, user_id)` — `SECURITY DEFINER`, `STABLE`,
+  `SET search_path = pg_catalog, public, app`; **`REVOKE EXECUTE … FROM PUBLIC`**
+  then `GRANT EXECUTE … TO logalot_app`. The only sanctioned by-sub lookup without
+  an armed tenant (the OIDC chicken-and-egg, model.md §4.6).
+
+**Grants.** Table DML for `logalot_app` is covered by the `ALTER DEFAULT
+PRIVILEGES` from `000011` (this migration runs as the same migrate role), so no
+re-grant — identical to `000012`+. The resolver function is the exception: it is
+SECURITY DEFINER, so the `PUBLIC` revoke is mandatory and explicit.
+
+**Ordering / `down`.** `000016` is the prior head (retention-worker); this is
+`000017`, no in-flight conflicts. `down` drops the function **before** the type
+(the signature references `oauth_provider`) and the table before the type (the
+`provider` column references it): function → table → type.
+
+**Validation to run (mirrors §4 + the threat model's testable requirements):**
+
+- `up` 000016→000017 clean; `down` 000017→000016 clean (full up/down/up cycle).
+- RLS fail-closed: `SELECT * FROM oauth_identities` with no `app.tenant_id` ⇒ 0 rows;
+  an INSERT stamped with a foreign `tenant_id` ⇒ rejected by `WITH CHECK`.
+- Global uniqueness across RLS: insert a `(provider, sub)` under tenant A, then
+  attempt the same `sub` under tenant B ⇒ **unique violation** even though B cannot
+  see A's row (proves RLS filters reads, not unique enforcement).
+- By-sub resolver: `SELECT * FROM app.resolve_oauth_identity_by_sub('google', $sub)`
+  as `logalot_app` with **no** tenant context returns the `(tenant_id, user_id)`
+  tuple (bypass works); a non-existent sub returns 0 rows; `EXECUTE` is denied to a
+  role other than `logalot_app` / owner (PUBLIC revoke holds).
+- Same-tenant FK: linking `user_id` from tenant A while `tenant_id` = B ⇒ FK
+  violation.
+
+**Optional dev seed.** The dev seed (§5) may, after `SET LOCAL app.tenant_id =
+'<dev id>'`, insert a dev `oauth_identities` row for the dev admin
+(`provider='google'`, a placeholder `provider_sub`, normalized
+`email='admin@dev.local'`) so the OAuth slice is demoable without a live Google
+round-trip. Keep it `ON CONFLICT DO NOTHING`, DEV ONLY; a real link is written by
+the control-plane callback.
