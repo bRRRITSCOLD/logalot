@@ -397,6 +397,9 @@ export interface GoogleTokenExchangeClient {
 //   reject_invalid_token    — id_token failed alg/iss/aud/exp/nonce verification.
 //   reject_no_provisioned_user — no email-matched user in this tenant (invite-only guard).
 //   reject_account_inactive    — user exists but is suspended / role-stripped.
+//   reject_identity_conflict   — the email-matched user is already linked to a DIFFERENT
+//                                Google sub in this tenant (UNIQUE(tenant_id,user_id,provider));
+//                                a re-pin attempt. Rejected as 401, never silently re-linked.
 
 export type OAuthAuditOutcome =
   | 'first_link'
@@ -405,7 +408,8 @@ export type OAuthAuditOutcome =
   | 'reject_exchange_failure'
   | 'reject_invalid_token'
   | 'reject_no_provisioned_user'
-  | 'reject_account_inactive';
+  | 'reject_account_inactive'
+  | 'reject_identity_conflict';
 
 export interface OAuthAuditEvent {
   /** Tenant that owns the auth flow — null only on reject_invalid_state (state is absent). */

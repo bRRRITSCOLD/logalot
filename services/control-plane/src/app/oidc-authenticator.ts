@@ -1,6 +1,11 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { normalizeEmail } from '../domain/email';
-import { NotFoundError, ServiceUnavailableError, UnauthorizedError } from '../domain/errors';
+import {
+  ConflictError,
+  NotFoundError,
+  ServiceUnavailableError,
+  UnauthorizedError,
+} from '../domain/errors';
 import { assembleRefreshToken } from '../domain/refresh-token';
 import type { Role } from '../domain/roles';
 import { sha256 } from '../domain/secret-hash';
@@ -284,13 +289,27 @@ export class OidcAuthenticator {
         this.audit({ tenantId, userId: null, hashedSub, outcome: 'reject_no_provisioned_user' });
         throw new UnauthorizedError('no provisioned account for this Google identity');
       }
-      // Link the Google identity to the existing user (idempotent on 23505).
-      const linked = await deps.oauthIdentities.linkFirst(tenantId, {
-        userId: userRecord.id,
-        provider: 'google',
-        providerSub: claims.sub,
-        email: normalizedEmail,
-      });
+      // Link the Google identity to the existing user. Idempotent on a concurrent
+      // SAME-sub first-link (23505 on the sub uniqueness → returns the winner). But a
+      // DIFFERENT-sub conflict for an already-linked user (23505 on
+      // UNIQUE(tenant_id,user_id,provider)) is surfaced as a ConflictError: this user
+      // is sub-pinned to another Google identity (threat model R13), so reject 401 —
+      // never silently re-link, and never leak which constraint tripped.
+      let linked: Awaited<ReturnType<typeof deps.oauthIdentities.linkFirst>>;
+      try {
+        linked = await deps.oauthIdentities.linkFirst(tenantId, {
+          userId: userRecord.id,
+          provider: 'google',
+          providerSub: claims.sub,
+          email: normalizedEmail,
+        });
+      } catch (err) {
+        if (err instanceof ConflictError) {
+          this.audit({ tenantId, userId: null, hashedSub, outcome: 'reject_identity_conflict' });
+          throw new UnauthorizedError('no provisioned account for this Google identity');
+        }
+        throw err;
+      }
       userId = linked.userId;
       isFirstLink = true;
     }

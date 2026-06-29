@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { type KeyLike, SignJWT, createLocalJWKSet, exportJWK, generateKeyPair } from 'jose';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
+import { createLocalJWKSet, exportJWK, generateKeyPair, type KeyLike, SignJWT } from 'jose';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { JoseGoogleIdTokenVerifier } from '../../src/adapters/crypto/jose-google-verifier';
 import { JoseTokenService } from '../../src/adapters/crypto/jose-token-service';
 import { NodeIdGenerator, NodeSecretGenerator } from '../../src/adapters/crypto/node-random';
@@ -12,8 +12,8 @@ import { PgRefreshTokenRepository } from '../../src/adapters/postgres/refresh-to
 import { PgTenantRepository } from '../../src/adapters/postgres/tenant-repository';
 import { PgUserRepository } from '../../src/adapters/postgres/user-repository';
 import { InMemoryOAuthStateStore } from '../../src/adapters/redis/in-memory-oauth-state-store';
-import type { GoogleTokenExchangeClient, GoogleTokenExchangeResult } from '../../src/app/ports';
 import { OidcAuthenticator } from '../../src/app/oidc-authenticator';
+import type { GoogleTokenExchangeClient, GoogleTokenExchangeResult } from '../../src/app/ports';
 import { buildContainer } from '../../src/container';
 import { armedQuery, type ItEnv, seedPlatformOperator, setupEnv, teardownEnv } from './helpers';
 
@@ -215,6 +215,10 @@ async function setupOidcEnv(): Promise<OidcEnv> {
     logger: false,
     // Disable trustProxy so inject() resolves IPs correctly (no XFF forwarding).
     trustProxy: false,
+    // Lift the callback per-IP rate limit: every test hits from the same loopback
+    // IP, so the production default (20/60s) would 429 later tests. Rate-limiting
+    // has its own dedicated coverage; this suite exercises the auth flow.
+    oidcRateLimitMax: 100_000,
   });
   await oidcApp.ready();
 
@@ -318,7 +322,14 @@ async function beginAuthorize(
 async function completeCallback(
   app: FastifyInstance,
   fakeGoogle: FakeGoogleOidc,
-  opts: { code: string; state: string; sub: string; email: string; nonce: string; tenantSlug?: string },
+  opts: {
+    code: string;
+    state: string;
+    sub: string;
+    email: string;
+    nonce: string;
+    tenantSlug?: string;
+  },
 ): Promise<{
   accessToken: string;
   refreshToken: string;
@@ -385,6 +396,21 @@ describe('OIDC end-to-end (fake Google, testcontainers Postgres)', () => {
 
   afterAll(() => teardownOidcEnv(env));
 
+  // Provision a FRESH user per test that needs a clean first-link. UNIQUE(tenant_id,
+  // user_id, provider) pins a user to exactly one Google sub, so a test that links a
+  // NEW sub to a SHARED user now (correctly) 401s — every first-link case must own its
+  // user. Random emails keep each test independent of suite order.
+  async function freshUserA(): Promise<string> {
+    const email = `oidc-a-${randomUUID()}@example.com`;
+    await provisionAdmin(app, opsToken, tenantAId, email, 'pass-fresh-1234');
+    return email;
+  }
+  async function freshUserB(): Promise<string> {
+    const email = `oidc-b-${randomUUID()}@b.example.com`;
+    await provisionAdmin(app, opsToken, tenantBId, email, 'pass-fresh-1234');
+    return email;
+  }
+
   // ── Happy path: first-link ─────────────────────────────────────────────────
 
   describe('happy path — first-link (first Google login for this tenant)', () => {
@@ -444,23 +470,27 @@ describe('OIDC end-to-end (fake Google, testcontainers Postgres)', () => {
 
   describe('happy path — subsequent login (returning user, identity already linked)', () => {
     it('second callback resolves session without calling linkFirst again', async () => {
-      // First login to ensure the identity is linked.
+      const email = await freshUserA();
+      const sub = `sub-returning-${randomUUID()}`;
+
+      // First login links the identity.
       const auth1 = await beginAuthorize(app, 'tenant-a');
       await completeCallback(app, fakeGoogle, {
         code: randomUUID(),
         state: auth1.state,
-        sub: 'google-sub-alice-returning',
-        email: 'alice@example.com',
+        sub,
+        email,
         nonce: auth1.nonce,
       });
 
-      // Second login with the same sub.
+      // Second login with the SAME sub → returning path (findByProviderSub hits,
+      // no linkFirst).
       const auth2 = await beginAuthorize(app, 'tenant-a');
       const session2 = await completeCallback(app, fakeGoogle, {
         code: randomUUID(),
         state: auth2.state,
-        sub: 'google-sub-alice-returning',
-        email: 'alice@example.com',
+        sub,
+        email,
         nonce: auth2.nonce,
       });
 
@@ -472,29 +502,28 @@ describe('OIDC end-to-end (fake Google, testcontainers Postgres)', () => {
   // ── Multi-tenant membership (R3 structural / R17) ─────────────────────────
 
   describe('multi-tenant membership (same Google sub, tenant-scoped sessions)', () => {
-    const SHARED_SUB = 'google-sub-multi-tenant';
-
-    it('links the same sub in tenant A and gets a tenant-A session', async () => {
-      // Provision a user alice@example.com already exists in A.
+    it('links a sub in tenant A and gets a tenant-A session', async () => {
+      const emailA = await freshUserA();
       const authA = await beginAuthorize(app, 'tenant-a');
       const sessionA = await completeCallback(app, fakeGoogle, {
         code: randomUUID(),
         state: authA.state,
-        sub: SHARED_SUB,
-        email: 'alice@example.com',
+        sub: `sub-mt-a-${randomUUID()}`,
+        email: emailA,
         nonce: authA.nonce,
       });
 
       expect(sessionA.tenantId).toBe(tenantAId);
     });
 
-    it('links the same sub in tenant B and gets a tenant-B session', async () => {
+    it('links a sub in tenant B and gets a tenant-B session', async () => {
+      const emailB = await freshUserB();
       const authB = await beginAuthorize(app, 'tenant-b');
       const sessionB = await completeCallback(app, fakeGoogle, {
         code: randomUUID(),
         state: authB.state,
-        sub: SHARED_SUB,
-        email: 'alice@b.example.com',
+        sub: `sub-mt-b-${randomUUID()}`,
+        email: emailB,
         nonce: authB.nonce,
         tenantSlug: 'tenant-b',
       });
@@ -502,13 +531,20 @@ describe('OIDC end-to-end (fake Google, testcontainers Postgres)', () => {
       expect(sessionB.tenantId).toBe(tenantBId);
     });
 
-    it('sessions from A and B have different tenantId values', async () => {
+    it('the SAME Google sub links independently in A and B with distinct tenant-scoped sessions', async () => {
+      // The whole point of UNIQUE(tenant_id, provider, provider_sub) being
+      // tenant-leading: one Google account can be a member of multiple tenants,
+      // one row per tenant, each pinned to that tenant's own user.
+      const sharedSub = `sub-mt-shared-${randomUUID()}`;
+      const emailA = await freshUserA();
+      const emailB = await freshUserB();
+
       const authA = await beginAuthorize(app, 'tenant-a');
       const sessionA = await completeCallback(app, fakeGoogle, {
         code: randomUUID(),
         state: authA.state,
-        sub: SHARED_SUB,
-        email: 'alice@example.com',
+        sub: sharedSub,
+        email: emailA,
         nonce: authA.nonce,
       });
 
@@ -516,8 +552,8 @@ describe('OIDC end-to-end (fake Google, testcontainers Postgres)', () => {
       const sessionB = await completeCallback(app, fakeGoogle, {
         code: randomUUID(),
         state: authB.state,
-        sub: SHARED_SUB,
-        email: 'alice@b.example.com',
+        sub: sharedSub,
+        email: emailB,
         nonce: authB.nonce,
         tenantSlug: 'tenant-b',
       });
@@ -531,30 +567,33 @@ describe('OIDC end-to-end (fake Google, testcontainers Postgres)', () => {
   // ── Cross-tenant isolation: sub only in A → login via B → 401 ────────────
 
   describe('cross-tenant isolation (sub linked in A but not in B)', () => {
-    const ONLY_IN_A_SUB = 'google-sub-only-in-a';
-
     it('sub linked only in tenant A: callback via tenant-B page returns 401', async () => {
+      const emailA = await freshUserA();
+      const sub = `sub-only-a-${randomUUID()}`;
+
       // Link in A.
       const authA = await beginAuthorize(app, 'tenant-a');
       await completeCallback(app, fakeGoogle, {
         code: randomUUID(),
         state: authA.state,
-        sub: ONLY_IN_A_SUB,
-        email: 'alice@example.com',
+        sub,
+        email: emailA,
         nonce: authA.nonce,
       });
 
-      // Attempt via B: same sub but no user with this email in tenant B.
+      // Attempt via B: same sub + same email, but that email is NOT provisioned
+      // in tenant B → invite-only guard rejects with 401.
       const authB = await beginAuthorize(app, 'tenant-b');
-      fakeGoogle.registerCode('code-b-wrong-sub', {
-        sub: ONLY_IN_A_SUB,
-        email: 'alice@example.com', // not provisioned in B
+      const codeB = `code-b-wrong-sub-${randomUUID()}`;
+      fakeGoogle.registerCode(codeB, {
+        sub,
+        email: emailA, // provisioned only in A
         nonce: authB.nonce,
       });
       const resB = await app.inject({
         method: 'POST',
         url: '/v1/auth/oidc/google/callback',
-        payload: { tenantSlug: 'tenant-b', code: 'code-b-wrong-sub', state: authB.state },
+        payload: { tenantSlug: 'tenant-b', code: codeB, state: authB.state },
       });
 
       expect(resB.statusCode).toBe(401);
@@ -744,68 +783,66 @@ describe('OIDC end-to-end (fake Google, testcontainers Postgres)', () => {
   // (first-link email → user; subsequent: sub must match the linked sub.)
 
   describe('R13 — sub-pinned: different sub for linked email → rejected', () => {
-    it('callback with a new sub for an already-linked email → 401', async () => {
-      // First link: sub = 'google-sub-pinned-original'.
+    it('different sub for an already-linked user → clean 401, original pin untouched (no 500, no silent re-link)', async () => {
+      // Dedicated user so this test owns its link state regardless of suite order
+      // (alice is linked/relinked by other tests; sub-pinning makes link state
+      // order-dependent, so we must not piggyback on it).
+      const email = 'r13-pinned@example.com';
+      await provisionAdmin(app, opsToken, tenantAId, email, 'pass-r13-1234');
+
+      // First login pins this user to the ORIGINAL sub.
       const auth1 = await beginAuthorize(app, 'tenant-a');
-      await completeCallback(app, fakeGoogle, {
+      const linked = await completeCallback(app, fakeGoogle, {
         code: randomUUID(),
         state: auth1.state,
-        sub: 'google-sub-pinned-original',
-        email: 'alice@example.com',
+        sub: 'r13-sub-original',
+        email,
         nonce: auth1.nonce,
       });
+      expect(linked.accessToken).toBeTruthy();
+      const userId = linked.userId;
 
-      // Second attempt with a DIFFERENT sub but the same email.
-      // No existing identity for 'google-sub-pinned-different', so it tries
-      // first-link. But there is NO second provisioned user for alice@example.com
-      // that hasn't been linked yet — only one user per email per tenant.
-      // The invite-only guard will find the user but linkFirst will create a
-      // SECOND identity row for the same user, which is a separate behaviour.
-      // R13 is enforced at the provisioned-user layer: the same email can only
-      // be used once per tenant, so a different sub claiming the same email
-      // effectively links a second identity — the control-plane must ensure
-      // the session is still scoped to the correct user.
+      // Snapshot the user's linked Google identities before the re-pin attempt.
+      const before = await armedQuery<{ provider_sub: string }>(
+        env.appPool,
+        tenantAId,
+        `SELECT provider_sub FROM oauth_identities WHERE provider = 'google' AND user_id = $1`,
+        [userId],
+      );
+      expect(before.map((r) => r.provider_sub)).toEqual(['r13-sub-original']);
+
+      // Same email, DIFFERENT sub. The user is already sub-pinned via
+      // UNIQUE(tenant_id, user_id, provider): findByProviderSub(newSub) → null →
+      // the invite-only guard finds the user → linkFirst INSERT trips THAT
+      // constraint (23505), and its re-SELECT by the NEW (provider, sub) finds
+      // zero rows → ConflictError → 401.
       //
-      // The strict R13 check: the first sub is pinned once linked; the second
-      // sub for the same email succeeds only if the user is still active.
-      // Our e2e verifies: a NEW sub that was never linked → first-link path →
-      // SHOULD succeed for the same provisioned user (idempotent).
-      //
-      // For a pure "different sub → 401" test we rely on the production
-      // sub-pinning enforced via the oauth_identities UNIQUE constraint:
-      // a single (tenant_id, provider, provider_sub) row means a different
-      // sub cannot claim the same slot. The user lookup finds the user but the
-      // second linkFirst inserts a distinct row (different sub) — both succeed.
-      //
-      // The real R13 invariant is: if a user is already linked to sub X, a
-      // callback presenting sub Y (even with the same email) creates a SEPARATE
-      // identity row — or, in an impl that strictly pins, is rejected. The test
-      // here verifies the key isolation: sub X session → correct user.
+      // Asserting 401 (NOT 500) locks in the fix for the rows[0]-undefined deref
+      // that previously crashed this exact rejection path. Asserting the row set
+      // is unchanged locks in "no silent account re-pin" — a forged-but-same-email
+      // sub must never hijack an already-linked account (threat model R13).
       const auth2 = await beginAuthorize(app, 'tenant-a');
-      fakeGoogle.registerCode('code-different-sub', {
-        sub: 'google-sub-pinned-different',
-        email: 'alice@example.com', // same email, different sub
+      fakeGoogle.registerCode('code-r13-different', {
+        sub: 'r13-sub-different',
+        email, // same email, different sub
         nonce: auth2.nonce,
       });
       const res = await app.inject({
         method: 'POST',
         url: '/v1/auth/oidc/google/callback',
-        payload: { tenantSlug: 'tenant-a', code: 'code-different-sub', state: auth2.state },
+        payload: { tenantSlug: 'tenant-a', code: 'code-r13-different', state: auth2.state },
       });
 
-      // The user IS provisioned (email matches), so first-link succeeds for the
-      // different sub — the system creates a second oauth_identity row.
-      // This is expected per the current implementation (no strict single-sub-per-user
-      // enforcement at the DB layer — that would require an additional unique constraint).
-      // The test asserts the response is either 200 (accepted) or the session is
-      // correctly scoped to tenant A (not a cross-tenant escape).
-      if (res.statusCode === 200) {
-        const session = res.json() as { tenantId: string };
-        expect(session.tenantId).toBe(tenantAId);
-      } else {
-        // If the impl enforces strict sub-pinning, this is 401.
-        expect(res.statusCode).toBe(401);
-      }
+      expect(res.statusCode).toBe(401);
+
+      // The original pin is intact and NO new identity row was created.
+      const after = await armedQuery<{ provider_sub: string }>(
+        env.appPool,
+        tenantAId,
+        `SELECT provider_sub FROM oauth_identities WHERE provider = 'google' AND user_id = $1`,
+        [userId],
+      );
+      expect(after.map((r) => r.provider_sub)).toEqual(['r13-sub-original']);
     });
   });
 
@@ -813,28 +850,29 @@ describe('OIDC end-to-end (fake Google, testcontainers Postgres)', () => {
 
   describe('R14 — email normalization (case-insensitive first-link match)', () => {
     it('id_token with uppercase email matches the provisioned lowercase user', async () => {
-      // The provisioned user is alice@example.com (lowercase).
-      // The id_token returns ALICE@EXAMPLE.COM — normalizeEmail must match them.
+      // Provisioned lowercase; the id_token returns the UPPERCASE variant —
+      // normalizeEmail must match them on first-link.
+      const email = await freshUserA();
       const { state, nonce } = await beginAuthorize(app, 'tenant-a');
       const session = await completeCallback(app, fakeGoogle, {
         code: randomUUID(),
         state,
-        sub: 'google-sub-normalized',
-        email: 'ALICE@EXAMPLE.COM', // uppercase
+        sub: `sub-norm-${randomUUID()}`,
+        email: email.toUpperCase(),
         nonce,
       });
-      // Should succeed — normalized to alice@example.com.
       expect(session.accessToken).toBeTruthy();
       expect(session.tenantId).toBe(tenantAId);
     });
 
     it('id_token with mixed-case email with surrounding whitespace is normalized', async () => {
+      const email = await freshUserA();
       const { state, nonce } = await beginAuthorize(app, 'tenant-a');
       const session = await completeCallback(app, fakeGoogle, {
         code: randomUUID(),
         state,
-        sub: 'google-sub-whitespace-normalized',
-        email: '  Alice@Example.COM  ',
+        sub: `sub-norm-ws-${randomUUID()}`,
+        email: `  ${email.toUpperCase()}  `, // mixed/upper + surrounding whitespace
         nonce,
       });
       expect(session.accessToken).toBeTruthy();
