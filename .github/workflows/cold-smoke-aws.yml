@@ -1,0 +1,150 @@
+name: cold-smoke-aws
+
+# Real-AWS cold-tier smoke canary (decision 016 §7).
+#
+# When to run
+# -----------
+# manual  — `workflow_dispatch` lets an operator trigger this after
+#            a `terraform apply` lands the cold-tier resources (T18).
+# auto    — runs after a successful tf-apply on main (when that job
+#            is added; currently triggered manually only).
+#
+# Secrets / OIDC
+# --------------
+# No long-lived AWS credentials.  The job assumes `ci_smoke_role_arn`
+# (Terraform output from infra/aws/ci.tf) via OIDC.  The role ARN is
+# stored as a GitHub Actions secret CI_SMOKE_ROLE_ARN and must be set
+# once after the first `terraform apply`.
+#
+# Env vars injected into the test
+# --------------------------------
+# COLD_BUCKET              — ${project}-${env}-cold
+# COLD_GLUE_DB             — ${project}_${env}
+# COLD_ATHENA_RESULT_BUCKET — s3://${project}-${env}-athena-results/results/
+# COLD_ATHENA_WORKGROUP    — ${project}-${env}
+# AWS_REGION               — us-east-1 (default; overridable via input)
+#
+# Values are derived from the Terraform naming convention and can be
+# overridden via `workflow_dispatch` inputs for non-poc environments.
+#
+# Acceptance gate
+# ---------------
+# ALL sub-tests in TestColdTierSmoke_AWS must pass before
+# COLD_ENABLED=true is merged to main (decision 016 §6).
+
+on:
+  workflow_dispatch:
+    inputs:
+      env:
+        description: "Deployment environment (matches Terraform var.env)"
+        required: false
+        default: "poc"
+        type: choice
+        options:
+          - poc
+          - staging
+          - prod
+      aws_region:
+        description: "AWS region"
+        required: false
+        default: "us-east-1"
+        type: string
+
+# No extra permissions for the default GITHUB_TOKEN; the AWS session
+# is minted via id-token: write (OIDC) only.
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  GO_VERSION: "1.26"
+
+jobs:
+  cold_smoke_aws:
+    name: cold-tier smoke (real AWS)
+    runs-on: ubuntu-latest
+
+    # The `cold-smoke` GitHub Environment gates OIDC: ci.tf trust policy is
+    # scoped to `repo:bRRRITSCOLD/logalot:environment:cold-smoke`, so the role
+    # can only be assumed by jobs running in this environment.  Configure
+    # environment protection rules (required reviewers, branch policies) in
+    # GitHub Settings → Environments → cold-smoke.
+    #
+    # NOTE: CI_SMOKE_ROLE_ARN must be a secret on the `cold-smoke` environment
+    # (not a repo-level secret) because environment secrets override repo secrets
+    # and the role is bound to the poc env.  If staging/prod are added, create a
+    # separate environment + role per env.
+    environment: cold-smoke
+
+    # Prevent concurrent runs — Athena queries are metered; duplicate
+    # runs waste cost and can cause partition-registration races.
+    concurrency:
+      group: cold-smoke-aws-${{ github.ref }}
+      cancel-in-progress: false
+
+    steps:
+      # SHA-pinned to guard the OIDC supply chain (release-images.yml pattern).
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      # SHA-pinned to v5.6.0.
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: go.work
+
+      # -----------------------------------------------------------------------
+      # OIDC — assume the least-privilege CI smoke role (ci.tf).
+      # CI_SMOKE_ROLE_ARN must be set as a secret on the `cold-smoke`
+      # GitHub Environment after the first `terraform apply`.
+      # The role trust policy requires `environment:cold-smoke` in the OIDC
+      # sub claim; without this environment gate the assume-role call fails.
+      # -----------------------------------------------------------------------
+      - name: Configure AWS credentials (OIDC)
+        # SHA-pinned to v4.3.1.
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
+        with:
+          role-to-assume: ${{ secrets.CI_SMOKE_ROLE_ARN }}
+          aws-region: ${{ inputs.aws_region || 'us-east-1' }}
+          role-session-name: cold-smoke-${{ github.run_id }}
+
+      # -----------------------------------------------------------------------
+      # Derive cold-tier resource names from the Terraform naming convention:
+      #   cold bucket:    ${project}-${env}-cold
+      #   glue db:        ${project}_${env}
+      #   athena results: s3://${project}-${env}-athena-results/results/
+      #   workgroup:      ${project}-${env}
+      #
+      # These match the locals/resource names in s3.tf, glue.tf, ci.tf.
+      # Override via workflow_dispatch inputs if the env differs from poc.
+      #
+      # IMPORTANT: CI_SMOKE_ROLE_ARN is bound to the poc env role.  Selecting
+      # staging or prod will derive resource names that don't match the assumed
+      # role's IAM scope → AccessDenied.  Add per-env roles and environment
+      # secrets before enabling non-poc dispatch.
+      # -----------------------------------------------------------------------
+      - name: Set cold-tier env vars
+        shell: bash
+        run: |
+          ENV="${{ inputs.env || 'poc' }}"
+          PROJECT="logalot"
+          echo "COLD_BUCKET=${PROJECT}-${ENV}-cold"             >> "$GITHUB_ENV"
+          echo "COLD_GLUE_DB=${PROJECT}_${ENV}"                 >> "$GITHUB_ENV"
+          # s3:// URI required by Athena ResultConfiguration.OutputLocation
+          # (pkg/coldstore/coldstore.go:291; tests/cold-tier-smoke/doc.go).
+          echo "COLD_ATHENA_RESULT_BUCKET=s3://${PROJECT}-${ENV}-athena-results/results/" >> "$GITHUB_ENV"
+          echo "COLD_ATHENA_WORKGROUP=${PROJECT}-${ENV}"        >> "$GITHUB_ENV"
+          echo "AWS_REGION=${{ inputs.aws_region || 'us-east-1' }}" >> "$GITHUB_ENV"
+
+      - name: go work sync
+        run: make go-sync
+
+      # -----------------------------------------------------------------------
+      # Run the real-AWS canary. The -timeout 10m budget covers:
+      #   EnsureGlueTable  ~2 s
+      #   WriteParquet     ~5 s
+      #   GluePartition    ~2 s
+      #   5× Athena queries ~60–120 s each (cold start + data scan)
+      # -----------------------------------------------------------------------
+      - name: cold-tier smoke (real AWS)
+        run: make cold-smoke-aws
+        timeout-minutes: 15
