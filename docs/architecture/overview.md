@@ -17,6 +17,13 @@ descriptive; the ADRs are normative. Where they disagree, the ADR wins.
 - [ADR-0005 Cold tier + retention/tiering](../adr/0005-cold-tier-and-retention.md)
 - [ADR-0006 Live-tail mechanism](../adr/0006-live-tail-mechanism.md)
 - [ADR-0007 Authn/authz model](../adr/0007-authn-authz-model.md)
+- [ADR-0008 Google OIDC sign-in integration](../adr/0008-google-oidc-signin.md)
+- [ADR-0009 AWS deployment topology — single Graviton EC2 + compose](../adr/0009-aws-deployment-topology.md)
+- [ADR-0010 IaC tooling, secrets, and TLS](../adr/0010-iac-secrets-tls.md)
+- [ADR-0011 Cost as a first-class NFR — AWS PoC budget and instance sizing](../adr/0011-cost-nfr-aws-poc.md)
+
+Deployment topology + the Google OAuth flow are diagrammed in
+[`google-oauth-aws-deployment.md`](./google-oauth-aws-deployment.md).
 
 ---
 

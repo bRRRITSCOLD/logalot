@@ -31,6 +31,12 @@ migrations/
   000010_log_events.{up,down}.sql                   Hot store: partitioned parent + RLS + default
                                                     partition + lifecycle functions + bootstrap window
   000011_logalot_app_role.{up,down}.sql             NOSUPERUSER, non-BYPASSRLS app login + grants
+  …                                                 000012–000016: refresh_tokens, alert-evaluator,
+                                                    alert_rules query-source, evaluator grant,
+                                                    retention-worker (see /migrations)
+  000017_oauth_identities.{up,down}.sql             OAuthIdentity (RLS) + per-tenant
+                                                    UNIQUE(tenant_id,provider,sub) — multi-tenant
+                                                    membership; tenant-scoped lookups, no bypass (§6)
   seeds/dev_tenant.sql                              dev tenant + admin + API key + retention (manual)
 ```
 
@@ -157,3 +163,55 @@ Mechanics that matter:
   `TenantContext{tenant_id=…d1}` → publish → processor inserts into `log_events` under
   `SET LOCAL app.tenant_id` → live tail on `tail:…d1`. Ingesting for `dev` can never appear under
   any other tenant (RLS + channel naming).
+
+---
+
+## 6. Migration `000017` — Google OAuth identity linking (`oauth_identities`)
+
+Adds the OIDC account-link table (Identity & Access, ADR-0007). Schema detail and
+the access-pattern reasoning live in [`model.md` §6 / §4.6](./model.md); this is the
+operational summary.
+
+**`up` ships:**
+
+- `CREATE TYPE oauth_provider AS ENUM ('google')` — house enum style (000002).
+- `CREATE TABLE oauth_identities` — RLS (`ENABLE` + `FORCE`) with the standard
+  `tenant_id = app.current_tenant_id()` policy; **per-tenant**
+  `UNIQUE(tenant_id, provider, provider_sub)` (multi-tenant membership — one Google
+  account may link in several tenants); `UNIQUE(tenant_id, user_id, provider)`;
+  composite FK `(tenant_id, user_id) → users(tenant_id, id)`; `updated_at` trigger.
+- **No `SECURITY DEFINER` resolver and no `BYPASSRLS` role.** The tenant is always
+  known from `state` before any oauth lookup, so every access path is a normal
+  RLS-scoped query (`SET LOCAL app.tenant_id`, then a tenant-scoped SELECT/INSERT).
+  The linked-tenant == state-tenant invariant (R3) holds structurally — a row is
+  only found in the armed tenant (model.md §4.6).
+
+**Grants.** Table DML for `logalot_app` is covered by the `ALTER DEFAULT
+PRIVILEGES` from `000011` (this migration runs as the same migrate role), so no
+re-grant — identical to `000012`+. No function grants (no function ships).
+
+**Ordering / `down`.** `000016` is the prior head (retention-worker); this is
+`000017`, no in-flight conflicts. `down` drops the table **before** the type (the
+`provider` column references `oauth_provider`): table → type.
+
+**Validation to run (mirrors §4 + the threat model's testable requirements):**
+
+- `up` 000016→000017 clean; `down` 000017→000016 clean (full up/down/up cycle).
+- RLS fail-closed: `SELECT * FROM oauth_identities` with no `app.tenant_id` ⇒ 0 rows;
+  an INSERT stamped with a foreign `tenant_id` ⇒ rejected by `WITH CHECK`.
+- Per-tenant uniqueness: the same `(provider, sub)` may be inserted under tenant A
+  AND tenant B (multi-tenant membership), but a second insert of the same
+  `(provider, sub)` **within** a tenant ⇒ unique violation.
+- Tenant-scoped by-sub lookup: as `logalot_app` with tenant A armed,
+  `SELECT … WHERE provider='google' AND provider_sub=$sub` returns A's row; with
+  tenant B armed it returns B's row (or 0 if not linked in B) — no bypass, structural
+  R3 cross-check.
+- Same-tenant FK: linking `user_id` from tenant A while `tenant_id` = B ⇒ FK
+  violation.
+
+**Optional dev seed.** The dev seed (§5) may, after `SET LOCAL app.tenant_id =
+'<dev id>'`, insert a dev `oauth_identities` row for the dev admin
+(`provider='google'`, a placeholder `provider_sub`, normalized
+`email='admin@dev.local'`) so the OAuth slice is demoable without a live Google
+round-trip. Keep it `ON CONFLICT DO NOTHING`, DEV ONLY; a real link is written by
+the control-plane callback.

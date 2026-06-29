@@ -43,6 +43,7 @@ side-effect (NFR-2), and cold is reconstructable from the queue/DLQ.
 | Identity & Access | **Tenant** | `tenants` | No — registry (see §4) | `000003` |
 | Identity & Access | **User** | `users` + `memberships` (RBAC) | Yes | `000004` |
 | Identity & Access | **ApiKey** | `api_keys` | Yes | `000005` |
+| Identity & Access | **OAuthIdentity** | `oauth_identities` (links user ↔ Google) | Yes | `000017` |
 | Identity & Access | **RetentionPolicy** | `retention_policies` (1:1 tenant) | Yes | `000006` |
 | Workspace | **SavedQuery** | `saved_queries` | Yes | `000007` |
 | Workspace | **Dashboard** | `dashboards` (panels inline JSONB) | Yes | `000008` |
@@ -65,6 +66,7 @@ erDiagram
     tenants ||--o{ users : "owns"
     tenants ||--o{ memberships : "scopes"
     tenants ||--o{ api_keys : "owns"
+    tenants ||--o{ oauth_identities : "owns"
     tenants ||--|| retention_policies : "has"
     tenants ||--o{ saved_queries : "owns"
     tenants ||--o{ dashboards : "owns"
@@ -72,6 +74,7 @@ erDiagram
     tenants ||--o{ log_events : "owns (logical; no FK)"
 
     users ||--o{ memberships : "granted role"
+    users ||--o{ oauth_identities : "linked OIDC identity"
     saved_queries |o..o{ alert_rules : "referenced by id"
     saved_queries |o..o{ dashboards : "panel refs by id"
 
@@ -99,6 +102,15 @@ erDiagram
         bytea key_hash "sha256(secret)"
         text_arr scopes
         timestamptz revoked_at
+    }
+    oauth_identities {
+        uuid id PK
+        uuid tenant_id FK
+        uuid user_id FK
+        oauth_provider provider "google"
+        text provider_sub "Google sub; UK(tenant_id,provider,sub)"
+        text email "link-time snapshot, normalized"
+        timestamptz last_login_at
     }
     retention_policies {
         uuid tenant_id PK,FK
@@ -229,6 +241,49 @@ independently, including the "context unset ⇒ zero rows" backstop.
   `log_events`, so log reads remain RLS-governed. This is consistent with `platform_operator`
   being barred from tenant log content (NFR-5.4).
 
+### 4.6 OIDC identity resolution — the by-sub lookup is tenant-scoped (no bypass)
+
+Google OAuth resolution rides the **same** tenant-scoping discipline as the
+password path, so it is *not* a new chicken-and-egg. The "Sign in with Google"
+button lives on the **tenant-scoped login page**, and the tenant hint is bound into
+the single-use, server-side `state` record — exactly as the password path collects
+`tenantSlug` (threat model §0, Option A). Therefore the tenant is **always known
+before any `oauth_identities` lookup**, on first link *and* on every subsequent
+login. The control-plane arms RLS with `state.tenant_id` first (the same way the
+api-key path arms RLS from the slug, §4.5), then runs an ordinary tenant-scoped
+query. **No `SECURITY DEFINER` resolver and no `BYPASSRLS` role are needed** — and
+none ship in `000017`.
+
+**Both access paths for `oauth_identities` run under normal FORCE RLS:**
+
+| Path | Mechanism |
+|---|---|
+| **First link** | `SET LOCAL app.tenant_id = state.tenant_id`, match `users(tenant_id, email)`, **INSERT under RLS**. `UNIQUE(tenant_id, provider, provider_sub)` rejects a second link of the same Google account *within that tenant* → treat as already-linked (401/409); linking the same account in a *different* tenant is allowed (multi-tenant membership). |
+| **Subsequent login** | `SET LOCAL app.tenant_id = state.tenant_id`, then `SELECT … WHERE provider = $1 AND provider_sub = $2` (tenant scope applied by RLS), `UPDATE last_login_at` under RLS. |
+
+**The "linked tenant == state tenant" cross-check (R3) is now STRUCTURAL.** Under
+FORCE RLS the subsequent-login `SELECT` can only return a row that exists *in the
+armed tenant*, so a Google account linked only to tenant A is simply **not found**
+when the user arrives via tenant B's login page. There is no separate compare-and-
+reject step: a not-found result falls through to the first-link email match in
+tenant B, which yields **401** if no user with that email is provisioned in B
+(invite-only). This satisfies R3 by construction rather than by an explicit guard.
+
+This mirrors the api-key slug resolution (§4.5, `pkg/auth/authenticator.go`:
+`resolve tenant → SET LOCAL → scoped SELECT`): the control-plane stays on its
+**single `logalot_app` pool** and every read/write is RLS-governed. Because
+identity is pinned to `sub` (R13), a changed Google email still resolves to the
+same row within the tenant; `email` is never the lookup key.
+
+> **Lead-engineer action:** the control-plane OIDC authenticator must (a) arm RLS
+> with `state.tenant_id` *before* the `oauth_identities` lookup on **both** paths
+> (no global/by-sub bypass), (b) treat a unique-violation on first-link INSERT as
+> "already linked in this tenant" (401/409, not a 500), and (c) normalize
+> `id_token.email` identically to user provisioning before the first-link `users`
+> match (see §6). The relevant uniqueness is **per tenant**
+> (`UNIQUE(tenant_id, provider, provider_sub)`), so the same Google account can be
+> a member of several tenants — one row each.
+
 ---
 
 ## 5. Hot log store — `log_events` in detail (ADR-0003)
@@ -310,3 +365,66 @@ Served by a backward scan of the PK index; cost is independent of page depth.
 - `app.ensure_log_events_partitions(p_days_ahead int DEFAULT 7)` — ensures today..+N exist; runs
   on a schedule so ingest never falls into the default. The migration bootstraps today..+7 so the
   vertical slice works immediately after `migrate up`.
+
+---
+
+## 6. OAuth identity store — `oauth_identities` in detail (ADR-0007, Google OAuth)
+
+Full DDL: [`/migrations/000017_oauth_identities.up.sql`](../../migrations/000017_oauth_identities.up.sql).
+Links an **existing** logalot user to an external OIDC identity (Google in v1).
+**Invite-only:** the table never creates a user — a row appears only when a verified
+Google `id_token` (`email_verified=true`) matches an already-provisioned user
+*inside the tenant carried in the OAuth `state`*. Tenant resolution and the by-sub
+lookup are specified in §4.6; the tenant is always known before any lookup, so every
+access path is a normal RLS-scoped query (no bypass). Per-tenant uniqueness enables
+multi-tenant membership (§6.4).
+
+### 6.1 Column set
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | `uuid` PK `gen_random_uuid()` | Surrogate key. |
+| `tenant_id` | `uuid` NOT NULL → `tenants(id)` | RLS key; leading column of the per-tenant uniqueness and the composite user FK. |
+| `user_id` | `uuid` NOT NULL | The linked logalot user. Same-tenant integrity enforced via the composite FK below (not a bare `users(id)` FK). |
+| `provider` | `oauth_provider` enum NOT NULL DEFAULT `'google'` | House style (enums for closed, load-bearing sets, 000002). Only `'google'` ships; a new provider is one `ALTER TYPE … ADD VALUE`. |
+| `provider_sub` | `text` NOT NULL | Google's stable subject (`sub`) — the **authoritative, immutable** identity key after first link. |
+| `email` | `text` NOT NULL | **Link-time snapshot** of the matched, app-normalized email. Audit/consistency only — **not** a resolution key (identity is pinned to `sub`, threat model R13). |
+| `last_login_at` | `timestamptz` NULL | Bumped on each successful OIDC login (subsequent-login path). |
+| `created_at` / `updated_at` | `timestamptz` NOT NULL `now()` | `updated_at` maintained by `trg_oauth_identities_updated` (the shared `app.set_updated_at()` trigger, like `users`). |
+
+### 6.2 Constraints & indexes
+
+| Constraint / index | Purpose |
+|---|---|
+| `UNIQUE (tenant_id, provider, provider_sub)` — **per tenant** | One link per Google account **per tenant**: a single Google account may be a member of several tenants (one row each — multi-tenant membership). Tenant-leading ⇒ RLS-friendly; also the index that **backs the by-sub login lookup** within the armed tenant. |
+| `UNIQUE (tenant_id, user_id, provider)` | One linked identity per user per provider: a given user links at most one Google account. Tenant-scoped ⇒ RLS-friendly. |
+| `FOREIGN KEY (tenant_id, user_id) → users(tenant_id, id)` ON DELETE CASCADE | Same-tenant integrity: a link's tenant must equal the user's home tenant (mirrors `memberships`/`refresh_tokens`); deleting the user removes the link. |
+| `tenant_id → tenants(id)` ON DELETE CASCADE | Inline registry FK (matches `refresh_tokens`). |
+| *(no bare `(tenant_id)` index)* | Both UNIQUE constraints are tenant-leading and serve every tenant-scoped scan (including the by-sub login lookup); a single-column index would only add write cost (same reasoning as `refresh_tokens`). |
+
+RLS is the identical, audited shape (§4.2): `ENABLE` + `FORCE ROW LEVEL SECURITY`,
+policy `USING / WITH CHECK (tenant_id = app.current_tenant_id())`. Because the
+tenant is always known from `state` before any lookup (§4.6), **every** access path
+is a normal RLS-scoped query — there is no `SECURITY DEFINER` resolver and no
+`BYPASSRLS` role for this table.
+
+### 6.3 Email normalization (threat model R14)
+
+`oauth_identities.email` stores the **already-normalized** email (lowercase + trim +
+NFC), the *same* normalization user provisioning applies — so the first-link match
+`users(tenant_id, normalize(id_token.email))` is apples-to-apples. Normalization
+is an **application-layer** responsibility applied identically at provisioning and
+at OAuth match; it is **not** enforced in the DDL, consistent with `users.email`
+(also plain `text`, normalized in the app). Do not unicode-fold beyond NFC (avoids
+false homograph matches). This column is a snapshot, not a key, so it carries no
+index and no unique constraint of its own.
+
+### 6.4 Multi-tenant membership (per-tenant uniqueness)
+
+`UNIQUE(tenant_id, provider, provider_sub)` is **per tenant** by decision: a single
+Google account can link to one user in each of several tenants. A person who is a
+member of two tenants (same email → two `users` rows) links the same Google account
+independently in each, and `state.tenant_id` selects which membership a given login
+activates. Resolution is *always* scoped by `state.tenant_id` (§4.6), so the
+subsequent-login lookup is an ordinary RLS-scoped `SELECT` and the linked-tenant ==
+state-tenant invariant (R3) holds structurally — no cross-tenant lookup, no bypass.
