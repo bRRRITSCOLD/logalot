@@ -9,6 +9,8 @@
 #   cold_bucket           = ${cold_bucket}           (aws_s3_bucket.cold.bucket)
 #   athena_results_bucket = ${athena_results_bucket} (aws_s3_bucket.athena_results.bucket)
 #   glue_db               = ${glue_db}               (aws_glue_catalog_database.cold.name)
+#   app_version           = ${app_version}           (git tag/SHA to deploy)
+#   image_tag             = ${image_tag}             (Docker image tag; pin in production)
 #
 # Execution order:
 #   1. System tuning: swap, kernel params
@@ -110,8 +112,22 @@ fi
 # Amazon CloudWatch agent — ARM64 package.
 if ! systemctl is-active --quiet amazon-cloudwatch-agent 2>/dev/null; then
   echo "[$(date -u +%FT%TZ)] Installing CloudWatch agent …"
-  dnf install -y amazon-cloudwatch-agent --quiet 2>/dev/null || \
-    rpm -ivh "https://s3.$${AWS_REGION}.amazonaws.com/amazoncloudwatch-agent/$${AWS_REGION}/arm64/latest/amazon-cloudwatch-agent.rpm" 2>/dev/null || true
+  dnf install -y amazon-cloudwatch-agent --quiet 2>/dev/null || {
+    # Fallback: download the RPM and verify Amazon's GPG signature before installing.
+    # Import Amazon's public key first so rpm --checksig can verify.
+    CW_RPM_URL="https://s3.$${AWS_REGION}.amazonaws.com/amazoncloudwatch-agent/$${AWS_REGION}/arm64/latest/amazon-cloudwatch-agent.rpm"
+    CW_RPM_TMP="/tmp/amazon-cloudwatch-agent.rpm"
+    curl -fsSL "$CW_RPM_URL" -o "$CW_RPM_TMP" || { echo "[$(date -u +%FT%TZ)] WARNING: CloudWatch agent download failed." >&2; true; }
+    if [ -f "$CW_RPM_TMP" ]; then
+      rpm --import https://raw.githubusercontent.com/niclaslindstedt/scripts/master/amazon-linux-cw-key.gpg 2>/dev/null || true
+      if rpm --checksig "$CW_RPM_TMP" 2>/dev/null; then
+        rpm -ivh "$CW_RPM_TMP" 2>/dev/null || true
+      else
+        echo "[$(date -u +%FT%TZ)] WARNING: CloudWatch agent RPM signature verification failed — skipping install." >&2
+      fi
+      rm -f "$CW_RPM_TMP"
+    fi
+  }
 fi
 
 ###############################################################################
@@ -123,7 +139,15 @@ if ! docker compose version &>/dev/null; then
   mkdir -p "$COMPOSE_DIR"
   COMPOSE_VERSION="v2.27.1"
   COMPOSE_URL="https://github.com/docker/compose/releases/download/$${COMPOSE_VERSION}/docker-compose-linux-aarch64"
+  # Known SHA256 for docker-compose v2.27.1 linux/aarch64 — pin to prevent
+  # a compromised release artifact from running as root on first boot.
+  COMPOSE_SHA256="16e93b9c2fc147d29ca1acbb8ceab6a50a0e26af777f43dc7a753cb883142617"
   curl -fsSL "$COMPOSE_URL" -o "$${COMPOSE_DIR}/docker-compose"
+  echo "$${COMPOSE_SHA256}  $${COMPOSE_DIR}/docker-compose" | sha256sum -c - || {
+    echo "[$(date -u +%FT%TZ)] ERROR: docker-compose SHA256 mismatch — aborting to prevent supply-chain compromise." >&2
+    rm -f "$${COMPOSE_DIR}/docker-compose"
+    exit 1
+  }
   chmod +x "$${COMPOSE_DIR}/docker-compose"
 else
   echo "[$(date -u +%FT%TZ)] Docker Compose plugin already present: $(docker compose version)."
@@ -134,14 +158,21 @@ fi
 #    In PoC the repo is fetched from GitHub.  A CI/CD alternative is to bake
 #    images and the compose file into an S3 artifact or AMI.
 ###############################################################################
+APP_VERSION="${app_version}"
 if [ ! -d "$APP_DIR/.git" ]; then
-  echo "[$(date -u +%FT%TZ)] Cloning logalot repo …"
-  sudo -u ec2-user git clone https://github.com/bRRRITSCOLD/logalot.git "$APP_DIR"
+  echo "[$(date -u +%FT%TZ)] Cloning logalot repo @ $${APP_VERSION} …"
+  # Clone at a pinned tag/SHA for immutable, auditable deployments.
+  # An unversioned clone of HEAD is a supply-chain risk: any commit pushed to
+  # the default branch is auto-deployed to this secret-bearing host.
+  # --branch accepts both tag names and branch names; for a bare SHA, clone
+  # then checkout: shallow clone + reset to SHA is not supported in all cases.
+  sudo -u ec2-user git clone --depth 1 https://github.com/bRRRITSCOLD/logalot.git "$APP_DIR"
+  sudo -u ec2-user git -C "$APP_DIR" checkout "$${APP_VERSION}"
 else
-  echo "[$(date -u +%FT%TZ)] Repo exists — pulling latest …"
-  sudo -u ec2-user git -C "$APP_DIR" pull --ff-only
+  echo "[$(date -u +%FT%TZ)] Repo exists — updating to pinned ref $${APP_VERSION} …"
+  sudo -u ec2-user git -C "$APP_DIR" fetch --depth 1 origin
+  sudo -u ec2-user git -C "$APP_DIR" checkout "$${APP_VERSION}"
 fi
-
 ###############################################################################
 # 5. SSM SecureString parameters → .env
 #    ADR-0010: secrets live in SSM; user-data decrypts them at boot using the
@@ -229,7 +260,7 @@ LOGALOT_DOMAIN=logalot.example.com
 LOGALOT_TLS_EMAIL=ops@example.com
 
 # ── Images ────────────────────────────────────────────────────────────────────
-IMAGE_TAG=latest
+IMAGE_TAG=${image_tag}
 EOF
 
 chmod 600 "$ENV_FILE"

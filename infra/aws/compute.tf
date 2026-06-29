@@ -73,11 +73,27 @@ resource "aws_instance" "main" {
       cold_bucket           = aws_s3_bucket.cold.bucket
       athena_results_bucket = aws_s3_bucket.athena_results.bucket
       glue_db               = aws_glue_catalog_database.cold.name
+      app_version           = var.app_version
+      image_tag             = var.image_tag
     }
   )
 
   # Keep user-data changes from replacing the instance unexpectedly.
   user_data_replace_on_change = false
+
+  # Enforce IMDSv2 (session-oriented metadata requests).
+  # http_tokens = "required" blocks the single-GET IMDSv1 path that any SSRF or
+  # container-level request could use to steal the instance-role credentials
+  # (which hold ssm:GetParameter* + kms:Decrypt over all app secrets).
+  # hop_limit = 2 allows Docker containers on the bridge network to reach IMDS
+  # when they legitimately need instance identity; set to 1 if no containers
+  # require IMDS access.
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_tokens                 = "required"
+    http_put_response_hop_limit = 2
+    instance_metadata_tags      = "disabled"
+  }
 
   root_block_device {
     volume_type           = "gp3"
