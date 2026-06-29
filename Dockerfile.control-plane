@@ -1,0 +1,71 @@
+# Multi-stage Dockerfile for the control-plane Node/Fastify service.
+#
+# Build context: REPO ROOT (so pnpm workspace resolution works — pnpm-workspace.yaml,
+# pnpm-lock.yaml and all workspace packages must be reachable).
+#
+#   docker build -f Dockerfile.control-plane -t logalot/control-plane .
+#   docker buildx build --platform linux/arm64 -f Dockerfile.control-plane -t logalot/control-plane .
+#
+# The builder installs all workspace dependencies (including devDependencies) via
+# pnpm's filtered install (--filter scopes to control-plane and its workspace deps).
+# The final image is Node 22 Alpine running tsx as a non-root user. tsx is a
+# devDependency but is required at runtime because the control-plane uses it
+# directly (no separate tsc compile step; tsconfig sets "noEmit": true).
+# NOTE: the runtime image ships tsx and other devDeps (vitest, typescript, etc.).
+# To fully prune devDeps from the runtime, move tsx to `dependencies` in
+# services/control-plane/package.json and use `--prod` in a separate install stage.
+
+ARG NODE_VERSION=22
+
+# ---- builder -----------------------------------------------------------------
+FROM node:${NODE_VERSION}-alpine AS builder
+ARG NODE_VERSION
+
+WORKDIR /build
+
+# Install pnpm via corepack — version pinned to match packageManager in root package.json.
+RUN corepack enable && corepack prepare pnpm@10.33.2 --activate
+
+# Copy workspace manifests first — layer-cached until any package.json changes.
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
+COPY packages/contracts/package.json ./packages/contracts/
+COPY services/control-plane/package.json ./services/control-plane/
+
+# Install ALL dependencies (including devDeps — tsx is a devDep we need at runtime).
+# --frozen-lockfile ensures reproducibility; the workspace filter scopes to only
+# the packages control-plane and its workspace dependencies need.
+RUN pnpm install --frozen-lockfile --filter @logalot/control-plane... 2>&1
+
+# Copy source after deps so the layer cache survives pure dep-only rebuilds.
+COPY packages/contracts ./packages/contracts
+COPY services/control-plane ./services/control-plane
+
+# ---- runtime -----------------------------------------------------------------
+FROM node:${NODE_VERSION}-alpine AS runtime
+
+RUN apk add --no-cache wget \
+ && addgroup -S logalot \
+ && adduser  -S -G logalot logalot
+
+WORKDIR /app
+
+# Bring in node_modules + built workspace deps from the builder stage.
+COPY --from=builder /build/node_modules          ./node_modules
+COPY --from=builder /build/packages/contracts    ./packages/contracts
+COPY --from=builder /build/services/control-plane ./services/control-plane
+
+# pnpm workspace resolution reads this at startup.
+COPY --from=builder /build/package.json          ./package.json
+COPY --from=builder /build/pnpm-workspace.yaml   ./pnpm-workspace.yaml
+
+USER logalot:logalot
+
+EXPOSE 8082
+
+# Liveness probe — no DB ping here, just "process is alive". Readiness is at
+# /readyz (defined in the same Fastify route file, pings postgres).
+HEALTHCHECK --interval=10s --timeout=5s --start-period=20s --retries=3 \
+  CMD wget -qO- http://localhost:8082/healthz || exit 1
+
+# tsx resolves through the local node_modules installed above.
+ENTRYPOINT ["node_modules/.bin/tsx", "services/control-plane/src/index.ts"]

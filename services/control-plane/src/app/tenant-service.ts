@@ -1,5 +1,5 @@
-import type { Tenant, TenantStatus, User } from '../domain/entities';
 import { normalizeEmail } from '../domain/email';
+import type { Tenant, TenantStatus, User } from '../domain/entities';
 import { NotFoundError } from '../domain/errors';
 import type { TenantContext } from '../domain/tenant-context';
 import { assertCan } from './authorize';

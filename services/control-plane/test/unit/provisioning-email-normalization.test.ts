@@ -33,17 +33,32 @@ const makeUser = (email: string): User => ({
 class FakeUserRepo {
   created: Array<{ tenantId: string; data: { email: string } }> = [];
 
-  async create(tenantId: string, data: { email: string; passwordHash: string; displayName: string | null; role: string }) {
+  async create(
+    tenantId: string,
+    data: { email: string; passwordHash: string; displayName: string | null; role: string },
+  ) {
     this.created.push({ tenantId, data });
     return makeUser(data.email);
   }
 
-  async list() { return []; }
-  async findById() { return null; }
-  async update() { return null; }
-  async delete() { return false; }
-  async findCredentialsByEmail() { return null; }
-  async findCredentialsById() { return null; }
+  async list() {
+    return [];
+  }
+  async findById() {
+    return null;
+  }
+  async update() {
+    return null;
+  }
+  async delete() {
+    return false;
+  }
+  async findCredentialsByEmail() {
+    return null;
+  }
+  async findCredentialsById() {
+    return null;
+  }
 }
 
 class FakeTenantRepo {
@@ -53,15 +68,27 @@ class FakeTenantRepo {
   async create(data: { publicId: string; name: string }): Promise<Tenant> {
     return { ...TENANT, ...data };
   }
-  async findByPublicId() { return TENANT; }
-  async list() { return [TENANT]; }
-  async update() { return TENANT; }
-  async delete() { return false; }
+  async findByPublicId() {
+    return TENANT;
+  }
+  async list() {
+    return [TENANT];
+  }
+  async update() {
+    return TENANT;
+  }
+  async delete() {
+    return false;
+  }
 }
 
 const fakeHasher = {
-  async hash(plain: string) { return `hashed:${plain}`; },
-  async verify() { return true; },
+  async hash(plain: string) {
+    return `hashed:${plain}`;
+  },
+  async verify() {
+    return true;
+  },
 };
 
 const operatorCtx: TenantContext = {
