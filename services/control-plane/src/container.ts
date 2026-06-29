@@ -12,6 +12,8 @@ import { PgRetentionRepository } from './adapters/postgres/retention-repository'
 import { PgSavedQueryRepository } from './adapters/postgres/saved-query-repository';
 import { PgTenantRepository } from './adapters/postgres/tenant-repository';
 import { PgUserRepository } from './adapters/postgres/user-repository';
+import { GoogleTokenExchangeHttpClient } from './adapters/http/google-token-exchange-client';
+import { JoseGoogleIdTokenVerifier } from './adapters/crypto/jose-google-verifier';
 import { createRedisClient } from './adapters/redis/client';
 import { InMemoryOAuthStateStore } from './adapters/redis/in-memory-oauth-state-store';
 import { RedisOAuthStateStore } from './adapters/redis/redis-oauth-state-store';
@@ -19,7 +21,7 @@ import { AlertRuleService } from './app/alert-rule-service';
 import { ApiKeyService } from './app/api-key-service';
 import { AuthService } from './app/auth-service';
 import { DashboardService } from './app/dashboard-service';
-import type { OAuthStateStore, TokenService } from './app/ports';
+import type { GoogleIdTokenVerifier, GoogleTokenExchangeClient, OAuthStateStore, TokenService } from './app/ports';
 import { RetentionService } from './app/retention-service';
 import { SavedQueryService } from './app/saved-query-service';
 import { TenantService } from './app/tenant-service';
@@ -43,6 +45,10 @@ export interface Container {
   services: Services;
   tokenService: TokenService;
   oauthStateStore: OAuthStateStore;
+  /** Google id_token verifier — undefined when GOOGLE_CLIENT_ID is not configured. */
+  googleIdTokenVerifier: GoogleIdTokenVerifier | undefined;
+  /** Google token-exchange client — undefined when Google config is incomplete. */
+  googleTokenExchangeClient: GoogleTokenExchangeClient | undefined;
   /** Release infrastructure resources (Redis connection, etc.) on graceful shutdown. */
   shutdown: () => Promise<void>;
 }
@@ -104,10 +110,26 @@ export function buildContainer(pool: Pool, config: Config): Container {
     ? new RedisOAuthStateStore(redisClient)
     : new InMemoryOAuthStateStore();
 
+  // Google OAuth adapters — only wired when both client_id and client_secret are
+  // configured. Absence in dev/test is expected; routes guard against undefined.
+  const googleIdTokenVerifier: GoogleIdTokenVerifier | undefined = config.googleClientId
+    ? new JoseGoogleIdTokenVerifier({ clientId: config.googleClientId })
+    : undefined;
+
+  const googleTokenExchangeClient: GoogleTokenExchangeClient | undefined =
+    config.googleClientId && config.googleClientSecret
+      ? new GoogleTokenExchangeHttpClient({
+          clientId: config.googleClientId,
+          clientSecret: config.googleClientSecret,
+        })
+      : undefined;
+
   return {
     services,
     tokenService,
     oauthStateStore,
+    googleIdTokenVerifier,
+    googleTokenExchangeClient,
     shutdown: async () => {
       if (redisClient) await redisClient.quit();
     },

@@ -24,6 +24,11 @@ const EnvSchema = z.object({
   // only). Set to a Redis URL in production and any multi-replica deployment.
   REDIS_URL: z.string().optional(),
   OAUTH_STATE_TTL_SECONDS: z.coerce.number().int().positive().default(600),
+  // Google OAuth 2.0 / OIDC — required for the Google login flow (issue #94).
+  // GOOGLE_CLIENT_SECRET is read from SSM on the deployed box and never logged.
+  GOOGLE_CLIENT_ID: z.string().optional(),
+  GOOGLE_CLIENT_SECRET: z.string().optional(),
+  GOOGLE_REDIRECT_URI: z.string().optional(),
 });
 
 export interface Config {
@@ -39,6 +44,12 @@ export interface Config {
   /** Redis URL for the OAuth state store. Undefined disables the Redis adapter (use in-memory only for tests). */
   redisUrl: string | undefined;
   oauthStateTtlSeconds: number;
+  /** Google OAuth 2.0 client id — public value, safe to log. */
+  googleClientId: string | undefined;
+  /** Google OAuth 2.0 client secret — NEVER log or expose. */
+  googleClientSecret: string | undefined;
+  /** Registered redirect URI for the Google OAuth callback. */
+  googleRedirectUri: string | undefined;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -55,5 +66,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     logLevel: parsed.LOG_LEVEL,
     redisUrl: parsed.REDIS_URL,
     oauthStateTtlSeconds: parsed.OAUTH_STATE_TTL_SECONDS,
+    googleClientId: parsed.GOOGLE_CLIENT_ID,
+    googleClientSecret: parsed.GOOGLE_CLIENT_SECRET,
+    googleRedirectUri: parsed.GOOGLE_REDIRECT_URI,
   };
 }
