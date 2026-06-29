@@ -1,5 +1,5 @@
-import { UnauthorizedError } from '../domain/errors';
 import { normalizeEmail } from '../domain/email';
+import { UnauthorizedError } from '../domain/errors';
 import { assembleRefreshToken, parseRefreshToken } from '../domain/refresh-token';
 import { constantTimeEqual, sha256 } from '../domain/secret-hash';
 import type {

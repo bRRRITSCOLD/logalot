@@ -1,9 +1,5 @@
 import type { Pool } from 'pg';
-import type {
-  NewOAuthIdentity,
-  OAuthIdentityRef,
-  OAuthIdentityRepository,
-} from '../../app/ports';
+import type { NewOAuthIdentity, OAuthIdentityRef, OAuthIdentityRepository } from '../../app/ports';
 import type { OAuthIdentity, OAuthProvider } from '../../domain/entities';
 import { isUniqueViolation, withTenantTx } from './tenant-tx';
 
@@ -106,10 +102,7 @@ export class PgOAuthIdentityRepository implements OAuthIdentityRepository {
 
   async touchLastLogin(tenantId: string, id: string, now: Date): Promise<void> {
     await withTenantTx(this.pool, tenantId, async (client) => {
-      await client.query(`UPDATE oauth_identities SET last_login_at = $2 WHERE id = $1`, [
-        id,
-        now,
-      ]);
+      await client.query(`UPDATE oauth_identities SET last_login_at = $2 WHERE id = $1`, [id, now]);
     });
   }
 
