@@ -290,6 +290,7 @@ describe('OidcAuthenticator audit logging', () => {
       await fakes.sut.handleCallback({ code: 'c', state: 'bad-state' }).catch(() => {});
       expect(fakes.auditLogger.events).toHaveLength(1);
       const ev = fakes.auditLogger.events[0];
+      if (!ev) throw new Error('expected an audit event to be recorded');
       expect(ev.outcome).toBe<OAuthAuditOutcome>('reject_invalid_state');
       expect(ev.tenantId).toBeNull();
       expect(ev.userId).toBeNull();
@@ -322,6 +323,7 @@ describe('OidcAuthenticator audit logging', () => {
 
       expect(fakes.auditLogger.events).toHaveLength(1);
       const ev = fakes.auditLogger.events[0];
+      if (!ev) throw new Error('expected an audit event to be recorded');
       expect(ev.outcome).toBe<OAuthAuditOutcome>('reject_exchange_failure');
       expect(ev.tenantId).toBe(TENANT_ID);
       expect(ev.userId).toBeNull();
@@ -339,6 +341,7 @@ describe('OidcAuthenticator audit logging', () => {
 
       expect(fakes.auditLogger.events).toHaveLength(1);
       const ev = fakes.auditLogger.events[0];
+      if (!ev) throw new Error('expected an audit event to be recorded');
       expect(ev.outcome).toBe<OAuthAuditOutcome>('reject_invalid_token');
       expect(ev.tenantId).toBe(TENANT_ID);
       expect(ev.hashedSub).toBeNull(); // sub not yet known at verification stage
@@ -355,6 +358,7 @@ describe('OidcAuthenticator audit logging', () => {
 
       expect(fakes.auditLogger.events).toHaveLength(1);
       const ev = fakes.auditLogger.events[0];
+      if (!ev) throw new Error('expected an audit event to be recorded');
       expect(ev.outcome).toBe<OAuthAuditOutcome>('reject_no_provisioned_user');
       expect(ev.tenantId).toBe(TENANT_ID);
       expect(ev.userId).toBeNull();
@@ -374,6 +378,7 @@ describe('OidcAuthenticator audit logging', () => {
 
       expect(fakes.auditLogger.events).toHaveLength(1);
       const ev = fakes.auditLogger.events[0];
+      if (!ev) throw new Error('expected an audit event to be recorded');
       expect(ev.outcome).toBe<OAuthAuditOutcome>('reject_account_inactive');
       expect(ev.tenantId).toBe(TENANT_ID);
       expect(ev.userId).toBe(USER_ID);
@@ -392,6 +397,7 @@ describe('OidcAuthenticator audit logging', () => {
 
       expect(fakes.auditLogger.events).toHaveLength(1);
       const ev = fakes.auditLogger.events[0];
+      if (!ev) throw new Error('expected an audit event to be recorded');
       expect(ev.outcome).toBe<OAuthAuditOutcome>('login');
       expect(ev.tenantId).toBe(TENANT_ID);
       expect(ev.userId).toBe(USER_ID);
@@ -412,6 +418,7 @@ describe('OidcAuthenticator audit logging', () => {
 
       expect(fakes.auditLogger.events).toHaveLength(1);
       const ev = fakes.auditLogger.events[0];
+      if (!ev) throw new Error('expected an audit event to be recorded');
       expect(ev.outcome).toBe<OAuthAuditOutcome>('first_link');
       expect(ev.tenantId).toBe(TENANT_ID);
       expect(ev.userId).toBe(USER_ID);
@@ -446,6 +453,7 @@ describe('OidcAuthenticator audit logging', () => {
       await fakes.sut.handleCallback({ code: 'c', state: 'valid-state-token' });
 
       const ev = fakes.auditLogger.events[0];
+      if (!ev) throw new Error('expected an audit event to be recorded');
       expect(ev.hashedSub).toBe(EXPECTED_HASHED_SUB);
       // Sanity: confirm it's a 64-char hex string (256-bit).
       expect(ev.hashedSub).toMatch(/^[0-9a-f]{64}$/);
