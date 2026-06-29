@@ -55,7 +55,7 @@ Concrete consequences baked into the plan:
 
 This removes data-architect open-question #1 (the resolver's dependency on `POSTGRES_USER` being a superuser) — **it is now MOOT**: there is no `SECURITY DEFINER` bypass, control-plane stays entirely on its single `NOSUPERUSER` `logalot_app` pool, every OIDC DB statement runs under RLS.
 
-**Migration impact:** `000017` was authored (data phase) with the global constraint + the resolver. Since it is freshly authored and not yet deployed, **T12 amends `000017` in place** (constraint swap + drop resolver fn + fix `.down.sql`) rather than adding a follow-up migration. **Coordinate with data-architect** — the DDL change is theirs to confirm; the plan records the required shape.
+**Migration impact:** `000017` is **already authored and validated** (data phase, revised for D6) with the per-tenant `UNIQUE(tenant_id, provider, provider_sub)` constraint and **no resolver function** — up/down apply clean against live PG. T12 is therefore **wire + validate only** (migrate step in the run path + integration tests + optional dev seed), not a DDL change.
 
 ### D5 — Data-architect open questions (resolved)
 
@@ -201,9 +201,9 @@ Each task: **title · owner · files · integration points · blockedBy · test 
 - **blockedBy:** T09
 - **Tests:** integration — `429` after threshold on the callback; bad-`state` path makes **zero** Google calls; log-capture across a full login asserts no raw `id_token`/`code`/`client_secret`/full `email`, `sub`/`email` only hashed/redacted. *(R11, R12, R8 log-side)*
 
-**T12 — Migration 000017 amendment (per-tenant unique, drop resolver) + RLS validation + optional dev seed (D6)**
-- **Owner:** backend-engineer (coordinate with data-architect — DDL change is theirs to confirm)
-- **Files:** `migrations/000017_oauth_identities.up.sql` — **change `UNIQUE(provider, provider_sub)` → `UNIQUE(tenant_id, provider, provider_sub)`** and **delete the `CREATE FUNCTION app.resolve_oauth_identity_by_sub` block + its `REVOKE`/`GRANT`** (D6); `migrations/000017_oauth_identities.down.sql` — **remove the `DROP FUNCTION … resolve_oauth_identity_by_sub` line** (function no longer exists); `migrations/seeds/dev_tenant.sql` (append optional dev `oauth_identities` row under `SET LOCAL app.tenant_id`, `ON CONFLICT DO NOTHING`); a migration integration test (extend `tests/` or control-plane integration suite). Since `000017` is freshly authored and undeployed, amend in place (no follow-up migration).
+**T12 — Migration 000017 wiring (migrate step) + per-tenant-uniqueness/RLS validation + optional dev seed (D6)**
+- **Owner:** backend-engineer
+- **Files:** `migrations/000017_oauth_identities.up.sql`/`.down.sql` are **already in final shape** (per-tenant `UNIQUE(tenant_id, provider, provider_sub)`, no resolver) — no DDL change; confirm they run in the migrate path. `migrations/seeds/dev_tenant.sql` (append optional dev `oauth_identities` row under `SET LOCAL app.tenant_id`, `ON CONFLICT DO NOTHING`); a migration integration test (extend `tests/` or control-plane integration suite).
 - **Integration points:** RLS policy on `oauth_identities`; `logalot_app` table DML grants from `000011` default privileges (no function grant anymore).
 - **blockedBy:** none (DB-only; feeds T04/T10/T19)
 - **Tests:** integration (testcontainers, full up→down→up) — RLS fail-closed (no context ⇒ 0 rows; foreign-tenant INSERT ⇒ `WITH CHECK` reject); **per-tenant uniqueness: same `(provider, sub)` inserts successfully under tenant A *and* tenant B (multi-tenant); a duplicate `(tenant_id, provider, sub)` within one tenant ⇒ `23505`**; an RLS-scoped by-sub `SELECT` returns the row only under the matching tenant's context (none cross-tenant); **assert `app.resolve_oauth_identity_by_sub` no longer exists** (function dropped); same-tenant composite FK violation; dev seed idempotent. *(R2/R3-structural storage; D5-Q1 moot, D5-Q4)*
