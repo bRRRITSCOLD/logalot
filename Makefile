@@ -44,7 +44,9 @@ MIGRATE_RUN          := docker run --rm --network logalot -v $(CURDIR)/migration
 # REGISTRY / OWNER can be overridden at the call site.
 # ----------------------------------------------------------------------------
 REGISTRY ?= ghcr.io
-OWNER    ?= $(shell git config user.name | tr '[:upper:]' '[:lower:]' | tr ' ' '-')
+# Derive OWNER from the remote URL so any contributor pushes to the correct namespace.
+# This matches github.repository_owner used in CI (safer than git config user.name).
+OWNER    ?= $(shell git remote get-url origin 2>/dev/null | sed -E 's|.*[:/]([^/]+)/[^/.]+(\.git)?$$|\1|' | tr '[:upper:]' '[:lower:]')
 IMAGE_PREFIX := $(REGISTRY)/$(OWNER)/logalot
 PLATFORMS    := linux/amd64,linux/arm64
 
@@ -262,21 +264,30 @@ test: go-test node-test
 lint: go-fmt go-lint node-lint
 
 # ----------------------------------------------------------------------------
-# Multi-arch buildx targets (local push; set PUSH=--push to push to registry).
+# Multi-arch buildx targets (local load or registry push).
 # Usage:
-#   make buildx-go SERVICE=ingest-service          # single Go service
-#   make buildx-go SERVICE=ingest-service PUSH=--push
+#   make buildx-go SERVICE=ingest-service          # build for local daemon (native arch)
+#   make buildx-go SERVICE=ingest-service PUSH=--push  # push multi-arch to registry
 #   make buildx-control-plane PUSH=--push
 #   make buildx-web PUSH=--push
-#   make buildx-all PUSH=--push                    # all 7 images
+#   make buildx-all PUSH=--push                    # all 7 images, pushed to registry
 # ----------------------------------------------------------------------------
-PUSH ?= --load   # default: load into local daemon (single arch); use PUSH=--push to publish
+PUSH ?= --load
+
+# docker buildx --load uses the docker exporter which cannot produce a multi-platform
+# manifest list ("docker exporter does not currently support exporting manifest lists").
+# Restrict to the native arch when loading; use all target platforms when pushing.
+ifeq ($(PUSH),--load)
+BUILD_PLATFORMS := linux/$(shell go env GOARCH)
+else
+BUILD_PLATFORMS := $(PLATFORMS)
+endif
 
 ## buildx-go: build a single Go service image for linux/amd64+arm64 (SERVICE= required)
 buildx-go:
 	@test -n "$(SERVICE)" || (echo "usage: make buildx-go SERVICE=<name>" && exit 1)
 	docker buildx build \
-		--platform $(PLATFORMS) \
+		--platform $(BUILD_PLATFORMS) \
 		--build-arg SERVICE=$(SERVICE) \
 		-t $(IMAGE_PREFIX)-$(SERVICE):dev \
 		$(PUSH) \
@@ -285,7 +296,7 @@ buildx-go:
 ## buildx-control-plane: build the control-plane image for linux/amd64+arm64
 buildx-control-plane:
 	docker buildx build \
-		--platform $(PLATFORMS) \
+		--platform $(BUILD_PLATFORMS) \
 		-t $(IMAGE_PREFIX)-control-plane:dev \
 		$(PUSH) \
 		-f Dockerfile.control-plane .
@@ -293,7 +304,7 @@ buildx-control-plane:
 ## buildx-web: build the web image for linux/amd64+arm64
 buildx-web:
 	docker buildx build \
-		--platform $(PLATFORMS) \
+		--platform $(BUILD_PLATFORMS) \
 		-t $(IMAGE_PREFIX)-web:dev \
 		$(PUSH) \
 		-f Dockerfile.web .
