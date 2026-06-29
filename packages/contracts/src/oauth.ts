@@ -83,16 +83,13 @@ export const oidcAuthorizeResponseSchema = z
     redirectUrl: z
       .string()
       .url()
-      .refine(
-        (url) => {
-          try {
-            return new URL(url).hostname === 'accounts.google.com';
-          } catch {
-            return false;
-          }
-        },
-        'redirectUrl must target the Google IdP (accounts.google.com)',
-      ),
+      .refine((url) => {
+        try {
+          return new URL(url).hostname === 'accounts.google.com';
+        } catch {
+          return false;
+        }
+      }, 'redirectUrl must target the Google IdP (accounts.google.com)'),
   })
   .strict();
 export type OidcAuthorizeResponse = z.infer<typeof oidcAuthorizeResponseSchema>;

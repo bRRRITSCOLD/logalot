@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
-import type { OAuthStateStore, TenantRepository } from './ports';
 import { NotFoundError } from '../domain/errors';
+import type { OAuthStateStore, TenantRepository } from './ports';
 
 // PKCE constants (RFC 7636).
 // State: 32 bytes → 256 bits of entropy (≥128-bit as required by the spec).

@@ -75,9 +75,7 @@ export const Route = createFileRoute('/auth/google/callback')({
     // full check here matches the defence-in-depth parity the contracts layer
     // provides (WHATWG-stripped bytes can re-introduce open-redirect bypasses).
     const destination =
-      result.returnTo &&
-      /^\/(?![/\\])/.test(result.returnTo) &&
-      !hasControlChar(result.returnTo)
+      result.returnTo && /^\/(?![/\\])/.test(result.returnTo) && !hasControlChar(result.returnTo)
         ? result.returnTo
         : '/app';
 
@@ -96,7 +94,8 @@ function CallbackPage() {
       <div className="flex min-h-svh items-center justify-center p-4">
         <div className="w-full max-w-sm">
           <Alert tone="danger" title="Sign-in failed">
-            {data.message}{'  '}
+            {data.message}
+            {'  '}
             <a href="/login" className="underline">
               Return to sign-in
             </a>
