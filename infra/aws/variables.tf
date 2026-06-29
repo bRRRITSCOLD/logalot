@@ -117,3 +117,29 @@ variable "admin_cidr" {
     error_message = "admin_cidr must be a valid CIDR block (e.g. 203.0.113.10/32) or empty string."
   }
 }
+
+# ---------------------------------------------------------------------------
+# Application deployment
+# ---------------------------------------------------------------------------
+
+variable "app_version" {
+  description = <<-EOT
+    Git ref (tag or full commit SHA) to clone and deploy on the EC2 instance.
+    Set to a released version tag (e.g. "v1.2.3") or a full commit SHA for
+    immutable, auditable deployments.  Defaults to "main" for PoC convenience
+    but MUST be pinned to an immutable ref before production use to prevent
+    supply-chain compromise via mutable branch heads.
+  EOT
+  type    = string
+  default = "main"
+}
+
+variable "image_tag" {
+  description = <<-EOT
+    Docker image tag to pull for all logalot services.  Use an immutable version
+    tag (e.g. "v1.2.3") or a digest reference (@sha256:...) in production.
+    Defaults to "latest" for PoC convenience only.
+  EOT
+  type    = string
+  default = "latest"
+}
