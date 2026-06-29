@@ -6,6 +6,8 @@ import type {
   Dashboard,
   DashboardLayout,
   NotifyChannel,
+  OAuthIdentity,
+  OAuthProvider,
   RetentionPolicy,
   RuleQuery,
   SavedQuery,
@@ -290,4 +292,49 @@ export interface RefreshTokenRepository {
   ): Promise<{ id: string } | null>;
   // Revokes every still-live token in a family (reuse detection / logout).
   revokeFamily(tenantId: string, familyId: string, now: Date): Promise<void>;
+}
+
+// ── OAuthIdentity repository (migration 000017) ────────────────────────────────
+// Stores the link between an existing logalot user and an external OIDC identity
+// (Google for v1). Invite-only: linkFirst() NEVER creates a user — it only writes
+// a row when the caller has already resolved a matching provisioned user. Every
+// statement runs under RLS armed with the tenant from OAuth `state`.
+
+// OAuthIdentityRef is the minimal projection returned by findByProviderSub and
+// linkFirst — just enough for the auth flow to mint a session.
+export interface OAuthIdentityRef {
+  id: string;
+  userId: string;
+}
+
+export interface NewOAuthIdentity {
+  userId: string;
+  provider: OAuthProvider;
+  providerSub: string;
+  // Link-time snapshot of the matched, app-normalised email (lowercase + trim + NFC).
+  email: string;
+}
+
+export interface OAuthIdentityRepository {
+  // Looks up the link by (provider, provider_sub) within the armed tenant. Returns
+  // the ref (id + userId) when found, null when the sub has never been linked in
+  // this tenant (triggers the first-link email path in the auth flow).
+  findByProviderSub(
+    tenantId: string,
+    provider: OAuthProvider,
+    providerSub: string,
+  ): Promise<OAuthIdentityRef | null>;
+
+  // Inserts a new link row under RLS. Catches 23505 (UNIQUE violation on
+  // (tenant_id, provider, provider_sub)) and re-resolves the existing row
+  // idempotently — so concurrent first-link calls converge to the same identity
+  // rather than raising a ConflictError. Returns the ref for the winner.
+  linkFirst(tenantId: string, input: NewOAuthIdentity): Promise<OAuthIdentityRef>;
+
+  // Updates last_login_at to now() for the given identity row under RLS. Fire-and-
+  // forget from the caller's perspective; failure does NOT abort the auth flow.
+  touchLastLogin(tenantId: string, id: string, now: Date): Promise<void>;
+
+  // Full projection for debugging / admin — not used in the hot auth path.
+  findById(tenantId: string, id: string): Promise<OAuthIdentity | null>;
 }
