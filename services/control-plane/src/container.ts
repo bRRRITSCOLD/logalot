@@ -1,3 +1,4 @@
+import type { Redis } from 'ioredis';
 import type { Pool } from 'pg';
 import { BcryptHasher } from './adapters/crypto/bcrypt-hasher';
 import { JoseGoogleIdTokenVerifier } from './adapters/crypto/jose-google-verifier';
@@ -57,6 +58,13 @@ export interface Container {
   /** Google token-exchange client — undefined when Google config is incomplete. */
   googleTokenExchangeClient: GoogleTokenExchangeClient | undefined;
   oidcAuthenticator: OidcAuthenticator;
+  /**
+   * The shared ioredis client — exposed so the HTTP layer can wire it into
+   * @fastify/rate-limit's Redis-backed store (shared per-IP counters across
+   * replicas).  Undefined when REDIS_URL is not configured (dev/test: use
+   * the rate-limit plugin's default in-memory store).
+   */
+  redisClient: Redis | undefined;
   /** Release infrastructure resources (Redis connection, etc.) on graceful shutdown. */
   shutdown: () => Promise<void>;
 }
@@ -171,6 +179,7 @@ export function buildContainer(pool: Pool, config: Config): Container {
     googleIdTokenVerifier,
     googleTokenExchangeClient,
     oidcAuthenticator,
+    redisClient,
     shutdown: async () => {
       if (redisClient) await redisClient.quit();
     },

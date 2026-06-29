@@ -22,6 +22,7 @@ import { z } from 'zod';
 import type { OidcAuthenticator } from '../../app/oidc-authenticator';
 import type { TokenService } from '../../app/ports';
 import type { Services } from '../../container';
+import { piiHash } from '../../domain/pii-log';
 import { makeAuthenticate, requireTenantContext } from './auth-plugin';
 import { makeRequireOperation } from './rbac-guard';
 import { parse } from './validation';
@@ -48,6 +49,10 @@ export interface RouteDeps {
   oidcAuthenticator: OidcAuthenticator;
   // Readiness probe: resolves true when the datastore is reachable.
   ping: () => Promise<boolean>;
+  // Per-IP rate-limit ceiling for OIDC routes (authorize + callback).
+  // Passed through from BuildServerOptions; defaults applied there.
+  oidcRateLimitMax?: number;
+  oidcRateLimitWindowMs?: number;
 }
 
 // registerRoutes wires every endpoint. Validation uses the SHARED zod contracts
@@ -58,6 +63,16 @@ export interface RouteDeps {
 export function registerRoutes(app: FastifyInstance, deps: RouteDeps): void {
   const { services, tokenService, oidcAuthenticator, ping } = deps;
   const authenticate = makeAuthenticate(tokenService);
+
+  // Per-IP rate-limit config applied to both OIDC routes (authorize + callback).
+  // Falls back to the conservative defaults documented in env.ts.
+  // The ceiling is intentionally low: each callback triggers an outbound Google
+  // token exchange, so abusive burst traffic must be shed before it leaves our
+  // network (R11, R12).
+  const oidcRateLimit = {
+    max: deps.oidcRateLimitMax ?? 20,
+    timeWindow: deps.oidcRateLimitWindowMs ?? 60_000,
+  };
 
   // ── Health / readiness (public) ──────────────────────────────────────────
   app.get('/healthz', async () => ({ status: 'ok' }));
@@ -70,30 +85,60 @@ export function registerRoutes(app: FastifyInstance, deps: RouteDeps): void {
   // POST /v1/auth/oidc/google/authorize — initiate the Google OIDC flow.
   // Returns a redirectUrl the client must navigate the browser to.
   // Body: { tenantSlug, returnTo? } (oidcAuthorizeRequestSchema).
-  app.post('/v1/auth/oidc/google/authorize', async (req, reply) => {
-    const body = parse(oidcAuthorizeRequestSchema, req.body);
-    const result = await oidcAuthenticator.beginAuthorize({
-      tenantSlug: body.tenantSlug,
-      returnTo: body.returnTo,
-    });
-    return reply.code(200).send(result);
-  });
+  //
+  // Rate-limited per-IP: beginAuthorize stores a state record in Redis, which
+  // is cheap, but protects the state-store from flood.
+  app.post(
+    '/v1/auth/oidc/google/authorize',
+    { config: { rateLimit: oidcRateLimit } },
+    async (req, reply) => {
+      const body = parse(oidcAuthorizeRequestSchema, req.body);
+      req.log.info({ tenantSlug: body.tenantSlug }, 'oidc authorize initiated');
+      const result = await oidcAuthenticator.beginAuthorize({
+        tenantSlug: body.tenantSlug,
+        returnTo: body.returnTo,
+      });
+      return reply.code(200).send(result);
+    },
+  );
 
   // POST /v1/auth/oidc/google/callback — consume IdP callback, complete the
   // OIDC flow, and return a session.
-  // Body: { tenantSlug, code, state } (oidcCallbackRequestSchema).
+  // Body: { code, state } (oidcCallbackRequestSchema).
   // The `tenantSlug` is included in the body (not the path) because the BFF
   // relays it from the original authorize request; the route is registered as
   // a public endpoint (no preHandler auth).
-  app.post('/v1/auth/oidc/google/callback', async (req, reply) => {
-    const body = parse(oidcCallbackRequestSchema, req.body);
-    const result = await oidcAuthenticator.handleCallback({
-      code: body.code,
-      state: body.state,
-    });
-    // Return session tokens plus returnTo so the client can redirect.
-    return reply.code(200).send({ ...result.tokens, returnTo: result.returnTo });
-  });
+  //
+  // Rate-limited per-IP (tightest ceiling in the API): each call triggers an
+  // outbound Google token-exchange + JWKS verification.  The OidcAuthenticator
+  // already guards: bad/expired/replayed state → 401 BEFORE any Google call
+  // (R11).  Rate-limiting adds the outer defence so a burst of calls with
+  // valid-looking state tokens is shed at the HTTP layer.
+  //
+  // Logging invariant: raw `code`, `id_token`, and `client_secret` MUST NOT
+  // appear in logs.  `sub` and `email` are logged only as piiHash() digests.
+  app.post(
+    '/v1/auth/oidc/google/callback',
+    { config: { rateLimit: oidcRateLimit } },
+    async (req, reply) => {
+      const body = parse(oidcCallbackRequestSchema, req.body);
+      // Log the request BEFORE the outbound Google call, with no secret fields.
+      // body.code and body.state are NOT logged; stateHash lets us correlate
+      // without exposing the anti-CSRF token.
+      req.log.info({ stateHash: piiHash(body.state) }, 'oidc callback received');
+      const result = await oidcAuthenticator.handleCallback({
+        code: body.code,
+        state: body.state,
+      });
+      // Log success with hashed sub — no PII in structured logs.
+      req.log.info(
+        { subHash: piiHash(result.tokens.userId), tenantId: result.tokens.tenantId },
+        'oidc callback success',
+      );
+      // Return session tokens plus returnTo so the client can redirect.
+      return reply.code(200).send({ ...result.tokens, returnTo: result.returnTo });
+    },
+  );
 
   // ── Auth (public) ────────────────────────────────────────────────────────
   app.post('/v1/auth/login', async (req, reply) => {

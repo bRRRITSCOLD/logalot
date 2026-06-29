@@ -41,6 +41,11 @@ const EnvSchema = z.object({
     .string()
     .url()
     .default('https://accounts.google.com/o/oauth2/v2/auth'),
+  // Per-IP rate limiting on OIDC routes (authorize + callback).
+  // Defaults: 20 requests per minute per IP — intentionally conservative since
+  // these endpoints trigger outbound Google calls (T02 / R11, R12).
+  OIDC_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(20),
+  OIDC_RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(60_000),
 });
 
 export interface Config {
@@ -68,6 +73,10 @@ export interface Config {
   googleOidcRedirectUri: string | undefined;
   /** Google OIDC authorization endpoint URL (defaults to accounts.google.com). */
   googleOidcAuthEndpoint: string;
+  /** Max requests per IP per window on OIDC routes (authorize + callback). */
+  oidcRateLimitMax: number;
+  /** Rate-limit window size in milliseconds for OIDC routes. */
+  oidcRateLimitWindowMs: number;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -90,5 +99,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     googleOidcClientId: parsed.GOOGLE_OIDC_CLIENT_ID,
     googleOidcRedirectUri: parsed.GOOGLE_OIDC_REDIRECT_URI,
     googleOidcAuthEndpoint: parsed.GOOGLE_OIDC_AUTH_ENDPOINT,
+    oidcRateLimitMax: parsed.OIDC_RATE_LIMIT_MAX,
+    oidcRateLimitWindowMs: parsed.OIDC_RATE_LIMIT_WINDOW_MS,
   };
 }
