@@ -43,13 +43,27 @@ Security-architect flagged SSM Session Manager vs locked-CIDR SSH. **Decision: S
 
 The repo has **one** Dockerfile (Go services, `SERVICE=` arg). `control-plane` (Node/Fastify) and `web` (TanStack Start) have **no** Dockerfile today (the slice compose only runs the Go trio). The AWS box needs all 7 app images as `linux/arm64`. **Decision:** add `Dockerfile.control-plane` and `Dockerfile.web` (T05); publish all 7 images multi-arch (`linux/arm64` + `linux/amd64` for CI/local) via `docker buildx` in CI (T14).
 
+### D6 — Multi-tenant membership: per-tenant uniqueness, no SECURITY DEFINER resolver (user design change, 2026-06-28)
+
+**The user changed the requirement:** a single Google account **MUST** sign into **multiple tenants** (multi-tenant membership). This supersedes the PoC "one Google account ↔ one user, ever" decision (ADR-0008 / model.md §6.4 — which had pre-described this exact relax as the documented future change).
+
+Concrete consequences baked into the plan:
+
+1. **Constraint:** `UNIQUE(provider, provider_sub)` (GLOBAL) → **`UNIQUE(tenant_id, provider, provider_sub)`** (per-tenant). `UNIQUE(tenant_id, user_id, provider)` is retained. Net: one Google account → at most one user **per tenant**, linkable independently in many tenants.
+2. **Drop the `SECURITY DEFINER` resolver** `app.resolve_oauth_identity_by_sub` entirely (and its grant/revoke and `.down.sql` line). The tenant is **always known before lookup**: every login carries a tenant hint via the server-side single-use `state` from the tenant-scoped login page. Subsequent-login lookup = **arm RLS with `state.tenant_id`, then an RLS-scoped `SELECT … WHERE provider = $ AND provider_sub = $`**. No global, no-tenant lookup exists anymore.
+3. **The old cross-tenant cross-check (old R3) becomes structural.** Because the by-sub `SELECT` runs *inside* `state.tenant_id`'s RLS context, it is **impossible to resolve into any other tenant** — there is no code path that can return tenant A's identity when the user is on tenant B's login page. A sub linked only in A, presented via B's page, simply finds nothing in B and falls through to the **first-link-in-B** path (link if the email is provisioned in B; 401 otherwise). That is exactly the desired multi-tenant behavior.
+
+This removes data-architect open-question #1 (the resolver's dependency on `POSTGRES_USER` being a superuser) — **it is now MOOT**: there is no `SECURITY DEFINER` bypass, control-plane stays entirely on its single `NOSUPERUSER` `logalot_app` pool, every OIDC DB statement runs under RLS.
+
+**Migration impact:** `000017` was authored (data phase) with the global constraint + the resolver. Since it is freshly authored and not yet deployed, **T12 amends `000017` in place** (constraint swap + drop resolver fn + fix `.down.sql`) rather than adding a follow-up migration. **Coordinate with data-architect** — the DDL change is theirs to confirm; the plan records the required shape.
+
 ### D5 — Data-architect open questions (resolved)
 
 | # | Question | Resolution |
 |---|---|---|
-| 1 | `POSTGRES_USER` superuser in target envs (resolver bypass depends on it) | **Confirmed superuser.** Postgres is self-hosted in a container; `POSTGRES_USER` is the image's default superuser and owns the migrations (incl. the `SECURITY DEFINER` resolver). The `app.resolve_oauth_identity_by_sub` bypass holds. **Fallback** (if ever de-superuser'd): dedicated `BYPASSRLS` role + small dedicated control-plane pool for that one lookup (model.md §4.6) — *not* built now. |
-| 2 | `UNIQUE(provider, provider_sub)` GLOBAL = one Google account per user — intent? | **Confirmed, locked PoC decision.** One Google account ↔ one logalot user, ever. Multi-tenant-per-identity is the documented future relax to `UNIQUE(tenant_id, provider, provider_sub)` (model.md §6.4) — not built. |
-| 3 | First-link unique violation → 401/409 not 500 | **Resolved.** The OIDC authenticator maps PG `23505` (via existing `isUniqueViolation`, tenant-tx.ts) on the first-link INSERT to a **401** (treated as "already linked elsewhere"; we keep the generic 401 for auth to avoid leaking linkage state). Covered in T10. |
+| 1 | `POSTGRES_USER` superuser in target envs (resolver bypass depends on it) | **MOOT (D6).** The `SECURITY DEFINER` resolver is dropped; there is no RLS bypass. Control-plane runs the by-sub lookup RLS-scoped on its `NOSUPERUSER` `logalot_app` pool. No superuser dependency remains. |
+| 2 | `UNIQUE(provider, provider_sub)` GLOBAL = one Google account per user — intent? | **Superseded by D6.** Now `UNIQUE(tenant_id, provider, provider_sub)`: one Google account → one user **per tenant**, multi-tenant membership supported. |
+| 3 | First-link unique violation → 401/409 not 500 | **Resolved (semantics shift under D6).** `23505` on the per-tenant `UNIQUE(tenant_id, provider, provider_sub)` is now a **within-tenant** concurrency case (two racing first-links in the same tenant): the OIDC authenticator catches it via `isUniqueViolation` (tenant-tx.ts) and **re-resolves the now-existing row in-tenant and proceeds** (idempotent first-link), never a 500. Covered in T10. |
 | 4 | Optional dev seed `oauth_identities` row | **Yes, optional, DEV ONLY.** Added to `migrations/seeds/dev_tenant.sql` under `SET LOCAL app.tenant_id`, `ON CONFLICT DO NOTHING`, placeholder `provider_sub`, normalized `admin@dev.local` (T12). |
 | 5 | `oauth_identities.email` staleness on Google email change | **Resolved: leave as link-time snapshot.** Identity is pinned to `sub` (R13); the snapshot is audit-only and never re-resolves. No re-sync logic. |
 
@@ -129,12 +143,12 @@ Each task: **title · owner · files · integration points · blockedBy · test 
 - **blockedBy:** none
 - **Tests:** unit — `User@X.com ` → `user@x.com`; NFC composition cases; idempotent; no homograph fold. *(R14)*
 
-**T04 — OAuthIdentityRepository (port + Postgres adapter)**
+**T04 — OAuthIdentityRepository (port + Postgres adapter) — tenant-scoped, no resolver (D6)**
 - **Owner:** backend-engineer
-- **Files:** `app/ports.ts` (add `OAuthIdentityRepository`); `adapters/postgres/oauth-identity-repository.ts` (new) — `linkFirst(tenantId, {userId, providerSub, email})` INSERT under `withTenantTx` (maps `23505` via `isUniqueViolation`); `resolveBySub(provider, sub): {tenantId, userId}|null` calling `app.resolve_oauth_identity_by_sub` (no tenant armed); `touchLastLogin(tenantId, id)` UPDATE under RLS; `container.ts` wiring.
-- **Integration points:** migration `000017` (table + resolver fn + grants). Uses the existing `withTenantTx`/`isUniqueViolation` (tenant-tx.ts).
-- **blockedBy:** none (DDL already merged)
-- **Tests:** integration (testcontainers Postgres, `logalot_app` role) — `resolveBySub` returns the tuple with **no** tenant context (resolver bypass works); unknown sub → null; first-link INSERT visible only under its tenant; duplicate `sub` across tenants → `23505`. *(R2/R3 storage-side; D5-Q1 bypass; D5-Q3 conflict mapping)*
+- **Files:** `app/ports.ts` (add `OAuthIdentityRepository`); `adapters/postgres/oauth-identity-repository.ts` (new) — **`findByProviderSub(tenantId, provider, sub): {id, userId}|null`** RLS-scoped `SELECT` under `withTenantTx` (no `SECURITY DEFINER`, no global lookup — D6); `linkFirst(tenantId, {userId, providerSub, email})` INSERT under `withTenantTx` (catches `23505` via `isUniqueViolation` → re-resolve in-tenant, idempotent); `touchLastLogin(tenantId, id)` UPDATE under RLS; `container.ts` wiring.
+- **Integration points:** migration `000017` as amended in T12 (table + per-tenant `UNIQUE(tenant_id, provider, provider_sub)`, **resolver removed**). Uses the existing `withTenantTx`/`isUniqueViolation` (tenant-tx.ts). Control-plane stays on the single `NOSUPERUSER` `logalot_app` pool.
+- **blockedBy:** none (DDL amended in T12; this can build against the amended shape)
+- **Tests:** integration (testcontainers Postgres, `logalot_app` role) — `findByProviderSub` returns the row **only under the matching tenant's RLS context**; the same `(provider, sub)` linked in tenant A is **invisible** under tenant B's context (returns null → first-link-in-B path); unknown sub → null; first-link INSERT visible only under its tenant; **same `(provider, sub)` links successfully in A *and* B (multi-tenant membership)**; duplicate `(tenant_id, provider, sub)` within one tenant → `23505` (caught → re-resolve). *(R2 storage-side; R3 now structural via RLS-scoped lookup; D5-Q3 in-tenant conflict)*
 
 **T05 — Node service Dockerfiles (control-plane + web), arm64-capable**
 - **Owner:** devops-engineer
@@ -173,12 +187,12 @@ Each task: **title · owner · files · integration points · blockedBy · test 
 - **blockedBy:** T07, T08, T02
 - **Tests:** unit/integration — missing/unknown/expired/already-consumed `state` → 401, **zero outbound Google calls** (assert with a fake client); replayed valid `state` → 401 (single-use); nonce mismatch → 401; missing/mismatched `code_verifier` → exchange fails → 401, no session. *(R4, R5, R6 exchange-half, R11 pre-Google rejection)*
 
-**T10 — Account linking + session mint + audit**
+**T10 — Account linking + session mint + audit — tenant-always-known (D6)**
 - **Owner:** backend-engineer
-- **Files:** `app/oidc-authenticator.ts` (resolve+link+mint): subsequent-login `OAuthIdentityRepository.resolveBySub` → `SET LOCAL` resolved tenant → **cross-check resolved tenant == state tenantSlug's tenant** (mismatch → 401) → `touchLastLogin`; first-link `tenants.findByPublicId(state.tenantSlug)` → `users.findCredentialsByEmail(tenant.id, normalizeEmail(id_token.email))` → no match → 401 (no row) → match → `linkFirst` (23505 → 401); on success mint via the **same** `AuthService` path (new refresh family + access JWT); emit audit events; `domain/errors.ts` if needed.
-- **Integration points:** `AuthService` mint (auth-service.ts), `OAuthIdentityRepository` (T04), `normalizeEmail` (T03), `TenantRepository.findByPublicId` + `UserRepository.findCredentialsByEmail` (existing).
+- **Files:** `app/oidc-authenticator.ts` (resolve+link+mint). **Single tenant-scoped flow (no global resolver, no cross-check — D6):** `tenants.findByPublicId(state.tenantSlug)` → `SET LOCAL app.tenant_id = tenant.id` → `OAuthIdentityRepository.findByProviderSub(tenant.id, 'google', sub)`. **Found** → subsequent login in this tenant → `touchLastLogin` → mint. **Not found** → first-link-in-this-tenant: `users.findCredentialsByEmail(tenant.id, normalizeEmail(id_token.email))` → no match → 401 (no row) → match → `linkFirst` (23505 → re-resolve in-tenant, proceed). On success mint via the **same** `AuthService` path (new refresh family + access JWT); emit audit events; `domain/errors.ts` if needed.
+- **Integration points:** `AuthService` mint (auth-service.ts), `OAuthIdentityRepository` (T04), `normalizeEmail` (T03), `TenantRepository.findByPublicId` + `UserRepository.findCredentialsByEmail` (existing). Cross-tenant isolation is now **structural** (the by-sub lookup never leaves `state.tenant_id`'s RLS context) — no explicit mismatch check.
 - **blockedBy:** T09, T04, T03
-- **Tests:** integration (testcontainers Postgres) — first-link: email provisioned only in tenant A, login via tenant B page → **401, no `oauth_identities` row**; subsequent: `sub` linked to A presented via B → **401, no session**; success mints a **new** refresh `familyId` distinct from any prior; second login with same `sub` + changed email resolves the **same** user (no new row); normalized `User@X.com` matches `user@x.com`; audit record emitted on first-link, login, and each reject (tenant_id, user_id?, provider, hashed sub, outcome, ts). *(R2, R3, R10, R13, R14, R15, D5-Q3)*
+- **Tests:** integration (testcontainers Postgres) — first-link: email provisioned only in tenant A, login via tenant B page → **401, no `oauth_identities` row in B**; **multi-tenant membership: a Google `sub` linked in A *and* B (user provisioned in both) → login from A's page resolves A's user, login from B's page resolves B's user** (correct tenant each time); cross-tenant structural: `sub` linked only in A, login via B where the email is provisioned in B → **links into B** (new B row), where the email is **not** provisioned in B → **401** (never resolves into A); success mints a **new** refresh `familyId` distinct from any prior; second login same `sub` + changed email resolves the **same** in-tenant user (no new row); normalized `User@X.com` matches `user@x.com`; audit record emitted on first-link, login, and each reject (tenant_id, user_id?, provider, hashed sub, outcome, ts). *(R2, R3-structural, R10, R13, R14, R15, D5-Q3)*
 
 **T11 — Callback rate-limiting + no-PII/secret logging**
 - **Owner:** backend-engineer
@@ -187,12 +201,12 @@ Each task: **title · owner · files · integration points · blockedBy · test 
 - **blockedBy:** T09
 - **Tests:** integration — `429` after threshold on the callback; bad-`state` path makes **zero** Google calls; log-capture across a full login asserts no raw `id_token`/`code`/`client_secret`/full `email`, `sub`/`email` only hashed/redacted. *(R11, R12, R8 log-side)*
 
-**T12 — Migration 000017 wiring + RLS/resolver validation + optional dev seed**
-- **Owner:** backend-engineer
-- **Files:** `migrations/seeds/dev_tenant.sql` (append optional dev `oauth_identities` row under `SET LOCAL app.tenant_id`, `ON CONFLICT DO NOTHING`); a migration integration test (extend `tests/` or control-plane integration suite). *(The migration SQL itself is already authored — `make migrate-up` already applies it; this task only wires/validates/seeds.)*
-- **Integration points:** `app.resolve_oauth_identity_by_sub` grant to `logalot_app`; RLS policy on `oauth_identities`.
-- **blockedBy:** none (DB-only; feeds T10/T19)
-- **Tests:** integration (testcontainers, full up→down→up) — RLS fail-closed (no context ⇒ 0 rows; foreign-tenant INSERT ⇒ `WITH CHECK` reject); global uniqueness across RLS-invisible tenants ⇒ `23505`; resolver returns tuple as `logalot_app` with no context, denies a non-`logalot_app` role (PUBLIC revoke holds); same-tenant composite FK violation; dev seed idempotent. *(R2/R3 storage; D5-Q1, D5-Q4)*
+**T12 — Migration 000017 amendment (per-tenant unique, drop resolver) + RLS validation + optional dev seed (D6)**
+- **Owner:** backend-engineer (coordinate with data-architect — DDL change is theirs to confirm)
+- **Files:** `migrations/000017_oauth_identities.up.sql` — **change `UNIQUE(provider, provider_sub)` → `UNIQUE(tenant_id, provider, provider_sub)`** and **delete the `CREATE FUNCTION app.resolve_oauth_identity_by_sub` block + its `REVOKE`/`GRANT`** (D6); `migrations/000017_oauth_identities.down.sql` — **remove the `DROP FUNCTION … resolve_oauth_identity_by_sub` line** (function no longer exists); `migrations/seeds/dev_tenant.sql` (append optional dev `oauth_identities` row under `SET LOCAL app.tenant_id`, `ON CONFLICT DO NOTHING`); a migration integration test (extend `tests/` or control-plane integration suite). Since `000017` is freshly authored and undeployed, amend in place (no follow-up migration).
+- **Integration points:** RLS policy on `oauth_identities`; `logalot_app` table DML grants from `000011` default privileges (no function grant anymore).
+- **blockedBy:** none (DB-only; feeds T04/T10/T19)
+- **Tests:** integration (testcontainers, full up→down→up) — RLS fail-closed (no context ⇒ 0 rows; foreign-tenant INSERT ⇒ `WITH CHECK` reject); **per-tenant uniqueness: same `(provider, sub)` inserts successfully under tenant A *and* tenant B (multi-tenant); a duplicate `(tenant_id, provider, sub)` within one tenant ⇒ `23505`**; an RLS-scoped by-sub `SELECT` returns the row only under the matching tenant's context (none cross-tenant); **assert `app.resolve_oauth_identity_by_sub` no longer exists** (function dropped); same-tenant composite FK violation; dev seed idempotent. *(R2/R3-structural storage; D5-Q1 moot, D5-Q4)*
 
 **T13 — web BFF thin relay + "Sign in with Google" + callback route**
 - **Owner:** frontend-engineer
@@ -243,7 +257,7 @@ Each task: **title · owner · files · integration points · blockedBy · test 
 - **Files:** `tests/oidc-e2e/` (new, mirrors `tests/e2e` slice style) with a **fake Google** (token endpoint + JWKS) so no live IdP is needed.
 - **Integration points:** exercises the full authorize→callback→link→mint chain end to end.
 - **blockedBy:** T10, T11, T12, T13
-- **Tests:** e2e — happy path (first-link then subsequent), all Critical/High rejections end to end: R1 (each invalid id_token field), R2 (cross-tenant first-link), R3 (cross-tenant subsequent), R4 (state replay/unknown), R5 (nonce), R6 (PKCE missing verifier), R10 (fresh family), R13 (sub-pinned), R14 (normalization). *(R1–R6, R10, R13, R14 integrated)*
+- **Tests:** e2e — happy path (first-link then subsequent), all Critical/High rejections end to end: R1 (each invalid id_token field), R2 (first-link email not provisioned in `state` tenant → 401), **R3-structural (multi-tenant): same Google `sub` provisioned + linked in tenant A and tenant B — login from A's page lands as A's user, login from B's page lands as B's user; a `sub` linked only in A, login via B with no B provisioning → 401, never resolves into A)**, R4 (state replay/unknown), R5 (nonce), R6 (PKCE missing verifier), R10 (fresh family), R13 (sub-pinned), R14 (normalization). *(R1–R6, R10, R13, R14 integrated; R3 structural)*
 
 **T20 — Wire `cold_smoke_aws` CI job against the real provisioned S3 bucket**
 - **Owner:** devops-engineer
@@ -280,8 +294,8 @@ Each task: **title · owner · files · integration points · blockedBy · test 
 | Req | Requirement (short) | Satisfied by | Tier |
 |---|---|---|---|
 | **R1** | Complete `id_token` validation (per-field) | **T07** (unit/field) · T19 (e2e) | unit, e2e |
-| **R2** | First-link tenant scoping | **T10** · T04/T12 (storage) · T19 | integration, e2e |
-| **R3** | Subsequent-login tenant cross-check | **T10** · T04/T12 (resolver) · T19 | integration, e2e |
+| **R2** | First-link tenant scoping (email match scoped to `state.tenant_id`) | **T10** · T04/T12 (storage) · T19 | integration, e2e |
+| **R3** | Cross-tenant isolation — **now structural** (by-sub lookup is RLS-scoped to `state.tenant_id`; no global resolver, so resolving into another tenant is impossible by construction); multi-tenant membership supported (D6) | **T10** · T04/T12 (RLS-scoped lookup, per-tenant unique) · T19 (multi-tenant) | integration, e2e |
 | **R4** | CSRF / `state` single-use ≥128-bit | **T08** (mint) · **T09** (consume) · T02 (atomic store) | unit, integration |
 | **R5** | Nonce replay protection | **T07** (assert) · **T09** (bind) · T02 | unit, integration |
 | **R6** | PKCE S256 enforced | **T08** (challenge) · **T09** (verifier at exchange) | unit, integration |
@@ -296,7 +310,7 @@ Each task: **title · owner · files · integration points · blockedBy · test 
 | **R15** | Auth audit events (link/login/reject) | **T10** | integration |
 | **R16** | Transport security (https-only, cookie flags, HSTS) | **T13** (cookies) · **T15/T18** (Caddy/TLS) · T22 | unit, review |
 
-Every R1–R16 maps to at least one task with a named test; the Critical set (R1–R4) is covered both at the unit/component layer **and** end-to-end (T19).
+Every R1–R16 maps to at least one task with a named test; the Critical set (R1–R4) is covered both at the unit/component layer **and** end-to-end (T19). Under D6, R3 is satisfied **structurally** (RLS-scoped by-sub lookup) rather than by an explicit cross-check, and the e2e adds a positive multi-tenant-membership assertion.
 
 ---
 
@@ -306,7 +320,7 @@ Every R1–R16 maps to at least one task with a named test; the Critical set (R1
 - **Waves:** Wave 0 foundations (T01–T06, parallel-safe) → Wave 1 cores (Track A serialized control-plane chain T08→T09→T10→T11 + parallel T07/T13; Track B packaging + infra T14–T18) → Wave 2 integration/cold-smoke/flip/review (T19–T23).
 - **Owner distribution:** backend-engineer 10 (T01,T02,T03,T04,T07,T08,T09,T10,T11,T19; +T12,T21 shared) · devops-engineer 8 (T05,T06,T14,T15,T16,T17,T18,T20; +T21,T23 shared) · frontend-engineer 1 (T13) · security-architect 1 (T22) · lead-engineer (T23 validation).
 - **Critical path:** `T01 → T07/T08 → T09 → T10 → T19` for the logic, joined with `T06 → T16 → T18 + T17` for the domain/TLS, converging at **T23** (live Google e2e needs real HTTPS). Track A's testcontainers e2e (T19) is independent of Track B and finishes first.
-- **Cross-cutting decisions made:** (D1) state/nonce/**PKCE-verifier** in **control-plane Redis**, single-use, **web BFF is a thin relay** — exercising ADR-0008's own documented Redis reversibility trigger because PKCE's verifier must stay server-side at the exchange point; (D2) endpoint split = `POST /v1/auth/oidc/google/authorize` + `/callback`; (D3) admin access = **SSM Session Manager, no port 22** (SSH-to-CIDR is a togglable fallback); (D4) two new Node Dockerfiles + multi-arch arm64 CI; (D5) all five data-architect open questions resolved (superuser confirmed; global-unique confirmed; 23505→401; optional dev seed yes; email = link-time snapshot).
+- **Cross-cutting decisions made:** (D1) state/nonce/**PKCE-verifier** in **control-plane Redis**, single-use, **web BFF is a thin relay** — exercising ADR-0008's own documented Redis reversibility trigger because PKCE's verifier must stay server-side at the exchange point; (D2) endpoint split = `POST /v1/auth/oidc/google/authorize` + `/callback`; (D3) admin access = **SSM Session Manager, no port 22** (SSH-to-CIDR is a togglable fallback); (D4) two new Node Dockerfiles + multi-arch arm64 CI; (**D6 — user design change**) **multi-tenant membership**: constraint → `UNIQUE(tenant_id, provider, provider_sub)`, **SECURITY DEFINER resolver dropped**, by-sub lookup is RLS-scoped to the always-known `state.tenant_id`, cross-tenant isolation is now **structural**; (D5) open questions: **Q1 now MOOT** (no resolver → no superuser dependency), Q2 superseded by D6, Q3 `23505`→in-tenant re-resolve, Q4 optional dev seed yes, Q5 email = link-time snapshot.
 - **Watch-outs to track:** `.env.example` and `routes.ts`/`container.ts` are shared-file contention points — serialize per the file-contention notes; the **only** hard cross-track dependency is T23 (live demo needs Route53 + Caddy/ACME); `#63 AC#3` is closed by **T20 → T21** (cold-smoke green gates the COLD flag flip).
 </content>
 </invoke>

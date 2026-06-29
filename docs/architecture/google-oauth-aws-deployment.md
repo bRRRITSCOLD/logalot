@@ -77,6 +77,7 @@ graph TB
     query -->|cold > 30d| athena
     athena --> s3
     control --> pg
+    control -->|OAuth state store| redis
     alerts --> query
     retention -->|drop hot partitions| pg
     retention -->|expire cold prefixes| s3
@@ -110,9 +111,11 @@ graph TB
 
 ## 2. Google OAuth sign-in flow (Track A)
 
-Invite-only / link-existing. `client_secret` lives server-side in `control-plane`; the `web` BFF holds only
-`client_id` + `redirect_uri`. CSRF (`state`) and replay (`nonce`) protection ride a single-use,
-signed+encrypted httpOnly cookie on the BFF (ADR-0008).
+Invite-only / link-existing, **multi-tenant membership** (one Google account can sign into many tenants).
+`client_secret` lives server-side in `control-plane`; the `web` BFF holds only `client_id` + `redirect_uri`.
+`state`, `nonce`, and the **PKCE `code_verifier`** are **minted by control-plane and stored in one Redis
+record** (atomic single-use), with a **browser-binding cookie** as a second factor; the tenant comes from the
+**tenant-scoped login page** (ADR-0008; threat-model R4/R5/R6/R11).
 
 ```mermaid
 sequenceDiagram
@@ -120,46 +123,69 @@ sequenceDiagram
     participant W as web (BFF)
     participant G as Google (OIDC)
     participant C as control-plane (OidcAuthenticator)
-    participant DB as Postgres (users, oauth_identities)
+    participant RS as Redis (OAuthStateStore)
+    participant DB as Postgres (users, oauth_identities, RLS)
 
-    B->>W: click "Sign in with Google"
-    W->>W: generate state + nonce; seal {state,nonce,redirect}<br/>into httpOnly Secure SameSite=Lax cookie (~10m, single-use)
-    W-->>B: 302 to Google authorize?client_id&redirect_uri&state&nonce&scope=openid email
+    B->>W: open tenant-scoped login page; click "Sign in with Google"
+    W->>C: POST /auth/oidc/google/begin { tenant_slug }
+    C->>C: mint state, nonce, code_verifier; code_challenge=S256(verifier)
+    C->>RS: SET state -> {tenant_id, nonce, code_verifier} TTL ~10m
+    C-->>W: authorize params (incl. code_challenge) + browser-binding cookie
+    W-->>B: 302 to Google authorize?...&state&nonce&code_challenge=S256 (Set browser-binding cookie)
     B->>G: authorize (user authenticates + consents)
     G-->>B: 302 to web callback?code&state
-    B->>W: GET /callback?code&state (+ cookie)
-    W->>W: read cookie; assert state matches; DELETE cookie (single-use)
-    W->>C: POST /auth/oidc/google/callback { code, nonce }
-    C->>G: exchange code -> tokens (uses client_secret)
-    G-->>C: id_token (+ access_token)
-    C->>G: fetch/verify JWKS (cached)
-    C->>C: verify id_token: sig, iss, aud==client_id, exp,<br/>nonce==supplied, email_verified==true
-    alt verification fails
-        C-->>W: 401
+    B->>W: GET /callback?code&state (+ browser-binding cookie)
+    W->>C: POST /auth/oidc/google/callback { code, state } (+ cookie)
+    C->>RS: GETDEL state (atomic single-use)
+    alt state missing / expired / already consumed OR cookie mismatch
+        C-->>W: 401 (before any Google call)
         W-->>B: error
-    else verified
-        C->>DB: match by (provider,sub); else by verified email -> existing user
-        alt no provisioned user matches (invite-only)
-            C-->>W: 401 (reject)
-            W-->>B: "not provisioned"
-        else first link
-            C->>DB: INSERT oauth_identities(tenant_id,user_id,'google',sub,email)
+    else valid
+        C->>C: arm RLS to record.tenant_id
+        C->>G: exchange code -> tokens (client_secret + PKCE code_verifier)
+        G-->>C: id_token (+ access_token)
+        C->>G: fetch/verify JWKS (cached)
+        C->>C: verify id_token: sig, iss, aud==client_id, exp,<br/>nonce==record.nonce, email_verified==true
+        alt verification fails
+            C-->>W: 401
+            W-->>B: error
+        else verified
+            C->>DB: lookup by (tenant_id, provider, sub) -- RLS-scoped to armed tenant
+            alt sub already linked in this tenant
+                Note over C,DB: subsequent login -> resolve member user
+            else first link
+                C->>DB: match verified email -> provisioned user IN this tenant
+                alt no provisioned user in this tenant (invite-only)
+                    C-->>W: 401 (reject)
+                    W-->>B: "not provisioned"
+                else
+                    C->>DB: INSERT oauth_identities(tenant_id,user_id,'google',sub,email)
+                end
+            end
+            C->>C: mint access JWT + rotating refresh (same as password path)
+            C-->>W: Set-Cookie httpOnly session (access+refresh)
+            W-->>B: authenticated; redirect to validated target
         end
-        C->>C: mint access JWT + rotating refresh (same as password path)
-        C-->>W: Set-Cookie httpOnly session (access+refresh)
-        W-->>B: authenticated; redirect to validated target
     end
 ```
 
 Key points:
 - **client_secret never reaches the browser** — only `control-plane` holds it (read from SSM) and only it
   talks to Google's token endpoint (ADR-0008, ADR-0010).
+- **Single-use state + PKCE:** `state`/`nonce`/`code_verifier` are control-plane-minted and stored in one
+  Redis record consumed atomically (`GETDEL`) on callback — true single-use (R4/R5); a callback with no
+  matching record is rejected *before* any Google call (R11). PKCE(S256) with a server-held verifier defends
+  authorization-code injection (R6). A browser-binding cookie is the second-factor binding (R3/R4), not the
+  single-use authority. Redis is reached behind an `OAuthStateStore` port (lead D1).
 - **Full `id_token` validation** (signature/iss/aud/exp/nonce) + **`email_verified==true`** closes the
   unverified-email account-takeover path.
-- **Invite-only:** an authenticated Google user with no matching provisioned account is **rejected (401)** —
-  no auto-provisioning.
-- **Identity key:** first login links the immutable Google `sub` to the user; thereafter match by
-  `(provider, sub)`, so a later Google email change does not break the link.
+- **Multi-tenant:** the tenant is known before lookup (`tenant_id` in the Redis record, from the tenant-scoped
+  login page); the lookup is **RLS-scoped** to that tenant. The same Google `sub` can hold one membership per
+  tenant (`UNIQUE(tenant_id, provider, provider_sub)`); cross-tenant resolution is structurally impossible.
+- **Invite-only (per tenant):** an authenticated Google user with no matching provisioned account *in the
+  armed tenant* is **rejected (401)** — no auto-provisioning.
+- **Identity key:** first login links the immutable Google `sub` to the member user; thereafter match by
+  `(tenant_id, provider, sub)`, so a later Google email change does not break the link.
 - **Downstream unchanged:** the minted session is the same access-JWT + rotating-refresh of ADR-0007; the
   `query-service` JWT authenticator, `TenantContext`, and kernel are untouched.
 
@@ -169,8 +195,14 @@ Key points:
 
 - **Migration number:** `oauth_identities` cannot be `000016` (taken by `retention_worker`); it must be
   `000017`+ — confirm ordering in the data-model phase (data-architect).
-- **User email uniqueness:** Google email→user match requires globally-unique user email (or a post-login
-  tenant selector, which is out of scope). Reconcile with the users schema in Phase 2 (data-architect).
+- **Multi-tenant membership:** `oauth_identities` is `UNIQUE(tenant_id, provider, provider_sub)` and
+  RLS-scoped; per-tenant user-email uniqueness suffices (no global email uniqueness). Confirm the users-table
+  uniqueness constraint in Phase 2 (data-architect).
+- **Tenant-scoped login page:** `web` must expose a per-tenant login entry (path/subdomain) so the tenant is
+  known at `begin` time (lead-engineer / web).
+- **control-plane Redis dependency:** new `OAuthStateStore` (Redis-backed, single-use `GETDEL`, in-memory fake
+  for tests) — control-plane had no Redis before; Redis already runs on the box, so ~$0 cost delta (lead D1;
+  ADR-0008, ADR-0009).
 - **ARM64 image builds:** CI must publish `linux/arm64` images for the Graviton box (lead-engineer).
 - **`cold_smoke_aws`:** wire against the real S3 bucket this epic provisions (unblocks #63 AC#3).
 - **Per-container `mem_limit`s + swap:** required for t4g.small safety (lead-engineer; ADR-0011).
