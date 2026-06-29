@@ -253,7 +253,9 @@ describe('OIDC route: no PII in logs', () => {
     // A stable userId value so we can assert it does not appear raw in logs.
     const stubUserId = '0123456789abcdef0123456789abcdef';
     const oidcAuthenticator: OidcAuthenticator = {
-      beginAuthorize: vi.fn().mockResolvedValue({ redirectUrl: 'https://accounts.google.com/auth' }),
+      beginAuthorize: vi
+        .fn()
+        .mockResolvedValue({ redirectUrl: 'https://accounts.google.com/auth' }),
       handleCallback: vi.fn().mockResolvedValue({
         tokens: {
           accessToken: 'access',
