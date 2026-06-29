@@ -99,6 +99,33 @@ describe('oidcAuthorizeRequestSchema', () => {
     expect(result.success).toBe(false);
   });
 
+  it('rejects returnTo with embedded TAB (WHATWG strips TAB → //evil.example open redirect)', () => {
+    // Browsers strip U+0009 TAB while parsing, so "/\t/evil.example" → "//evil.example"
+    const result = oidcAuthorizeRequestSchema.safeParse({
+      tenantSlug: 'acme-corp',
+      returnTo: '/\t/evil.example',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects returnTo with embedded LF (WHATWG strips LF → //evil open redirect)', () => {
+    // Browsers strip U+000A LF while parsing, so "/\n//evil" → "//evil"
+    const result = oidcAuthorizeRequestSchema.safeParse({
+      tenantSlug: 'acme-corp',
+      returnTo: '/\n//evil',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects returnTo with embedded CR (WHATWG strips CR → //evil open redirect)', () => {
+    // Browsers strip U+000D CR while parsing, so "/\r/evil" → "//evil"
+    const result = oidcAuthorizeRequestSchema.safeParse({
+      tenantSlug: 'acme-corp',
+      returnTo: '/\r/evil',
+    });
+    expect(result.success).toBe(false);
+  });
+
   it('trims leading/trailing whitespace before validating returnTo', () => {
     // A value like "  /dashboard  " should be trimmed and accepted as "/dashboard"
     const result = oidcAuthorizeRequestSchema.safeParse({
