@@ -79,8 +79,8 @@ resource "aws_instance" "main" {
       # .env without a manual post-boot edit (issue #110: live Google e2e demo).
       # domain_name drives both LOGALOT_DOMAIN (Caddy TLS) and the fixed
       # GOOGLE_OIDC_REDIRECT_URI that must be registered in the Google Console.
-      domain_name           = var.domain_name
-      alert_email           = var.alert_email
+      domain_name = var.domain_name
+      alert_email = var.alert_email
     }
   )
 
