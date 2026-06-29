@@ -12,11 +12,14 @@ import { PgRetentionRepository } from './adapters/postgres/retention-repository'
 import { PgSavedQueryRepository } from './adapters/postgres/saved-query-repository';
 import { PgTenantRepository } from './adapters/postgres/tenant-repository';
 import { PgUserRepository } from './adapters/postgres/user-repository';
+import { createRedisClient } from './adapters/redis/client';
+import { InMemoryOAuthStateStore } from './adapters/redis/in-memory-oauth-state-store';
+import { RedisOAuthStateStore } from './adapters/redis/redis-oauth-state-store';
 import { AlertRuleService } from './app/alert-rule-service';
 import { ApiKeyService } from './app/api-key-service';
 import { AuthService } from './app/auth-service';
 import { DashboardService } from './app/dashboard-service';
-import type { TokenService } from './app/ports';
+import type { OAuthStateStore, TokenService } from './app/ports';
 import { RetentionService } from './app/retention-service';
 import { SavedQueryService } from './app/saved-query-service';
 import { TenantService } from './app/tenant-service';
@@ -39,6 +42,7 @@ export interface Services {
 export interface Container {
   services: Services;
   tokenService: TokenService;
+  oauthStateStore: OAuthStateStore;
 }
 
 // buildContainer is the composition root: it wires the concrete adapters into the
@@ -86,5 +90,12 @@ export function buildContainer(pool: Pool, config: Config): Container {
     dashboards: new DashboardService(dashboardRepo),
   };
 
-  return { services, tokenService };
+  // OAuth state store — Redis when REDIS_URL is configured, in-memory fake otherwise.
+  // The in-memory store is safe for single-process dev/test; use Redis in production
+  // and any multi-replica deployment so state survives between request handlers.
+  const oauthStateStore: OAuthStateStore = config.redisUrl
+    ? new RedisOAuthStateStore(createRedisClient(config.redisUrl))
+    : new InMemoryOAuthStateStore();
+
+  return { services, tokenService, oauthStateStore };
 }
