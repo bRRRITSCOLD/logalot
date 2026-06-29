@@ -5,7 +5,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 //   1. returnTo open-redirect validation (schema catches absolute / proto-relative URLs)
 //   2. Session cookies are written on success (lg_at / lg_rt)
 //   3. 4xx upstream errors collapse to one generic message (no enumeration)
-//   4. Handshake cookies (lg_oidc_tenant / lg_oidc_return) are cleared on all exits
+//   4. Handshake cookies (lg_oidc_tenant / lg_oidc_return / lg_oidc_state) are cleared on all exits
+//   5. State is extracted from redirectUrl and bound to the browser via lg_oidc_state cookie (R4 / T3)
+//   6. completeGoogleSignin rejects mismatched state before relaying to the control-plane
 //
 // `createServerFn(...).validator(...).handler(fn)` -> a callable that runs `fn`
 // directly when called with `{ data }`.  We stub it the same way auth.test.ts does.
@@ -42,6 +44,7 @@ import {
   completeGoogleSignin,
   getOidcTenantSlug,
   OIDC_RETURN_COOKIE,
+  OIDC_STATE_COOKIE,
   OIDC_TENANT_COOKIE,
   startGoogleSignin,
 } from './oidc';
@@ -89,6 +92,10 @@ function tokenPair(accessToken: string): TokenPair {
   };
 }
 
+/** A redirect URL that includes an OIDC state parameter (as the CP would produce). */
+const REDIRECT_WITH_STATE = (state: string) =>
+  `https://accounts.google.com/o/oauth2/v2/auth?client_id=x&state=${encodeURIComponent(state)}`;
+
 beforeEach(() => {
   vi.clearAllMocks();
   cookies({});
@@ -100,29 +107,23 @@ afterEach(() => {
 // ── startGoogleSignin ────────────────────────────────────────────────────────
 
 describe('startGoogleSignin', () => {
-  it('returns the redirect URL and stashes tenantSlug + returnTo cookies on success', async () => {
-    mockCpOidcAuthorize.mockResolvedValue({
-      redirectUrl: 'https://accounts.google.com/o/oauth2/v2/auth?client_id=x',
-    });
+  it('returns the redirect URL, sets lg_oidc_state, and stashes tenantSlug + returnTo cookies on success', async () => {
+    const redirectUrl = REDIRECT_WITH_STATE('csrf-token-abc');
+    mockCpOidcAuthorize.mockResolvedValue({ redirectUrl });
 
     const result = await startGoogleSignin({
       data: { tenantSlug: 'acme', returnTo: '/dashboard' },
     });
 
-    expect(result).toEqual({
-      ok: true,
-      redirectUrl: 'https://accounts.google.com/o/oauth2/v2/auth?client_id=x',
-    });
+    expect(result).toEqual({ ok: true, redirectUrl });
+    // State MUST be bound to this browser before redirecting.
+    expect(mockSetCookie).toHaveBeenCalledWith(OIDC_STATE_COOKIE, 'csrf-token-abc', expect.any(Object));
     expect(mockSetCookie).toHaveBeenCalledWith(OIDC_TENANT_COOKIE, 'acme', expect.any(Object));
-    expect(mockSetCookie).toHaveBeenCalledWith(
-      OIDC_RETURN_COOKIE,
-      '/dashboard',
-      expect.any(Object),
-    );
+    expect(mockSetCookie).toHaveBeenCalledWith(OIDC_RETURN_COOKIE, '/dashboard', expect.any(Object));
   });
 
   it('does not set a return cookie when returnTo is absent', async () => {
-    mockCpOidcAuthorize.mockResolvedValue({ redirectUrl: 'https://accounts.google.com/auth' });
+    mockCpOidcAuthorize.mockResolvedValue({ redirectUrl: REDIRECT_WITH_STATE('s1') });
 
     await startGoogleSignin({ data: { tenantSlug: 'acme' } });
 
@@ -131,12 +132,30 @@ describe('startGoogleSignin', () => {
       expect.anything(),
       expect.anything(),
     );
+    // State cookie MUST still be set.
+    expect(mockSetCookie).toHaveBeenCalledWith(OIDC_STATE_COOKIE, 's1', expect.any(Object));
+  });
+
+  it('fails closed when the redirectUrl contains no state parameter', async () => {
+    // A redirect URL without a state param violates OIDC spec — the BFF must not proceed.
+    mockCpOidcAuthorize.mockResolvedValue({
+      redirectUrl: 'https://accounts.google.com/o/oauth2/v2/auth?client_id=x',
+    });
+
+    const result = await startGoogleSignin({ data: { tenantSlug: 'acme' } });
+
+    expect(result).toEqual({
+      ok: false,
+      message: 'Sign-in is temporarily unavailable. Please try again.',
+    });
+    // No cookies must be written when state extraction fails.
+    expect(mockSetCookie).not.toHaveBeenCalled();
   });
 
   it.each([
     ['//evil.com'],
     ['https://evil.com'],
-    ['\\\\evil.com'],
+    ['\\\\\\\\ evil.com'],
     [' https://evil.com'],
   ])('schema rejects returnTo=%s — never reaches the control-plane', async (badReturnTo) => {
     // The oidcAuthorizeRequestSchema validator should reject the call before the handler runs.
@@ -186,10 +205,13 @@ describe('completeGoogleSignin', () => {
   it('writes session cookies, clears handshake cookies, and returns session + returnTo on success', async () => {
     const access = fakeJwt({ ...baseClaims, exp: FAR_FUTURE });
     mockCpOidcCallback.mockResolvedValue(tokenPair(access));
-    cookies({ [OIDC_RETURN_COOKIE]: '/settings' });
+    cookies({
+      [OIDC_RETURN_COOKIE]: '/settings',
+      [OIDC_STATE_COOKIE]: 'matching-state',
+    });
 
     const result = await completeGoogleSignin({
-      data: { tenantSlug: 'acme', code: 'auth-code', state: 'opaque-state' },
+      data: { tenantSlug: 'acme', code: 'auth-code', state: 'matching-state' },
     });
 
     expect(result).toEqual({
@@ -204,35 +226,66 @@ describe('completeGoogleSignin', () => {
     });
     expect(mockSetCookie).toHaveBeenCalledWith(ACCESS_COOKIE, access, expect.any(Object));
     expect(mockSetCookie).toHaveBeenCalledWith(REFRESH_COOKIE, 'rt-new', expect.any(Object));
-    // Handshake cookies MUST be cleared after a successful exchange.
+    // All handshake cookies MUST be cleared after a successful exchange.
     expect(mockDeleteCookie).toHaveBeenCalledWith(OIDC_TENANT_COOKIE, expect.any(Object));
     expect(mockDeleteCookie).toHaveBeenCalledWith(OIDC_RETURN_COOKIE, expect.any(Object));
+    expect(mockDeleteCookie).toHaveBeenCalledWith(OIDC_STATE_COOKIE, expect.any(Object));
   });
 
   it('returns null returnTo when the return cookie is absent', async () => {
     const access = fakeJwt({ ...baseClaims, exp: FAR_FUTURE });
     mockCpOidcCallback.mockResolvedValue(tokenPair(access));
-    cookies({});
+    cookies({ [OIDC_STATE_COOKIE]: 's' });
 
     const result = await completeGoogleSignin({
-      data: { tenantSlug: 'acme', code: 'code', state: 'state' },
+      data: { tenantSlug: 'acme', code: 'code', state: 's' },
     });
 
     expect(result).toMatchObject({ ok: true, returnTo: null });
   });
 
-  it('fails closed and clears handshake cookies when the CP returns an undecodable token', async () => {
-    mockCpOidcCallback.mockResolvedValue(tokenPair('not-a-jwt'));
+  it('rejects and clears cookies when the URL state does not match the browser-bound state cookie (login-CSRF)', async () => {
+    // The attacker's state_A is in the URL, but the victim's browser has state_B from
+    // their own (or no) authorize call — the mismatch must be detected before relay.
+    cookies({ [OIDC_STATE_COOKIE]: 'state-B' });
 
     const result = await completeGoogleSignin({
-      data: { tenantSlug: 'acme', code: 'code', state: 'state' },
+      data: { tenantSlug: 'acme', code: 'code-A', state: 'state-A' },
+    });
+
+    expect(result).toEqual({ ok: false, message: 'Sign-in failed' });
+    // Control-plane MUST NOT be called when state validation fails.
+    expect(mockCpOidcCallback).not.toHaveBeenCalled();
+    // Handshake cookies MUST be cleared to abort the stale flow.
+    expect(mockDeleteCookie).toHaveBeenCalledWith(OIDC_STATE_COOKIE, expect.any(Object));
+  });
+
+  it('rejects and clears cookies when the state cookie is absent (flow not initiated in this browser)', async () => {
+    cookies({}); // No state cookie.
+
+    const result = await completeGoogleSignin({
+      data: { tenantSlug: 'acme', code: 'code', state: 'some-state' },
+    });
+
+    expect(result).toEqual({ ok: false, message: 'Sign-in failed' });
+    expect(mockCpOidcCallback).not.toHaveBeenCalled();
+    expect(mockDeleteCookie).toHaveBeenCalledWith(OIDC_STATE_COOKIE, expect.any(Object));
+  });
+
+  it('fails closed and clears handshake cookies when the CP returns an undecodable token', async () => {
+    mockCpOidcCallback.mockResolvedValue(tokenPair('not-a-jwt'));
+    cookies({ [OIDC_STATE_COOKIE]: 's' });
+
+    const result = await completeGoogleSignin({
+      data: { tenantSlug: 'acme', code: 'code', state: 's' },
     });
 
     expect(result).toEqual({ ok: false, message: 'Sign-in failed' });
     expect(mockSetCookie).not.toHaveBeenCalled();
-    // Handshake cookies MUST be cleared even on failure.
+    // All handshake cookies MUST be cleared even on failure.
     expect(mockDeleteCookie).toHaveBeenCalledWith(OIDC_TENANT_COOKIE, expect.any(Object));
     expect(mockDeleteCookie).toHaveBeenCalledWith(OIDC_RETURN_COOKIE, expect.any(Object));
+    expect(mockDeleteCookie).toHaveBeenCalledWith(OIDC_STATE_COOKIE, expect.any(Object));
   });
 
   it.each([
@@ -241,15 +294,17 @@ describe('completeGoogleSignin', () => {
     [403, 'forbidden'],
   ])('collapses a %s (%s) callback 4xx to a generic sign-in failed message', async (status, code) => {
     mockCpOidcCallback.mockRejectedValue(new ControlPlaneError(status, code, `raw: ${code}`));
+    cookies({ [OIDC_STATE_COOKIE]: 's' });
 
     const result = await completeGoogleSignin({
-      data: { tenantSlug: 'acme', code: 'code', state: 'state' },
+      data: { tenantSlug: 'acme', code: 'code', state: 's' },
     });
 
     expect(result).toEqual({ ok: false, message: 'Sign-in failed' });
     expect(mockSetCookie).not.toHaveBeenCalled();
     // Handshake cookies MUST be cleared after any error path.
     expect(mockDeleteCookie).toHaveBeenCalledWith(OIDC_TENANT_COOKIE, expect.any(Object));
+    expect(mockDeleteCookie).toHaveBeenCalledWith(OIDC_STATE_COOKIE, expect.any(Object));
   });
 
   it.each([
@@ -257,9 +312,10 @@ describe('completeGoogleSignin', () => {
     [503, 'upstream_unreachable'],
   ])('collapses a %s callback 5xx to a generic availability message', async (status, code) => {
     mockCpOidcCallback.mockRejectedValue(new ControlPlaneError(status, code, 'down'));
+    cookies({ [OIDC_STATE_COOKIE]: 's' });
 
     const result = await completeGoogleSignin({
-      data: { tenantSlug: 'acme', code: 'code', state: 'state' },
+      data: { tenantSlug: 'acme', code: 'code', state: 's' },
     });
 
     expect(result).toEqual({
@@ -267,6 +323,7 @@ describe('completeGoogleSignin', () => {
       message: 'Sign-in is temporarily unavailable. Please try again.',
     });
     expect(mockDeleteCookie).toHaveBeenCalledWith(OIDC_TENANT_COOKIE, expect.any(Object));
+    expect(mockDeleteCookie).toHaveBeenCalledWith(OIDC_STATE_COOKIE, expect.any(Object));
   });
 });
 

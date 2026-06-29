@@ -68,11 +68,31 @@ export type OidcAuthorizeRequest = z.infer<typeof oidcAuthorizeRequestSchema>;
 /**
  * oidcAuthorizeResponse — the control-plane responds with a URL the client
  * must redirect the browser to, pointing at the tenant's identity provider.
+ *
+ * The `redirectUrl` is validated to ensure it targets the Google IdP hostname
+ * (`accounts.google.com`).  This is a defense-in-depth control: even if the
+ * control-plane is misbehaving or compromised it cannot turn this into an
+ * open redirect to an arbitrary host.
  */
 export const oidcAuthorizeResponseSchema = z
   .object({
-    /** Absolute URL of the IdP's authorization endpoint with all OIDC params. */
-    redirectUrl: z.string().url(),
+    /**
+     * Absolute URL of the IdP's authorization endpoint with all OIDC params.
+     * Must target accounts.google.com (the only supported IdP at this layer).
+     */
+    redirectUrl: z
+      .string()
+      .url()
+      .refine(
+        (url) => {
+          try {
+            return new URL(url).hostname === 'accounts.google.com';
+          } catch {
+            return false;
+          }
+        },
+        'redirectUrl must target the Google IdP (accounts.google.com)',
+      ),
   })
   .strict();
 export type OidcAuthorizeResponse = z.infer<typeof oidcAuthorizeResponseSchema>;

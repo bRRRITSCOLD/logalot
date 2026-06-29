@@ -17,6 +17,21 @@ import { completeGoogleSignin, getOidcTenantSlug } from '../../../server/oidc';
 // Error paths render a brief message; no enumeration signal (no
 // "workspace not found" vs "invalid code" differentiation).
 
+/**
+ * Returns true if `s` contains any C0 control character (U+0000-U+001F) or
+ * DEL (U+007F).  Browsers strip certain of these (TAB, LF, CR) while parsing
+ * URLs per WHATWG URL §5.1, so "/\t/evil.example" collapses to
+ * "//evil.example" — an open redirect.  Checking via charCodeAt matches the
+ * same defence applied by `returnToSchema` in @logalot/contracts.
+ */
+function hasControlChar(s: string): boolean {
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c <= 0x1f || c === 0x7f) return true;
+  }
+  return false;
+}
+
 export const Route = createFileRoute('/auth/google/callback')({
   validateSearch: (search: Record<string, unknown>) => ({
     code: typeof search.code === 'string' ? search.code : '',
@@ -54,10 +69,17 @@ export const Route = createFileRoute('/auth/google/callback')({
       return { ok: false as const, message: result.message };
     }
 
-    // Validate returnTo: the schema already rejected absolute URLs, but belt-and-
-    // suspenders: only follow paths that start with a single '/'.
+    // Validate returnTo: apply the same checks as returnToSchema — no absolute
+    // or protocol-relative URLs, and no control characters.  The value was
+    // schema-validated and stored httpOnly at authorize time, but applying the
+    // full check here matches the defence-in-depth parity the contracts layer
+    // provides (WHATWG-stripped bytes can re-introduce open-redirect bypasses).
     const destination =
-      result.returnTo && /^\/(?![/\\])/.test(result.returnTo) ? result.returnTo : '/app';
+      result.returnTo &&
+      /^\/(?![/\\])/.test(result.returnTo) &&
+      !hasControlChar(result.returnTo)
+        ? result.returnTo
+        : '/app';
 
     throw redirect({ to: destination });
   },
@@ -74,7 +96,7 @@ function CallbackPage() {
       <div className="flex min-h-svh items-center justify-center p-4">
         <div className="w-full max-w-sm">
           <Alert tone="danger" title="Sign-in failed">
-            {data.message}{' '}
+            {data.message}{'  '}
             <a href="/login" className="underline">
               Return to sign-in
             </a>
