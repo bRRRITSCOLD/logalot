@@ -1,4 +1,5 @@
 import type { User } from '../domain/entities';
+import { normalizeEmail } from '../domain/email';
 import { NotFoundError } from '../domain/errors';
 import type { MembershipRole } from '../domain/roles';
 import type { TenantContext } from '../domain/tenant-context';
@@ -35,7 +36,7 @@ export class UserService {
     assertCan(ctx, 'user:create');
     const passwordHash = await this.hasher.hash(cmd.password);
     return this.users.create(ctx.tenantId, {
-      email: cmd.email,
+      email: normalizeEmail(cmd.email),
       passwordHash,
       displayName: cmd.displayName ?? null,
       role: cmd.role,

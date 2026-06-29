@@ -1,4 +1,5 @@
 import { UnauthorizedError } from '../domain/errors';
+import { normalizeEmail } from '../domain/email';
 import { assembleRefreshToken, parseRefreshToken } from '../domain/refresh-token';
 import { constantTimeEqual, sha256 } from '../domain/secret-hash';
 import type {
@@ -65,7 +66,7 @@ export class AuthService {
     // wrong password.
     const record =
       tenant && tenant.status === 'active'
-        ? await this.deps.users.findCredentialsByEmail(tenant.id, cmd.email)
+        ? await this.deps.users.findCredentialsByEmail(tenant.id, normalizeEmail(cmd.email))
         : null;
 
     const passwordHash = record?.passwordHash ?? (await this.dummyHash());

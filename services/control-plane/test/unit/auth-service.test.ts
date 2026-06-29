@@ -255,4 +255,18 @@ describe('AuthService', () => {
     const winner = (fulfilled[0] as PromiseFulfilledResult<{ refreshToken: string }>).value;
     await expect(service.refresh(winner.refreshToken)).rejects.toBeInstanceOf(UnauthorizedError);
   });
+
+  it('normalizes the email during login — mixed-case input matches the lowercased stored email', async () => {
+    // Regression guard for the write/read normalization symmetry: provisioning now
+    // stores emails lowercased (normalizeEmail), so the login lookup MUST also
+    // normalize the raw input before querying; otherwise a user created as
+    // 'admin@acme.co' cannot log in typing 'Admin@Acme.co'.
+    const session = await service.login({
+      tenantSlug: 'acme',
+      email: 'Admin@Acme.co',  // Mixed-case — normalized → 'admin@acme.co'
+      password: 'pw',
+    });
+    expect(session.userId).toBe('user-1');
+    expect(session.role).toBe('tenant_admin');
+  });
 });

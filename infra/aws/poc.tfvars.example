@@ -1,0 +1,5 @@
+# Copy to poc.tfvars (not committed) and fill in real values.
+aws_region   = "us-east-1"
+project      = "logalot"
+env          = "poc"
+state_bucket = "logalot-poc-tf-state-<account_id>"
