@@ -11,7 +11,8 @@
 #   3. aws_iam_role_policy.ci_smoke — least-privilege inline policy:
 #        • S3 r/w on the cold bucket (Archive + GetObject for Athena).
 #        • S3 r/w on the Athena-results bucket.
-#        • Glue GetTable / CreatePartition / GetPartition (EnsureGlueTable).
+#        • Glue CreateDatabase / GetDatabase / GetTable / CreateTable /
+#          CreatePartition / GetPartition (EnsureGlueTable).
 #        • Athena StartQueryExecution / GetQueryExecution / GetQueryResults.
 #        • SSM GetParameter (read cold-tier resource names at runtime).
 #
@@ -77,11 +78,14 @@ data "aws_iam_policy_document" "ci_smoke_assume" {
       values   = ["sts.amazonaws.com"]
     }
 
-    # Restrict to the exact repo; `repo:owner/name:*` matches any branch/PR/tag.
+    # Restrict to the cold-smoke GitHub Environment; `:environment:<name>` is
+    # narrower than `:*` (which would allow any branch/PR/tag in the repo).
+    # Configure the environment with required reviewers and/or branch policies
+    # in the GitHub repo settings to add a second approval gate (ADR-0010).
     condition {
-      test     = "StringLike"
+      test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:${var.github_repo}:*"]
+      values   = ["repo:${var.github_repo}:environment:cold-smoke"]
     }
   }
 }
@@ -145,14 +149,20 @@ data "aws_iam_policy_document" "ci_smoke" {
   }
 
   # -------------------------------------------------------------------------
-  # Glue — EnsureGlueTable (GetDatabase / GetTable / CreateTable) +
-  #         partition management (CreatePartition / GetPartition)
+  # Glue — EnsureGlueTable (CreateDatabase / GetDatabase / GetTable /
+  #         CreateTable) + partition management (CreatePartition / GetPartition)
+  #
+  # glue:CreateDatabase is called unconditionally by coldstore.EnsureGlueTable
+  # (pkg/coldstore/coldstore.go:506); it tolerates AlreadyExistsException but
+  # AWS returns AccessDenied (not AlreadyExists) when the permission is absent,
+  # so the canary would fail at sub-test #1 without it.
   # -------------------------------------------------------------------------
   statement {
     sid    = "GlueColdTier"
     effect = "Allow"
 
     actions = [
+      "glue:CreateDatabase",
       "glue:GetDatabase",
       "glue:GetTable",
       "glue:CreateTable",
