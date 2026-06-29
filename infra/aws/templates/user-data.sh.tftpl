@@ -253,8 +253,10 @@ COLD_S3_BUCKET=$${COLD_BUCKET}
 COLD_ATHENA_RESULT_BUCKET=$${ATHENA_RESULTS_BUCKET}
 COLD_GLUE_DB=$${COLD_GLUE_DB_TF}
 COLD_ATHENA_WORKGROUP=primary
-# Feature-flag: flip to true after cold_smoke_aws test passes (ADR-0005).
-COLD_ENABLED=false
+# Cold-tier enabled: cold_smoke_aws CI gate passed (ADR-0005, decision 016 §6, closes #63 AC#3).
+COLD_ENABLED=true
+# Cold-read routing enabled: query-service routes searches > HOT_RETENTION_DAYS to Athena.
+COLD_SEARCH_ENABLED=true
 RETENTION_ENABLED=false
 RETENTION_DRY_RUN=false
 

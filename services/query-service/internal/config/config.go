@@ -29,11 +29,12 @@ type Config struct {
 	ShutdownGrace time.Duration
 
 	// Cold-read routing (AC#2 / ADR-0003 / cold-tier.md §5.2).
-	// All cold config is defaulted OFF — production is a no-op until an
-	// operator sets COLD_SEARCH_ENABLED=true (AC#3, gated on cold_smoke_aws).
+	// COLD_SEARCH_ENABLED is now true in production — cold_smoke_aws CI gate
+	// passed; query-service routes searches > HotDays to Athena (closes #63 AC#3).
 
 	// ColdSearchEnabled gates cold-read routing (COLD_SEARCH_ENABLED env var).
-	// Default FALSE: behavior is exactly today's Postgres-only path.
+	// Default TRUE in production (docker-compose.aws.yml / user-data.sh.tftpl).
+	// Set to "false" to fall back to Postgres-only path for debugging.
 	ColdSearchEnabled bool
 	// HotDays is the global hot-partition horizon for routing decisions.
 	// Default 30 (app.DefaultHotDays). Used only when ColdSearchEnabled=true.
@@ -61,8 +62,8 @@ const JWTSecretEnv = "JWT_SECRET"
 
 // Cold-read routing env var names.
 const (
-	// ColdSearchEnabledEnv gates cold-read routing. Default: false.
-	// Set to "true" only after the real-AWS cold_smoke_aws CI test passes (AC#3).
+	// ColdSearchEnabledEnv gates cold-read routing.
+	// Enabled (true) in docker-compose.aws.yml after cold_smoke_aws CI gate passed (closes #63 AC#3).
 	ColdSearchEnabledEnv = "COLD_SEARCH_ENABLED"
 	// HotDaysEnv overrides the hot-partition routing horizon. Default: 30.
 	HotDaysEnv = "HOT_RETENTION_DAYS"
