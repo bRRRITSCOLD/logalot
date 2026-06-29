@@ -116,6 +116,26 @@ export interface Dashboard {
   updatedAt: Date;
 }
 
+// OAuthProvider is the closed set of supported external OIDC providers. Only
+// 'google' ships in v1; new providers are one-line ALTER TYPE additions in the DB.
+export type OAuthProvider = 'google';
+
+// OAuthIdentity is the public projection of an oauth_identities row (migration
+// 000017). Invite-only: a row is written ONLY when the provider_sub's email
+// matches an already-provisioned user inside the tenant. Identity is pinned to
+// (provider, provider_sub) — email is a link-time snapshot, NOT a lookup key.
+export interface OAuthIdentity {
+  id: string;
+  tenantId: string;
+  userId: string;
+  provider: OAuthProvider;
+  providerSub: string;
+  email: string;
+  lastLoginAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 // AlertRule is the public projection of an alert_rules row. The state +
 // last_evaluated_at/last_triggered_at fields are owned by the alert-evaluator
 // worker and are read-only here (the control-plane never writes them).

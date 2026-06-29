@@ -123,6 +123,9 @@ importers:
       fastify:
         specifier: ^5.2.1
         version: 5.8.5
+      ioredis:
+        specifier: ^5.11.1
+        version: 5.11.1
       jose:
         specifier: ^5.9.6
         version: 5.10.0
@@ -136,6 +139,9 @@ importers:
       '@testcontainers/postgresql':
         specifier: ^10.16.0
         version: 10.28.0
+      '@testcontainers/redis':
+        specifier: ^12.0.3
+        version: 12.0.3
       '@types/node':
         specifier: ^22.10.5
         version: 22.20.0
@@ -735,6 +741,9 @@ packages:
     engines: {node: '>=6'}
     hasBin: true
 
+  '@ioredis/commands@1.10.0':
+    resolution: {integrity: sha512-UmeW7z4LfctwoQ5wkhVzgq8tXkreED2xZGpX+Bg+zA+WJFZCT6c062AfCK/Dfk81xZnnwdhJCUMkitihRaoC2Q==}
+
   '@isaacs/cliui@8.0.2':
     resolution: {integrity: sha512-O8jcjabXaleOG9DQ0+ARXWZBTfnP4WNAqzuiJK7ll44AmxGKv/J2M4TPjxjY3znBCfvBXFzucm1twdyFybFqEA==}
     engines: {node: '>=12'}
@@ -757,6 +766,9 @@ packages:
 
   '@js-sdsl/ordered-map@4.4.2':
     resolution: {integrity: sha512-iUKgm52T8HOE/makSxjqoWhe95ZJA1/G1sYsGev2JDKUSS14KAgg1LHb+Ba+IPow0xflbnSkOsZcO08C7w1gYw==}
+
+  '@kwsites/file-exists@1.1.1':
+    resolution: {integrity: sha512-m9/5YGR18lIwxSFDwfE3oA7bWuq9kdau6ugN4H2rJeyhFQZcG9AgSHkQtSD15a8WvTgfz9aikZMrKPHvbpqFiw==}
 
   '@napi-rs/wasm-runtime@1.1.6':
     resolution: {integrity: sha512-ZLv/JdUfkvOy9eCnnBaGfiO+XimbjebAeO+MRQqD/B+FR1tnRN0tpKSJHRbE8sFfS6aqsXZ67TQjfwfsxULVbg==}
@@ -1319,6 +1331,9 @@ packages:
   '@testcontainers/postgresql@10.28.0':
     resolution: {integrity: sha512-NN25rruG5D4Q7pCNIJuHwB+G85OSeJ3xHZ2fWx0O6sPoPEfCYwvpj8mq99cyn68nxFkFYZeyrZJtSFO+FnydiA==}
 
+  '@testcontainers/redis@12.0.3':
+    resolution: {integrity: sha512-hN3YedOSb6quFzG1IM4j/r/M635GcaYOxzbTuiSN7676BZHrx1VPl+xll3ojk8ds6TvenrfO37lrEVJYN2URlA==}
+
   '@testing-library/dom@10.4.1':
     resolution: {integrity: sha512-o4PXJQidqJl82ckFaXUeoAW+XysPLauYI43Abki5hABd853iMhitooc6znOnczgbTYmEP6U6/y1ZyKAIsvMKGg==}
     engines: {node: '>=18'}
@@ -1365,6 +1380,9 @@ packages:
 
   '@types/dockerode@3.3.47':
     resolution: {integrity: sha512-ShM1mz7rCjdssXt7Xz0u1/R2BJC7piWa3SJpUBiVjCf2A3XNn4cP6pUVaD8bLanpPVVn4IKzJuw3dOvkJ8IbYw==}
+
+  '@types/dockerode@4.0.1':
+    resolution: {integrity: sha512-cmUpB+dPN955PxBEuXE3f6lKO1hHiIGYJA46IVF3BJpNsZGvtBDcRnlrHYHtOH/B6vtDOyl2kZ2ShAu3mgc27Q==}
 
   '@types/estree@1.0.9':
     resolution: {integrity: sha512-GhdPgy1el4/ImP05X05Uw4cw2/M93BCUmnEvWZNStlCzEKME4Fkk+YpoA5OiHNQmoS7Cafb8Xa3Pya8m1Qrzeg==}
@@ -1714,6 +1732,10 @@ packages:
     resolution: {integrity: sha512-eYm0QWBtUrBWZWG0d386OGAw16Z995PiOVo2B7bjWSbHedGl5e0ZWaq65kOGgUSNesEIDkB9ISbTg/JK9dhCZA==}
     engines: {node: '>=6'}
 
+  cluster-key-slot@1.1.1:
+    resolution: {integrity: sha512-rwHwUfXL40Chm1r08yrhU3qpUvdVlgkKNeyeGPOxnW8/SyVDvgRaed/Uz54AqWNaTCAThlj6QAs3TZcKI0xDEw==}
+    engines: {node: '>=0.10.0'}
+
   color-convert@2.0.1:
     resolution: {integrity: sha512-RRECPsj7iu/xb5oKYcsFHSppFNnsj/52OVTRKb4zP5onXwVF3zVmmToNcOfGC+CRDpfK/U584fMg38ZHCaElKQ==}
     engines: {node: '>=7.0.0'}
@@ -1785,6 +1807,10 @@ packages:
     resolution: {integrity: sha512-h5k/5U50IJJFpzfL6nO9jaaumfjO/f2NjK/oYB2Djzm4p9L+3T9qWpZqZ2hAbLPuuYq9wrU08WQyBTL5GbPk5Q==}
     engines: {node: '>=6'}
 
+  denque@2.1.0:
+    resolution: {integrity: sha512-HVQE3AAb/pxF8fQAoiqpvg9i3evqug3hoiwakOyZAwJm+6vZehbkYXZ0l4JxS+I3QxM97v5aaRNhj8v5oBhekw==}
+    engines: {node: '>=0.10'}
+
   dequal@2.0.3:
     resolution: {integrity: sha512-0je+qPKHEMohvfRTCEo3CrPG6cAzAYgmzKyxRiYSSDkS6eGJdyVJm7WaYA5ECaAD9wLB2T4EEeymA5aFVcYXCA==}
     engines: {node: '>=6'}
@@ -1801,6 +1827,10 @@ packages:
     resolution: {integrity: sha512-plizRs/Vf15H+GCVxq2EUvyPK7ei9b/cVesHvjnX4xaXjM9spHe2Ytq0BitndFgvTJ3E3NljPNUEl7BAN43iZw==}
     engines: {node: '>= 6.0.0'}
 
+  docker-compose@1.4.2:
+    resolution: {integrity: sha512-rPHigTKGaEHpkUmfd69QgaOp+Os5vGJwG/Ry8lcr8W/382AmI+z/D7qoa9BybKIkqNppaIbs8RYeHSevdQjWww==}
+    engines: {node: '>= 6.0.0'}
+
   docker-modem@5.0.7:
     resolution: {integrity: sha512-XJgGhoR/CLpqshm4d3L7rzH6t8NgDFUIIpztYlLHIApeJjMZKYJMz2zxPsYxnejq5h3ELYSw/RBsi3t5h7gNTA==}
     engines: {node: '>= 8.0'}
@@ -1808,6 +1838,10 @@ packages:
   dockerode@4.0.12:
     resolution: {integrity: sha512-/bCZd6KlGcjZO8Buqmi/vXuqEGVEZ0PNjx/biBNqJD3MhK9DmdiAuKxqfNhflgDESDIiBz3qF+0e55+CpnrUcw==}
     engines: {node: '>= 8.0'}
+
+  dockerode@5.0.1:
+    resolution: {integrity: sha512-avsq/xk4YPIrn0CgleX5bjT9Y8IT1p9PxrNQ++RBQ2WEyFfHCTDsT9kmyxz+H/axnjAwg8wJWEIuPGOUuNupiA==}
+    engines: {node: '>= 14.17'}
 
   dom-accessibility-api@0.5.16:
     resolution: {integrity: sha512-X7BJ2yElsnOJ30pZF4uIIDfBEVgF4XEBxL9Bxhy6dnrm5hkzqmsWHGTiHqRiITNhMyFLyAiWndIJP7Z1NTteDg==}
@@ -1974,6 +2008,10 @@ packages:
 
   inherits@2.0.4:
     resolution: {integrity: sha512-k/vGaX4/Yla3WzyMCvTQOXYeIHvqOKtnqBduzTHpzpQZzAskKMhZ2K+EnBiSM9zGSoIFeMpXKxa4dYeZIQqewQ==}
+
+  ioredis@5.11.1:
+    resolution: {integrity: sha512-ehuGcf94bQXhfagULNXrJdfnWO38v070jxSx/qE87Kjzmu2fU7ro5EFAb+OPituLqgfyuQaym5DlrNydW2sJ9A==}
+    engines: {node: '>=12.22.0'}
 
   ipaddr.js@2.4.0:
     resolution: {integrity: sha512-9VGk3HGanVE6JoZXHiCpnGy5X0jYDnN4EA4lntFPj+1vIWlFhIylq2CrrCOJH9EAhc5CYhq18F2Av2tgoAPsYQ==}
@@ -2182,6 +2220,11 @@ packages:
     engines: {node: '>=10'}
     hasBin: true
 
+  mkdirp@3.0.1:
+    resolution: {integrity: sha512-+NsyUUAZDmo6YVHzL/stxSu3t9YS1iljliy3BSDrXJ/dkn1KYdmtZODGGjLcc9XLgVVpH4KshHB8XmZgMhaBXg==}
+    engines: {node: '>=10'}
+    hasBin: true
+
   ms@2.1.3:
     resolution: {integrity: sha512-6FlzubTLZG3J2a/NVCAleEhjzq5oxgHyaCU9yYXvcLsvoVaHJq/s5xXI6/XXP6tz7R9xAOtHnSO/tXtF3WRTlA==}
 
@@ -2357,6 +2400,10 @@ packages:
     resolution: {integrity: sha512-z597WicA7nDZxK12kZqHr2TcvwNU1GCfA5UwfDY/HDp3hXPoPlb5rlEx9bwGTiJnc0OqbBTkU975jDToth8Gxw==}
     engines: {node: '>=14'}
 
+  properties-reader@3.0.1:
+    resolution: {integrity: sha512-WPn+h9RGEExOKdu4bsF4HksG/uzd3cFq3MFtq8PsFeExPse5Ha/VOjQNyHhjboBFwGXGev6muJYTSPAOkROq2g==}
+    engines: {node: '>=18'}
+
   protobufjs@7.6.4:
     resolution: {integrity: sha512-RJJPTTpvFfHcWLkIa2JFWK4XvtSzS0yEWDmunqHXli1h3JlkbcQZXDZdcWxv+JK3Xsl5/UFDPZ0iGm7DAengYw==}
     engines: {node: '>=12.0.0'}
@@ -2411,6 +2458,14 @@ packages:
   redent@3.0.0:
     resolution: {integrity: sha512-6tDA8g98We0zd0GvVeMT9arEOnTw9qM03L9cJXaCjrip1OO764RDBLBfrB4cwzNGDj5OA5ioymC9GkizgWJDUg==}
     engines: {node: '>=8'}
+
+  redis-errors@1.2.0:
+    resolution: {integrity: sha512-1qny3OExCf0UvUV/5wpYKf2YwPcOqXzkwKKSmKHiE6ZMQs5heeE/c8eXK+PNllPvmjgAbfnsbpkGZWy8cBpn9w==}
+    engines: {node: '>=4'}
+
+  redis-parser@3.0.0:
+    resolution: {integrity: sha512-DJnGAeenTdpMEH6uAJRK/uiyEIH9WVsUmoLwzudwGJUwZPp80PDBWPHXSAGNPwNvIXAbe7MSUB1zQFugFml66A==}
+    engines: {node: '>=4'}
 
   require-directory@2.1.1:
     resolution: {integrity: sha512-fGxEI7+wsG9xrvdjsrlmL22OMTTiHRwAMroiEeMgq8gzoLC/PQr7RsRDSTLUg/bZAZtF+TVIkHc6/4RIKrui+Q==}
@@ -2551,6 +2606,9 @@ packages:
   stackback@0.0.2:
     resolution: {integrity: sha512-1XMJE5fQo1jGH6Y/7ebnwPOBEkIEnT4QF32d5R1+VXdXveM0IBMJt8zfaxX1P3QhVwrYe+576+jkANtSS2mBbw==}
 
+  standard-as-callback@2.1.0:
+    resolution: {integrity: sha512-qoRRSyROncaz1z0mvYqIE4lCd9p2R90i6GxW3uZv5ucSu8tU7B5HXUP1gG8pVZsYNVaXjk8ClXHPttLyxAL48A==}
+
   std-env@3.10.0:
     resolution: {integrity: sha512-5GS12FdOZNliM5mAOxFRg7Ir0pWz8MdpYm6AY6VPkGpbA7ZzmbzNcBJQ0GPvvyWgcY7QAhCgf9Uy89I03faLkg==}
 
@@ -2623,6 +2681,9 @@ packages:
 
   testcontainers@10.28.0:
     resolution: {integrity: sha512-1fKrRRCsgAQNkarjHCMKzBKXSJFmzNTiTbhb5E/j5hflRXChEtHvkefjaHlgkNUjfw92/Dq8LTgwQn6RDBFbMg==}
+
+  testcontainers@12.0.3:
+    resolution: {integrity: sha512-6vfiL9CWIX0rWhTJitzrzHcv4Q/sUfUdBV12jMz6HZ58Lz6ZtXVecO6jljd1O3ookEWQHNICiYoYNEPpDLzuRw==}
 
   text-decoder@1.2.7:
     resolution: {integrity: sha512-vlLytXkeP4xvEq2otHeJfSQIRyWxo/oZGEbXrtEEF9Hnmrdly59sUbzZ/QgyWuLYHctCHxFF4tRQZNQ9k60ExQ==}
@@ -2724,6 +2785,10 @@ packages:
   undici@7.28.0:
     resolution: {integrity: sha512-cRZYrTDwWznlnRiPjggAGxZXanty6M8RV1ff8Wm4LWXBp7/IG8v5DnOm74DtUBp9OONpK75YlPnIjQqX0dBDtA==}
     engines: {node: '>=20.18.1'}
+
+  undici@8.5.0:
+    resolution: {integrity: sha512-xamtWoB1EshgjpmlXd7GGm2VfdDtw1+rD8uhry8pSNW3If6S8E0m2T2+orSKeZXEn/aPJMviCpDBA65WJt8zhg==}
+    engines: {node: '>=22.19.0'}
 
   unplugin@3.2.0:
     resolution: {integrity: sha512-6nGlT7EHsS+tTcTdAkYFqXIUwDrMJyJvHFNYGSr4x2/2ySIcV4f5e1RAJUeDyfOJPR8TF0auE8l+82PLhKjqsA==}
@@ -3493,6 +3558,8 @@ snapshots:
       protobufjs: 7.6.4
       yargs: 17.7.3
 
+  '@ioredis/commands@1.10.0': {}
+
   '@isaacs/cliui@8.0.2':
     dependencies:
       string-width: 5.1.2
@@ -3522,6 +3589,12 @@ snapshots:
       '@jridgewell/sourcemap-codec': 1.5.5
 
   '@js-sdsl/ordered-map@4.4.2': {}
+
+  '@kwsites/file-exists@1.1.1':
+    dependencies:
+      debug: 4.4.3
+    transitivePeerDependencies:
+      - supports-color
 
   '@napi-rs/wasm-runtime@1.1.6(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.1)':
     dependencies:
@@ -4026,6 +4099,15 @@ snapshots:
       - react-native-b4a
       - supports-color
 
+  '@testcontainers/redis@12.0.3':
+    dependencies:
+      testcontainers: 12.0.3
+    transitivePeerDependencies:
+      - bare-abort-controller
+      - bare-buffer
+      - react-native-b4a
+      - supports-color
+
   '@testing-library/dom@10.4.1':
     dependencies:
       '@babel/code-frame': 7.29.7
@@ -4080,6 +4162,12 @@ snapshots:
       '@types/ssh2': 1.15.5
 
   '@types/dockerode@3.3.47':
+    dependencies:
+      '@types/docker-modem': 3.0.6
+      '@types/node': 22.20.0
+      '@types/ssh2': 1.15.5
+
+  '@types/dockerode@4.0.1':
     dependencies:
       '@types/docker-modem': 3.0.6
       '@types/node': 22.20.0
@@ -4459,6 +4547,8 @@ snapshots:
 
   clsx@2.1.1: {}
 
+  cluster-key-slot@1.1.1: {}
+
   color-convert@2.0.1:
     dependencies:
       color-name: 1.1.4
@@ -4524,6 +4614,8 @@ snapshots:
 
   deep-eql@5.0.2: {}
 
+  denque@2.1.0: {}
+
   dequal@2.0.3: {}
 
   detect-libc@2.1.2: {}
@@ -4531,6 +4623,10 @@ snapshots:
   diff@8.0.4: {}
 
   docker-compose@0.24.8:
+    dependencies:
+      yaml: 2.9.0
+
+  docker-compose@1.4.2:
     dependencies:
       yaml: 2.9.0
 
@@ -4552,6 +4648,17 @@ snapshots:
       protobufjs: 7.6.4
       tar-fs: 2.1.5
       uuid: 10.0.0
+    transitivePeerDependencies:
+      - supports-color
+
+  dockerode@5.0.1:
+    dependencies:
+      '@balena/dockerignore': 1.0.2
+      '@grpc/grpc-js': 1.14.4
+      '@grpc/proto-loader': 0.7.15
+      docker-modem: 5.0.7
+      protobufjs: 7.6.4
+      tar-fs: 2.1.5
     transitivePeerDependencies:
       - supports-color
 
@@ -4756,6 +4863,18 @@ snapshots:
 
   inherits@2.0.4: {}
 
+  ioredis@5.11.1:
+    dependencies:
+      '@ioredis/commands': 1.10.0
+      cluster-key-slot: 1.1.1
+      debug: 4.4.3
+      denque: 2.1.0
+      redis-errors: 1.2.0
+      redis-parser: 3.0.0
+      standard-as-callback: 2.1.0
+    transitivePeerDependencies:
+      - supports-color
+
   ipaddr.js@2.4.0: {}
 
   is-fullwidth-code-point@3.0.0: {}
@@ -4923,6 +5042,8 @@ snapshots:
 
   mkdirp@1.0.4: {}
 
+  mkdirp@3.0.1: {}
+
   ms@2.1.3: {}
 
   nan@2.28.0:
@@ -5069,6 +5190,13 @@ snapshots:
     dependencies:
       mkdirp: 1.0.4
 
+  properties-reader@3.0.1:
+    dependencies:
+      '@kwsites/file-exists': 1.1.1
+      mkdirp: 3.0.1
+    transitivePeerDependencies:
+      - supports-color
+
   protobufjs@7.6.4:
     dependencies:
       '@protobufjs/aspromise': 1.1.2
@@ -5139,6 +5267,12 @@ snapshots:
     dependencies:
       indent-string: 4.0.0
       strip-indent: 3.0.0
+
+  redis-errors@1.2.0: {}
+
+  redis-parser@3.0.0:
+    dependencies:
+      redis-errors: 1.2.0
 
   require-directory@2.1.1: {}
 
@@ -5281,6 +5415,8 @@ snapshots:
 
   stackback@0.0.2: {}
 
+  standard-as-callback@2.1.0: {}
+
   std-env@3.10.0: {}
 
   std-env@4.1.0: {}
@@ -5408,6 +5544,29 @@ snapshots:
       - react-native-b4a
       - supports-color
 
+  testcontainers@12.0.3:
+    dependencies:
+      '@balena/dockerignore': 1.0.2
+      '@types/dockerode': 4.0.1
+      archiver: 7.0.1
+      async-lock: 1.4.1
+      byline: 5.0.0
+      debug: 4.4.3
+      docker-compose: 1.4.2
+      dockerode: 5.0.1
+      get-port: 7.2.0
+      proper-lockfile: 4.1.2
+      properties-reader: 3.0.1
+      ssh-remote-port-forward: 1.0.4
+      tar-fs: 3.1.3
+      tmp: 0.2.7
+      undici: 8.5.0
+    transitivePeerDependencies:
+      - bare-abort-controller
+      - bare-buffer
+      - react-native-b4a
+      - supports-color
+
   text-decoder@1.2.7:
     dependencies:
       b4a: 1.8.1
@@ -5483,6 +5642,8 @@ snapshots:
       '@fastify/busboy': 2.1.1
 
   undici@7.28.0: {}
+
+  undici@8.5.0: {}
 
   unplugin@3.2.0(esbuild@0.28.1)(rolldown@1.1.3)(rollup@4.62.2)(vite@8.1.0(@types/node@22.20.0)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0)):
     dependencies:

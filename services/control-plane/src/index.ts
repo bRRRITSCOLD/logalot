@@ -9,7 +9,7 @@ import { buildContainer } from './container';
 async function main(): Promise<void> {
   const config = loadConfig();
   const pool = createPool(config.databaseUrl);
-  const { services, tokenService } = buildContainer(pool, config);
+  const { services, tokenService, shutdown: shutdownContainer } = buildContainer(pool, config);
 
   const app = buildServer({
     services,
@@ -26,6 +26,7 @@ async function main(): Promise<void> {
     try {
       await app.close();
       await pool.end();
+      await shutdownContainer();
       process.exit(0);
     } catch (err) {
       app.log.error({ err }, 'error during shutdown');

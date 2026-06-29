@@ -68,6 +68,21 @@ VALUES (
   '00000000-0000-0000-0000-0000000000a1'
 ) ON CONFLICT (tenant_id) DO NOTHING;
 
+-- DEV-ONLY oauth_identities row: links the dev admin user to a stub Google
+-- identity so OAuth login flows can be exercised locally without a real Google
+-- token. provider_sub is a fixed fake value — never used in production.
+-- RLS is already armed (SET LOCAL app.tenant_id above), so the WITH CHECK policy
+-- passes. ON CONFLICT DO NOTHING makes this idempotent across repeated `make seed`
+-- runs (R2/R3 structural storage; D5-Q4).
+INSERT INTO oauth_identities (tenant_id, user_id, provider, provider_sub, email)
+VALUES (
+  '00000000-0000-0000-0000-0000000000d1',
+  '00000000-0000-0000-0000-0000000000a1',
+  'google',
+  'google-sub-dev-admin',   -- DEV ONLY — fake, stable sub for local dev
+  'admin@dev.local'         -- must match the normalized email on the users row
+) ON CONFLICT DO NOTHING;
+
 COMMIT;
 
 -- Sanity check (optional): with the dev context set, this returns the dev key.

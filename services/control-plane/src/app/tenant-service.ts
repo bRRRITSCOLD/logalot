@@ -1,4 +1,5 @@
 import type { Tenant, TenantStatus, User } from '../domain/entities';
+import { normalizeEmail } from '../domain/email';
 import { NotFoundError } from '../domain/errors';
 import type { TenantContext } from '../domain/tenant-context';
 import { assertCan } from './authorize';
@@ -48,7 +49,7 @@ export class TenantService {
     }
     const passwordHash = await this.hasher.hash(cmd.password);
     return this.users.create(tenantId, {
-      email: cmd.email,
+      email: normalizeEmail(cmd.email),
       passwordHash,
       displayName: cmd.displayName ?? null,
       role: 'tenant_admin',
