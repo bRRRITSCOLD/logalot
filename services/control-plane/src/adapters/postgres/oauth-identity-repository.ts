@@ -67,6 +67,11 @@ export class PgOAuthIdentityRepository implements OAuthIdentityRepository {
 
   async linkFirst(tenantId: string, input: NewOAuthIdentity): Promise<OAuthIdentityRef> {
     return withTenantTx(this.pool, tenantId, async (client) => {
+      // Use a SAVEPOINT so that a 23505 unique-violation only aborts the INSERT
+      // sub-statement rather than the entire outer transaction. Without the
+      // savepoint, Postgres puts the whole tx into the "aborted" state and the
+      // re-SELECT below would fail with SQLSTATE 25P02.
+      await client.query('SAVEPOINT link_first');
       try {
         const res = await client.query<{ id: string; user_id: string }>(
           `INSERT INTO oauth_identities (tenant_id, user_id, provider, provider_sub, email)
@@ -78,9 +83,13 @@ export class PgOAuthIdentityRepository implements OAuthIdentityRepository {
         return { id: row.id, userId: row.user_id };
       } catch (err) {
         // 23505 on (tenant_id, provider, provider_sub): a concurrent first-link
-        // already won. Re-resolve within the same armed tenant context so the
-        // caller gets the winner's ref idempotently.
+        // already won. Roll back to the savepoint to clear the aborted state,
+        // then re-resolve within the same armed tenant context so the caller
+        // gets the winner's ref idempotently. Under READ COMMITTED the winner
+        // row is visible as soon as the conflicting tx commits, which is
+        // guaranteed by the time we receive the 23505.
         if (isUniqueViolation(err)) {
+          await client.query('ROLLBACK TO SAVEPOINT link_first');
           const existing = await client.query<{ id: string; user_id: string }>(
             `SELECT id, user_id
                FROM oauth_identities
