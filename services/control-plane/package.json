@@ -23,6 +23,7 @@
     "fastify": "^5.2.1",
     "ioredis": "^5.11.1",
     "jose": "^5.9.6",
+    "nodemailer": "^9.0.3",
     "pg": "^8.13.1",
     "zod": "^4.0.5"
   },
@@ -30,6 +31,7 @@
     "@testcontainers/postgresql": "^10.16.0",
     "@testcontainers/redis": "^12.0.3",
     "@types/node": "^22.10.5",
+    "@types/nodemailer": "^8.0.1",
     "@types/pg": "^8.11.10",
     "tsx": "^4.19.2",
     "typescript": "^5.7.3",
