@@ -592,3 +592,43 @@ export interface InviteAuditEvent {
 export interface InviteAuditLogger {
   log(event: InviteAuditEvent): void;
 }
+
+// ── InviteProvisioner — single tenant-armed unit-of-work (ADR-0012 §5, T9) ────
+// The authenticator calls this port after verifying the Google id_token. It runs
+// all four writes in ONE transaction (consume + user + membership + identity) so
+// they commit together or not at all (R-INV-17).
+//
+// provisionFromInvite returns null (NOT throw) on any failure so the authenticator
+// can throw a uniform 401 without leaking which step failed (no enumeration oracle).
+// Failure scenarios that collapse to null:
+//   - invite consume miss (pending → consumed race, wrong email, expired, already consumed).
+//   - email-conflict: a user with this email already exists in the tenant.
+//   - R13 different-sub conflict: this user is already pinned to a DIFFERENT Google sub.
+//
+// The raw providerSub and email are NEVER emitted in the audit trail; only their
+// SHA-256 hex digests are logged (privacy-by-design, threat model R17).
+
+export interface InviteProvisionInput {
+  email: string;
+  /** SHA-256 of the plaintext invite secret (32 raw bytes). Matches invites.token_hash. */
+  inviteTokenHash: Buffer;
+  /** Google OIDC `sub` claim — stable Google account identifier. */
+  providerSub: string;
+  /** Wall-clock time used for expiry checks and audit timestamps. */
+  now: Date;
+}
+
+export interface InviteProvisioner {
+  /**
+   * Atomically provisions a user from a valid invite in one transaction:
+   *   1. consume the invite (R-INV-3 single-use gate)
+   *   2. insert user + membership with the translated role (R-INV-8)
+   *   3. link the OAuth identity
+   *
+   * Returns `{ userId }` on success, `null` on any failure.
+   */
+  provisionFromInvite(
+    tenantId: string,
+    input: InviteProvisionInput,
+  ): Promise<{ userId: string } | null>;
+}
