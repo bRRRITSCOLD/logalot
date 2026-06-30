@@ -227,7 +227,7 @@ describe('cpAuthedSend (write proxy)', () => {
 });
 
 describe('cpOidcAuthorize', () => {
-  it('POSTs to /v1/auth/oidc/:tenantSlug/authorize and returns the redirect URL', async () => {
+  it('POSTs to /v1/auth/oidc/google/authorize (provider-keyed path, tenant in body)', async () => {
     const redirectUrl = 'https://accounts.google.com/o/oauth2/v2/auth?client_id=x';
     const fetchMock = mockFetch(200, { redirectUrl });
     vi.stubGlobal('fetch', fetchMock);
@@ -236,7 +236,7 @@ describe('cpOidcAuthorize', () => {
 
     expect(result).toEqual({ redirectUrl });
     const [url, init] = fetchMock.mock.calls[0] ?? [];
-    expect(url).toBe('http://cp.test:8082/v1/auth/oidc/acme/authorize');
+    expect(url).toBe('http://cp.test:8082/v1/auth/oidc/google/authorize');
     expect((init as RequestInit).method).toBe('POST');
     expect(JSON.parse(String((init as RequestInit).body))).toMatchObject({ tenantSlug: 'acme' });
   });
@@ -252,7 +252,7 @@ describe('cpOidcAuthorize', () => {
 });
 
 describe('cpOidcCallback', () => {
-  it('POSTs to /v1/auth/oidc/:tenantSlug/callback and parses the token pair', async () => {
+  it('POSTs to /v1/auth/oidc/google/callback (provider-keyed path, tenant in body)', async () => {
     const fetchMock = mockFetch(200, tokenPair);
     vi.stubGlobal('fetch', fetchMock);
 
@@ -260,7 +260,7 @@ describe('cpOidcCallback', () => {
 
     expect(result).toEqual(tokenPair);
     const [url, init] = fetchMock.mock.calls[0] ?? [];
-    expect(url).toBe('http://cp.test:8082/v1/auth/oidc/acme/callback');
+    expect(url).toBe('http://cp.test:8082/v1/auth/oidc/google/callback');
     expect((init as RequestInit).method).toBe('POST');
     expect(JSON.parse(String((init as RequestInit).body))).toMatchObject({
       tenantSlug: 'acme',
