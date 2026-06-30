@@ -14,6 +14,7 @@ import type {
   GoogleIdTokenVerifier,
   GoogleTokenExchangeClient,
   IdGenerator,
+  InviteProvisioner,
   OAuthAuditEvent,
   OAuthAuditLogger,
   OAuthIdentityRepository,
@@ -58,6 +59,13 @@ export interface OidcAuthorizeResult {
 export interface OidcCallbackCommand {
   code: string;
   state: string;
+  /**
+   * SHA-256 hex digest of the one-time invite token, present when the browser
+   * carries the invite cookie through the OIDC callback (ADR-0012). When absent
+   * (normal login), the invite branch is skipped and the old behavior is preserved.
+   * NEVER the plaintext token — only the pre-hashed value (R-INV-9).
+   */
+  inviteTokenHash?: string;
 }
 
 export interface OidcCallbackResult {
@@ -104,6 +112,14 @@ export interface OidcAuthenticatorDeps {
    * assert on audit events).
    */
   auditLogger?: OAuthAuditLogger;
+  /**
+   * JIT invite provisioner (ADR-0012). When injected alongside an
+   * `inviteTokenHash` on the callback command, enables the invite-acceptance
+   * path: atomic consume + user+membership creation + identity link in one
+   * tenant-armed transaction. Optional — absent = invite branch disabled,
+   * old `reject_no_provisioned_user` behavior fully preserved.
+   */
+  inviteProvisioner?: InviteProvisioner;
 }
 
 // OidcAuthenticator owns the OIDC authorization-initiation half of the
@@ -283,35 +299,66 @@ export class OidcAuthenticator {
       isFirstLink = false;
     } else {
       // First login for this Google account — look up the provisioned user by email.
-      // invite-only: if no user exists for this email, reject with 401.
+      // invite-only: if no user exists for this email, try the invite path if an
+      // inviteProvisioner and inviteTokenHash are both present. Otherwise reject.
       const userRecord = await deps.users.findCredentialsByEmail(tenantId, normalizedEmail);
       if (!userRecord) {
-        this.audit({ tenantId, userId: null, hashedSub, outcome: 'reject_no_provisioned_user' });
-        throw new UnauthorizedError('no provisioned account for this Google identity');
-      }
-      // Link the Google identity to the existing user. Idempotent on a concurrent
-      // SAME-sub first-link (23505 on the sub uniqueness → returns the winner). But a
-      // DIFFERENT-sub conflict for an already-linked user (23505 on
-      // UNIQUE(tenant_id,user_id,provider)) is surfaced as a ConflictError: this user
-      // is sub-pinned to another Google identity (threat model R13), so reject 401 —
-      // never silently re-link, and never leak which constraint tripped.
-      let linked: Awaited<ReturnType<typeof deps.oauthIdentities.linkFirst>>;
-      try {
-        linked = await deps.oauthIdentities.linkFirst(tenantId, {
-          userId: userRecord.id,
-          provider: 'google',
-          providerSub: claims.sub,
-          email: normalizedEmail,
-        });
-      } catch (err) {
-        if (err instanceof ConflictError) {
-          this.audit({ tenantId, userId: null, hashedSub, outcome: 'reject_identity_conflict' });
+        const { inviteProvisioner } = deps;
+        const { inviteTokenHash } = cmd;
+
+        if (inviteProvisioner && inviteTokenHash) {
+          // Invite branch (ADR-0012): delegate atomic consume + user creation +
+          // identity link to the provisioner. Returns { userId } on success, null
+          // on any consume miss (expired, revoked, already consumed, race loser).
+          // invite_provisioned audit is emitted inside the provisioner (T9).
+          const provisioned = await inviteProvisioner.provisionFromInvite(tenantId, {
+            email: normalizedEmail,
+            inviteTokenHash,
+            providerSub: claims.sub,
+            now: deps.clock.now(),
+          });
+
+          if (provisioned) {
+            // Provisioner performed the atomic linkFirst — skip the in-branch
+            // linkFirst below. isFirstLink=true drives the first_link audit at step 7.
+            userId = provisioned.userId;
+            isFirstLink = true;
+          } else {
+            // Consume miss: expired, revoked, already used, or race loser.
+            // Uniform 401 — body identical to reject_no_provisioned_user (R-INV-6).
+            this.audit({ tenantId, userId: null, hashedSub, outcome: 'reject_no_valid_invite' });
+            throw new UnauthorizedError('no provisioned account for this Google identity');
+          }
+        } else {
+          // No invite path configured (or no token presented): unchanged old behavior.
+          this.audit({ tenantId, userId: null, hashedSub, outcome: 'reject_no_provisioned_user' });
           throw new UnauthorizedError('no provisioned account for this Google identity');
         }
-        throw err;
+      } else {
+        // Link the Google identity to the existing user. Idempotent on a concurrent
+        // SAME-sub first-link (23505 on the sub uniqueness → returns the winner). But a
+        // DIFFERENT-sub conflict for an already-linked user (23505 on
+        // UNIQUE(tenant_id,user_id,provider)) is surfaced as a ConflictError: this user
+        // is sub-pinned to another Google identity (threat model R13), so reject 401 —
+        // never silently re-link, and never leak which constraint tripped.
+        let linked: Awaited<ReturnType<typeof deps.oauthIdentities.linkFirst>>;
+        try {
+          linked = await deps.oauthIdentities.linkFirst(tenantId, {
+            userId: userRecord.id,
+            provider: 'google',
+            providerSub: claims.sub,
+            email: normalizedEmail,
+          });
+        } catch (err) {
+          if (err instanceof ConflictError) {
+            this.audit({ tenantId, userId: null, hashedSub, outcome: 'reject_identity_conflict' });
+            throw new UnauthorizedError('no provisioned account for this Google identity');
+          }
+          throw err;
+        }
+        userId = linked.userId;
+        isFirstLink = true;
       }
-      userId = linked.userId;
-      isFirstLink = true;
     }
 
     // 5. Load user credentials (status + role) — required for session claims.

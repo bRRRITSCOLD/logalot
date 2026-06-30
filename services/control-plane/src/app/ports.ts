@@ -537,6 +537,38 @@ export interface InviteRepository {
   revoke(tenantId: string, id: string, now: Date): Promise<boolean>;
 }
 
+// ── InviteProvisioner — JIT provisioning port wired into OidcAuthenticator ────
+// Called only when (a) an inviteProvisioner is injected into OidcAuthenticatorDeps
+// AND (b) an inviteTokenHash is present on OidcCallbackCommand. Performs all four
+// writes in one tenant-armed transaction: invite consume, user+membership insert,
+// identity linkFirst. Returns { userId } on success, null on any consume miss (so
+// the authenticator can emit a uniform 401 — R-INV-6).
+// NEVER throws for expected failures (consume miss, race, conflict) — always null.
+// Raw token or providerSub MUST NOT appear in audit logs (R-INV-9).
+
+export interface ProvisionFromInviteInput {
+  /** Normalized (lowercase + trim + NFC) email from the verified id_token. */
+  email: string;
+  /** SHA-256 hex digest of the one-time CSPRNG invite token (never the plaintext). */
+  inviteTokenHash: string;
+  /** The Google provider_sub from the verified id_token — stored in oauth_identities. */
+  providerSub: string;
+  /** Wall-clock time for consume expiry check and created_at stamps. */
+  now: Date;
+}
+
+export interface InviteProvisioner {
+  /**
+   * Atomically: consume invite, create user+membership, link Google identity.
+   * Returns { userId } on success; null on any consume miss or constraint conflict.
+   * Never throws for expected failures — always null (R-INV-6).
+   */
+  provisionFromInvite(
+    tenantId: string,
+    input: ProvisionFromInviteInput,
+  ): Promise<{ userId: string } | null>;
+}
+
 // ── EmailSender — thin optional port for transactional email (ADR-0013) ────────
 // The composition root selects the adapter from EMAIL_PROVIDER:
 //   - unset / 'none'  → NoOpEmailSender (logs metadata only, no real send)
