@@ -54,6 +54,24 @@ describe('rbac matrix', () => {
     expect(can('platform_operator', 'alert:create')).toBe(false);
   });
 
+  it('grants tenant_admin all invite operations (R-INV-7, R-INV-8)', () => {
+    expect(can('tenant_admin', 'invite:create')).toBe(true);
+    expect(can('tenant_admin', 'invite:list')).toBe(true);
+    expect(can('tenant_admin', 'invite:revoke')).toBe(true);
+  });
+
+  it('denies member all invite operations', () => {
+    expect(can('member', 'invite:create')).toBe(false);
+    expect(can('member', 'invite:list')).toBe(false);
+    expect(can('member', 'invite:revoke')).toBe(false);
+  });
+
+  it('denies platform_operator all invite operations', () => {
+    expect(can('platform_operator', 'invite:create')).toBe(false);
+    expect(can('platform_operator', 'invite:list')).toBe(false);
+    expect(can('platform_operator', 'invite:revoke')).toBe(false);
+  });
+
   it('is total: every role × operation returns a boolean (fail closed by default)', () => {
     for (const role of ROLES) {
       for (const op of OPERATIONS) {
