@@ -1,5 +1,6 @@
 import type { Redis } from 'ioredis';
 import type { Pool } from 'pg';
+import { ConsoleInviteAuditLogger } from './adapters/audit/console-invite-audit-logger';
 import { ConsoleOAuthAuditLogger } from './adapters/audit/console-oauth-audit-logger';
 import { BcryptHasher } from './adapters/crypto/bcrypt-hasher';
 import { JoseGoogleIdTokenVerifier } from './adapters/crypto/jose-google-verifier';
@@ -13,6 +14,7 @@ import { GoogleTokenExchangeHttpClient } from './adapters/http/google-token-exch
 import { PgAlertRuleRepository } from './adapters/postgres/alert-rule-repository';
 import { PgApiKeyRepository } from './adapters/postgres/api-key-repository';
 import { PgDashboardRepository } from './adapters/postgres/dashboard-repository';
+import { PgInviteRepository } from './adapters/postgres/invite-repository';
 import { PgOAuthIdentityRepository } from './adapters/postgres/oauth-identity-repository';
 import { PgRefreshTokenRepository } from './adapters/postgres/refresh-token-repository';
 import { PgRetentionRepository } from './adapters/postgres/retention-repository';
@@ -26,6 +28,7 @@ import { AlertRuleService } from './app/alert-rule-service';
 import { ApiKeyService } from './app/api-key-service';
 import { AuthService } from './app/auth-service';
 import { DashboardService } from './app/dashboard-service';
+import { InviteService } from './app/invite-service';
 import { OidcAuthenticator } from './app/oidc-authenticator';
 import type {
   EmailSender,
@@ -51,6 +54,7 @@ export interface Services {
   alerts: AlertRuleService;
   savedQueries: SavedQueryService;
   dashboards: DashboardService;
+  invites: InviteService;
 }
 
 export interface Container {
@@ -104,6 +108,21 @@ export function buildContainer(pool: Pool, config: Config): Container {
   const savedQueryRepo = new PgSavedQueryRepository(pool);
   const dashboardRepo = new PgDashboardRepository(pool);
   const oauthIdentityRepo = new PgOAuthIdentityRepository(pool);
+  const inviteRepo = new PgInviteRepository(pool);
+
+  // Email adapter — selected from EMAIL_PROVIDER; NEVER derived from request data
+  // (ADR-0013, R-INV-14). NoOpEmailSender is the safe default (no network I/O).
+  // Constructed before services so InviteService can receive it at composition time.
+  const emailSender: EmailSender =
+    config.emailProvider === 'smtp' && config.smtpHost && config.smtpPort && config.smtpFrom
+      ? new SmtpEmailSender({
+          host: config.smtpHost,
+          port: config.smtpPort,
+          user: config.smtpUser,
+          pass: config.smtpPass,
+          from: config.smtpFrom,
+        })
+      : new NoOpEmailSender();
 
   const services: Services = {
     auth: new AuthService({
@@ -124,6 +143,19 @@ export function buildContainer(pool: Pool, config: Config): Container {
     alerts: new AlertRuleService(alertRuleRepo),
     savedQueries: new SavedQueryService(savedQueryRepo),
     dashboards: new DashboardService(dashboardRepo),
+    invites: new InviteService(
+      inviteRepo,
+      tenantRepo,
+      secretGenerator,
+      clock,
+      emailSender,
+      new ConsoleInviteAuditLogger(),
+      {
+        inviteTtlSeconds: config.inviteTtlSeconds,
+        inviteMaxOutstandingPerTenant: config.inviteMaxOutstandingPerTenant,
+        inviteAcceptBaseUrl: config.inviteAcceptBaseUrl,
+      },
+    ),
   };
 
   // OAuth state store — Redis when REDIS_URL is configured, in-memory fake otherwise.
@@ -186,19 +218,6 @@ export function buildContainer(pool: Pool, config: Config): Container {
     // callback outcome to stderr (privacy-safe: only hashed sub is logged).
     auditLogger: new ConsoleOAuthAuditLogger(),
   });
-
-  // Email adapter — selected from EMAIL_PROVIDER; NEVER derived from request data
-  // (ADR-0013, R-INV-14). NoOpEmailSender is the safe default (no network I/O).
-  const emailSender: EmailSender =
-    config.emailProvider === 'smtp' && config.smtpHost && config.smtpPort && config.smtpFrom
-      ? new SmtpEmailSender({
-          host: config.smtpHost,
-          port: config.smtpPort,
-          user: config.smtpUser,
-          pass: config.smtpPass,
-          from: config.smtpFrom,
-        })
-      : new NoOpEmailSender();
 
   return {
     services,
