@@ -60,12 +60,13 @@ export interface OidcCallbackCommand {
   code: string;
   state: string;
   /**
-   * SHA-256 hex digest of the one-time invite token, present when the browser
-   * carries the invite cookie through the OIDC callback (ADR-0012). When absent
-   * (normal login), the invite branch is skipped and the old behavior is preserved.
-   * NEVER the plaintext token — only the pre-hashed value (R-INV-9).
+   * SHA-256 digest (raw 32 bytes) of the one-time invite token, present when the
+   * browser carries the invite cookie through the OIDC callback (ADR-0012). When
+   * absent (normal login), the invite branch is skipped and the old behavior is
+   * preserved. Raw bytes match invites.token_hash (bytea) for the constraint-time
+   * consume compare. NEVER the plaintext token — only the pre-hashed value (R-INV-9).
    */
-  inviteTokenHash?: string;
+  inviteTokenHash?: Buffer;
 }
 
 export interface OidcCallbackResult {

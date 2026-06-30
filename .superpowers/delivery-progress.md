@@ -438,3 +438,53 @@ Implemented per decision 016 (Firehose REJECTED → direct-write). `ai:backend-e
 1. **Wave 4 frontend** (DS in Figma `9N3v2ZGGo3McfSxOLfBPnC` + `packages/design-tokens/tokens.json`): **#20 scaffold + component library SOLO FIRST** (shadcn/ui-on-Base-UI `@base-ui-components/react`, via `ai:ux-designer`); then **#21/#22/#23 PARALLEL** worktrees (#23 has #16+#18 backends); **#24 Code Connect LAST**. Confirm Figma MCP authed at session start; never create new Figma files.
 2. **#63** cold-tier retention + cold-read routing — backend, flips `COLD_ENABLED` only after the real-AWS smoke job lands.
 3. **#56** tiny backend minors — fold into a nearby backend chunk.
+
+---
+
+## SESSION 15 UPDATE (2026-06-29) — WAVE 1 COMPLETE (Google OAuth + AWS IaC)
+
+Drove **Wave 1 (#94–#105, 11 issues)** to done via the v1.3.1 `deliver.workflow.mjs` (Workflow tool, mode A), scoped `args: { labels: "wave-1", maxRounds: 12, budgetThreshold: 50000, securityReview: "sensitive" }`. Took **3 workflow passes** (chain-blocked issues become ready only after their blockers merge + a fresh scout). `main` @ `9bdc8da`, CI green, clean tree, no worktrees, no open PRs.
+
+### What merged (all 11 wave-1 issues CLOSED)
+- **Track A control-plane:** #94 id_token verifier+token-exchange (PR125), #95 authorize-initiation (PR124), #96 OIDC callback (PR128), #97 account-linking+session-mint+audit (PR130), #98 callback rate-limiting+no-PII-logging (PR129).
+- **#100 frontend** web BFF + "Sign in with Google" + callback route (PR123).
+- **Track B infra:** #101 multi-arch publishing (PR122), #102 docker-compose.aws (PR121), #103 TF network (PR120), #104 TF data/managed (PR119), #105 TF compute (PR127).
+
+### ⚠️ RECURRING FOOTGUN — workflow merges on review approval, CI not gated, AND the CI lint job is weaker than per-package lint
+Every pass, several PRs landed (or were held) with broken lint that the workflow's own staff-gate sometimes caught and sometimes didn't. Root causes:
+1. **CI `node-lint` = root `biome check .` only — it does NOT run `tsc`.** The per-package script `pnpm --filter @logalot/control-plane lint` = `tsc --noEmit && biome check` is STRICTER and is **not gated in CI**. So a PR can be CI-green while `tsc` is RED.
+2. **The workflow's fix-pass runs `biome check --write --unsafe`**, which rewrites `x!.y` → `x?.y` (noNonNullAssertion). Under `strict`+`noUncheckedIndexedAccess` that makes the value possibly-undefined → `tsc` TS18048. This broke #94 and #96 test files; #97 (PR130) actually **landed a latent tsc break on main** (`oidc-audit.test.ts` `events[0]` derefs) that CI never caught.
+3. Plain biome format/organizeImports errors (which DO fail CI node-lint) merged red on #100/#95 in pass 1 → fixed by chore PR #126.
+
+**Operator fixes applied this session** (all one-line/mechanical, logic was sound per the staff reviewer): PR126 (biome autofix #100/#95), PR125 fix (organizeImports + main-merge conflict union of GOOGLE_* env vars in env.ts/container.ts), PR119 fix (HCL `\.`→`\\.` escape in variables.tf), PR128 fix (throw-narrow `entry` in oidc-authenticator.test.ts + main-merge), PR129 fix (biome format + throw-narrow the 8× `events[0]` in oidc-audit.test.ts inherited from #97).
+
+**RULE for next waves:** after the workflow finishes, ALWAYS (a) `gh pr checks <pr>` green + `mergeStateStatus CLEAN` before trusting any merge, and (b) run BOTH `pnpm lint` (root) AND `pnpm --filter <pkg> lint` (tsc) on `main` — CI green ≠ tsc green. See [[deliver-workflow-merges-without-ci-gate]] and the new tsc-gap memory.
+
+### State at session end
+`main` @ `9bdc8da`. All 8 workflow worktrees removed (verified clean + no live dev servers each pass). `.superpowers/delivery-progress.md` stays uncommitted (durable ledger by design).
+
+### NEXT — Wave 2 (#106–#110)
+- #106 cross-service OIDC e2e (testcontainers + fake Google), #107 cold_smoke_aws CI job vs real S3, #108 flip COLD_ENABLED/COLD_SEARCH_ENABLED (closes #63 AC#3), #109 security review gates (SG/IAM/TLS/TF-state), #110 live Google e2e on provisioned domain (critical-path join, needs Route53+Caddy TLS).
+- Same scoped workflow run: `args: { labels: "wave-2", ... }`. Expect the same post-run lint cleanup drill.
+
+---
+
+## Session 16 — WAVE 2 COMPLETE (all #106–#110 closed) + tsc CI gate + epics closed
+
+`main` @ `7267a3e`, CI green (ci + tf-validate both green). All Wave-2 issues closed; epics #86 + #87 closed (all child waves 0/1/2 done). Open: only #131 (web tsc gate, tech-debt) + #24 (Figma, hard-blocked).
+
+### Pre-work — killed the tsc footgun at the source (PR132, merged b3ae728)
+Added a CI `node-typecheck` job + `make node-typecheck` running `tsc --noEmit` on `@logalot/control-plane` + `@logalot/contracts` (both green; verified locally). **apps/web deliberately excluded** — its tsc needs TanStack route-tree codegen (`vite build`) AND has latent type bugs in `callback.tsx` (TS18048/TS2339 from #100). Filed **#131** to wire web later. So the `!`→`?.` footgun is now CI-gated for the two backend TS packages; web still needs a manual `pnpm --filter @logalot/web typecheck` until #131 lands.
+
+### Workflow pass — 3 of 5 merged clean, 2 flagged needs-rework (REAL findings, not theater)
+One Mode-A pass (`labels: wave-2`, 31 agents, ~1.19M tokens): **#107 (PR135), #109 (PR134), #110 (PR133) merged.** #106 (PR136) + #108 (PR137) flagged `needs-rework` by the staff-gate and left as OPEN PRs — re-running would NOT fix them; both needed hands-on engineering:
+- **#108 (PR137):** functional logic approved; only `terraform fmt` drift in `compute.tf` (the `domain_name`/`alert_email` templatefile-map keys over-aligned to width 21). Root cause: #133 (78fda8c) introduced the drift → **main itself was tf-validate-RED** (pre-existing). Fixed: rebased on main, `terraform fmt` via `docker run hashicorp/terraform:1.10.5` (no local tf binary), force-pushed → tf-validate green (both infra/aws + bootstrap jobs).
+- **#106 (PR136): staff-gate caught a REAL production bug behind a theater test.** R13 (sub-pinned): an already-linked user presenting a DIFFERENT Google sub (same email/tenant) trips `UNIQUE(tenant_id, user_id, provider)` — NOT the `(provider, provider_sub)` uniqueness the 23505 handler assumed. Its re-SELECT by the new sub returned 0 rows → `existing.rows[0]` undefined → `row.id` threw → **500 on an auth rejection that must be 401.** The PR's R13 test was a renamed cross-tenant-isolation duplicate (always passed). Fixes: `linkFirst` distinguishes the two UNIQUE constraints by re-SELECT result (row found = idempotent race; 0 rows = throw `ConflictError`); `oidc-authenticator` catches it → new audit outcome `reject_identity_conflict` → 401. Replaced the theater test with a genuine same-tenant different-sub case (asserts 401 + no new row) + a repo unit test. **Also fixed latent suite breakage:** many e2e tests re-linked the SHARED `alice` fixture with new subs (500 pre-fix / 401 post-fix) — each first-link test now provisions its OWN user; lifted the callback per-IP rate limit in the e2e `buildServer` (all tests share loopback IP → `oidcRateLimitMax: 100_000`). Full control-plane suite green: unit 182/182, integration 69/69.
+
+### Footgun status update
+1. **tsc gap (footgun #1) — PARTLY FIXED by PR132** (control-plane + contracts gated; web tracked in #131). See [[ci-node-lint-skips-tsc]].
+2. **merge-without-CI-gate** still live but the staff-gate DID catch both real issues this pass and held them as needs-rework PRs (didn't merge red) — confirm `gh pr checks` + `mergeStateStatus CLEAN` before every merge still applies. See [[deliver-workflow-merges-without-ci-gate]].
+3. **NEW: apps/web `node-test` is FLAKY** — transiently fails ALL testing-library assertions with `Invalid Chai property: toBeInTheDocument` (jest-dom setup drops); hit PR132 + PR137, cleared on `gh run rerun --failed` with zero code change. Memory: [[web-vitest-node-test-flaky-jestdom]].
+
+### State at session end
+`main` @ `7267a3e`, clean except this ledger (M, uncommitted by design). No worktrees (8 from the workflow removed clean — verified no live dev-server procs), no open PRs. **Google OAuth + AWS IaC fully shipped (Waves 0/1/2).** Next: no decomposed work remains — only #131 (web tsc gate) + #24 (Figma, license-blocked) as tech-debt.
