@@ -1,4 +1,4 @@
-import type { Pool } from 'pg';
+import type { Pool, PoolClient } from 'pg';
 import type { AuthRecord, NewUser, UserPatch, UserRepository } from '../../app/ports';
 import type { User } from '../../domain/entities';
 import { ConflictError } from '../../domain/errors';
@@ -63,6 +63,40 @@ const SELECT_AUTH = `
     FROM users u
     LEFT JOIN memberships m ON m.tenant_id = u.tenant_id AND m.user_id = u.id`;
 
+// insertUserWithMembership writes a user + its membership row inside an ALREADY-ARMED
+// PoolClient (tenant RLS set, transaction in progress). The caller owns BEGIN/COMMIT;
+// this function performs NO connect/BEGIN/COMMIT of its own.
+//
+// Exported so that cross-aggregate provisioners (e.g. the OIDC invite provisioner)
+// can compose user creation with other writes in one atomic transaction.
+export async function insertUserWithMembership(
+  client: PoolClient,
+  tenantId: string,
+  input: NewUser,
+): Promise<User> {
+  try {
+    const inserted = await client.query<{ id: string }>(
+      `INSERT INTO users (tenant_id, email, password_hash, display_name)
+       VALUES ($1, $2, $3, $4)
+       RETURNING id`,
+      [tenantId, input.email, input.passwordHash, input.displayName ?? null],
+    );
+    const userId = (inserted.rows[0] as { id: string }).id;
+    await client.query(`INSERT INTO memberships (tenant_id, user_id, role) VALUES ($1, $2, $3)`, [
+      tenantId,
+      userId,
+      input.role,
+    ]);
+    const res = await client.query<UserRow>(`${SELECT_USER} WHERE u.id = $1`, [userId]);
+    return toUser(res.rows[0] as UserRow);
+  } catch (err) {
+    if (isUniqueViolation(err)) {
+      throw new ConflictError(`a user with email '${input.email}' already exists`);
+    }
+    throw err;
+  }
+}
+
 // PgUserRepository persists users + memberships under tenant RLS. create() writes
 // both the user and its membership in ONE transaction (same aggregate), so a user
 // never exists without its role.
@@ -70,28 +104,9 @@ export class PgUserRepository implements UserRepository {
   constructor(private readonly pool: Pool) {}
 
   async create(tenantId: string, input: NewUser): Promise<User> {
-    return withTenantTx(this.pool, tenantId, async (client) => {
-      try {
-        const inserted = await client.query<{ id: string }>(
-          `INSERT INTO users (tenant_id, email, password_hash, display_name)
-           VALUES ($1, $2, $3, $4)
-           RETURNING id`,
-          [tenantId, input.email, input.passwordHash, input.displayName ?? null],
-        );
-        const userId = (inserted.rows[0] as { id: string }).id;
-        await client.query(
-          `INSERT INTO memberships (tenant_id, user_id, role) VALUES ($1, $2, $3)`,
-          [tenantId, userId, input.role],
-        );
-        const res = await client.query<UserRow>(`${SELECT_USER} WHERE u.id = $1`, [userId]);
-        return toUser(res.rows[0] as UserRow);
-      } catch (err) {
-        if (isUniqueViolation(err)) {
-          throw new ConflictError(`a user with email '${input.email}' already exists`);
-        }
-        throw err;
-      }
-    });
+    return withTenantTx(this.pool, tenantId, (client) =>
+      insertUserWithMembership(client, tenantId, input),
+    );
   }
 
   async list(tenantId: string): Promise<User[]> {
