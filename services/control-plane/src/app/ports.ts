@@ -3,8 +3,11 @@ import type {
   AlertComparator,
   AlertRule,
   ApiKeyRecord,
+  ConsumedInvite,
   Dashboard,
   DashboardLayout,
+  Invite,
+  InviteRef,
   NotifyChannel,
   OAuthIdentity,
   OAuthProvider,
@@ -409,7 +412,13 @@ export type OAuthAuditOutcome =
   | 'reject_invalid_token'
   | 'reject_no_provisioned_user'
   | 'reject_account_inactive'
-  | 'reject_identity_conflict';
+  | 'reject_identity_conflict'
+  // Invite-flow outcomes (ADR-0012):
+  //   invite_provisioned   — a valid invite authorized JIT provisioning; user created and session minted.
+  //   reject_no_valid_invite — an invite token was presented but no valid (pending, unexpired,
+  //                             email-matched) invite was found; same 401 to the invitee.
+  | 'invite_provisioned'
+  | 'reject_no_valid_invite';
 
 export interface OAuthAuditEvent {
   /** Tenant that owns the auth flow — null only on reject_invalid_state (state is absent). */
@@ -470,4 +479,120 @@ export interface OAuthIdentityRepository {
 
   // Full projection for debugging / admin — not used in the hot auth path.
   findById(tenantId: string, id: string): Promise<OAuthIdentity | null>;
+}
+
+// ── InviteRepository — tenant-scoped invite persistence (migration 000018) ────
+// Every method takes `tenantId` and runs under RLS (SET LOCAL app.tenant_id),
+// consistent with every other tenant-owned repository in this file. The public
+// projection (Invite / InviteRef / ConsumedInvite) NEVER carries the plaintext
+// token, the secret, or the secret hash outward — those are write-only fields
+// at the storage boundary (ADR-0012, R-INV-2).
+
+export interface NewInvite {
+  /** The invite's role in the Invites context vocabulary: 'member' | 'admin'. */
+  role: string;
+  email: string;
+  /** SHA-256 of the one-time CSPRNG secret (32 raw bytes). Stored; never returned. */
+  secretHash: Buffer;
+  invitedBy: string | null;
+  expiresAt: Date;
+}
+
+export interface InviteRepository {
+  /** Creates a new pending invite row. Returns the public Invite projection (no hash). */
+  create(tenantId: string, input: NewInvite): Promise<Invite>;
+
+  /**
+   * Read-only accept-time liveness probe: resolves the invite for UX fast-fail
+   * (fail before bouncing to Google). NOT the security authority — the consume
+   * below is the sole single-use gate. Returns null on any failure so callers
+   * emit a uniform 401 (R-INV-6 — no enumeration).
+   */
+  findValidByTokenHash(
+    tenantId: string,
+    tokenHash: Buffer,
+    now: Date,
+  ): Promise<InviteRef | null>;
+
+  /**
+   * The security authority: a single atomic conditional UPDATE that folds
+   * email-binding + single-use + expiry + status into one statement (R-INV-3,
+   * R-INV-6). Returns null when zero rows matched — i.e. every failure mode
+   * (no invite, wrong email, expired, revoked, already consumed, lost the race)
+   * collapses to null → uniform 401 (no enumeration).
+   *
+   *   UPDATE invites SET status='consumed', consumed_at=now()
+   *    WHERE token_hash=$1 AND email=$2 AND status='pending' AND expires_at>now()
+   *   RETURNING id, role, email
+   */
+  consume(
+    tenantId: string,
+    input: { tokenHash: Buffer; email: string; now: Date },
+  ): Promise<ConsumedInvite | null>;
+
+  /** Lists all invites for the tenant — admin view; no tokens/hashes in the projection. */
+  listByTenant(tenantId: string): Promise<Invite[]>;
+
+  /**
+   * Flips the invite's status to 'revoked' (not a hard delete, per ADR-0012 §revoke).
+   * Returns true when a pending invite was found and revoked, false when absent or
+   * already consumed/revoked (idempotent to callers).
+   */
+  revoke(tenantId: string, id: string, now: Date): Promise<boolean>;
+}
+
+// ── EmailSender — thin optional port for transactional email (ADR-0013) ────────
+// The composition root selects the adapter from EMAIL_PROVIDER:
+//   - unset / 'none'  → NoOpEmailSender (logs metadata only, no real send)
+//   - 'smtp'          → SmtpEmailSender (nodemailer; covers MailHog locally + any SMTP relay)
+//   - 'ses'           → reserved slot (SES SDK, built when bounce/complaint handling is needed)
+//
+// InviteService.create commits the invites row and returns the link BEFORE calling
+// send(); a send failure (provider down, throttled, misconfigured) is caught and
+// audited but NEVER propagated — the create has already succeeded (ADR-0013 §rule).
+// The send path MUST NOT log the link or token; only recipient + invite id metadata.
+
+export interface EmailMessage {
+  /** Recipient address — the invite email (normalized, lowercase). */
+  to: string;
+  subject: string;
+  /** Plain-text fallback body. */
+  text: string;
+  /** Optional HTML body (rendered invite link). */
+  html?: string;
+}
+
+export interface EmailSender {
+  send(message: EmailMessage): Promise<void>;
+}
+
+// ── InviteAuditLogger — admin-side invite lifecycle audit (threat-model §5) ────
+// Separate from OAuthAuditLogger (which owns the OIDC auth-flow trail) because
+// invite lifecycle is an admin-side concern: create / revoke actions carry an
+// actor (the admin who performed the action) and the invite id. NEVER carries
+// the token plaintext, secret, or hash (R-INV-9 — audit surface hashed, not raw).
+//
+// Outcomes:
+//   invite_created  — admin created a new invite; actor + invite id + role logged.
+//   invite_revoked  — admin revoked an invite; actor + invite id logged.
+
+export type InviteAuditOutcome = 'invite_created' | 'invite_revoked';
+
+export interface InviteAuditEvent {
+  /** The tenant the invite belongs to. */
+  tenantId: string;
+  /** The invite's database id (not the token — never the token). */
+  inviteId: string;
+  /** Admin user id that performed the action (actor). */
+  actorId: string;
+  outcome: InviteAuditOutcome;
+  /** Normalized email of the invitee — no token, no hash outward. */
+  email: string;
+  /** Role vocabulary: 'member' | 'admin' (Invites context, not membership enum). */
+  role: string;
+  ts: Date;
+}
+
+export interface InviteAuditLogger {
+  log(event: InviteAuditEvent): void;
 }
