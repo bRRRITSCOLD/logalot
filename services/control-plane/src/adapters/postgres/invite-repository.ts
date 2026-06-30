@@ -146,6 +146,18 @@ export class PgInviteRepository implements InviteRepository {
     });
   }
 
+  // countPending counts outstanding (status='pending') invites for the tenant.
+  // Runs under RLS so it cannot cross tenant boundaries. Called by InviteService.create
+  // to enforce the cap before writing a new row (R-INV-10).
+  async countPending(tenantId: string): Promise<number> {
+    return withTenantTx(this.pool, tenantId, async (client) => {
+      const res = await client.query<{ count: string }>(
+        `SELECT COUNT(*)::text AS count FROM invites WHERE status = 'pending'`,
+      );
+      return parseInt((res.rows[0] as { count: string }).count, 10);
+    });
+  }
+
   async listByTenant(tenantId: string): Promise<Invite[]> {
     return withTenantTx(this.pool, tenantId, async (client) => {
       const res = await client.query<InviteRow>(
