@@ -158,7 +158,10 @@ export async function cpAuthedSend<T>(
  * Returns the IdP redirect URL the browser must be sent to.
  */
 export function cpOidcAuthorize(body: OidcAuthorizeRequest): Promise<OidcAuthorizeResponse> {
-  return cpFetch(`/v1/auth/oidc/${encodeURIComponent(body.tenantSlug)}/authorize`, {
+  // Path is keyed by PROVIDER (`google`), not tenant — the control-plane registers
+  // /v1/auth/oidc/google/authorize and reads tenantSlug from the BODY. Putting the
+  // tenant in the path 404s (no such route).
+  return cpFetch('/v1/auth/oidc/google/authorize', {
     method: 'POST',
     body: JSON.stringify(body),
   }).then((b) => oidcAuthorizeResponseSchema.parse(b));
@@ -169,7 +172,8 @@ export function cpOidcAuthorize(body: OidcAuthorizeRequest): Promise<OidcAuthori
  * validation and token exchange.  Returns the issued token pair on success.
  */
 export function cpOidcCallback(body: OidcCallbackRequest): Promise<TokenPair> {
-  return cpFetch(`/v1/auth/oidc/${encodeURIComponent(body.tenantSlug)}/callback`, {
+  // Provider-keyed path (see cpOidcAuthorize) — tenantSlug travels in the body.
+  return cpFetch('/v1/auth/oidc/google/callback', {
     method: 'POST',
     body: JSON.stringify(body),
   }).then((b) => tokenPairSchema.parse(b));
