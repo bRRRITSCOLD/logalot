@@ -20,6 +20,7 @@ import type {
   GoogleTokenExchangeResult,
   IdGenerator,
   InviteProvisioner,
+  InviteProvisionInput,
   NewRefreshToken,
   OAuthAuditEvent,
   OAuthAuditLogger,
@@ -28,7 +29,6 @@ import type {
   OAuthIdentityRepository,
   OAuthStateRecord,
   OAuthStateStore,
-  ProvisionFromInviteInput,
   RefreshTokenRepository,
   SecretGenerator,
   TokenService,
@@ -44,7 +44,7 @@ const TENANT_ID = '00000000-0000-0000-0000-000000000001';
 const USER_ID = '00000000-0000-0000-0000-000000000002';
 const PROVISIONED_USER_ID = '00000000-0000-0000-0000-000000000003';
 const GOOGLE_SUB = 'google-sub-invite-001';
-const INVITE_TOKEN_HASH = createHash('sha256').update('plaintext-token', 'utf8').digest('hex');
+const INVITE_TOKEN_HASH = createHash('sha256').update('plaintext-token', 'utf8').digest();
 const REDIRECT_URI = 'https://app.logalot.dev/auth/oidc/google/callback';
 
 // ── Fakes ────────────────────────────────────────────────────────────────────
@@ -206,7 +206,7 @@ class FakeTokenService implements TokenService {
 /** Controllable InviteProvisioner fake. */
 class FakeInviteProvisioner implements InviteProvisioner {
   callCount = 0;
-  lastInput: (ProvisionFromInviteInput & { tenantId: string }) | null = null;
+  lastInput: (InviteProvisionInput & { tenantId: string }) | null = null;
   private result: { userId: string } | null = { userId: PROVISIONED_USER_ID };
 
   setResult(r: { userId: string } | null): void {
@@ -215,7 +215,7 @@ class FakeInviteProvisioner implements InviteProvisioner {
 
   async provisionFromInvite(
     tenantId: string,
-    input: ProvisionFromInviteInput,
+    input: InviteProvisionInput,
   ): Promise<{ userId: string } | null> {
     this.callCount++;
     this.lastInput = { tenantId, ...input };
