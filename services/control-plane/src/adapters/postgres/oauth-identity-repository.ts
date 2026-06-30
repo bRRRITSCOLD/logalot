@@ -1,4 +1,4 @@
-import type { Pool } from 'pg';
+import type { Pool, PoolClient } from 'pg';
 import type { NewOAuthIdentity, OAuthIdentityRef, OAuthIdentityRepository } from '../../app/ports';
 import type { OAuthIdentity, OAuthProvider } from '../../domain/entities';
 import { ConflictError } from '../../domain/errors';
@@ -33,6 +33,72 @@ function toIdentity(row: DbRow): OAuthIdentity {
 const COLUMNS =
   'id, tenant_id, user_id, provider, provider_sub, email, last_login_at, created_at, updated_at';
 
+// linkFirstWithClient performs the SAVEPOINT-guarded INSERT (or idempotent
+// re-resolve) inside an ALREADY-ARMED PoolClient (tenant RLS set, transaction
+// in progress). The caller owns BEGIN/COMMIT; this function performs NO
+// connect/BEGIN/COMMIT of its own.
+//
+// Exported so that cross-aggregate provisioners can atomically link an OAuth
+// identity in the same transaction that creates the user (R-INV-17).
+//
+// A 23505 on UNIQUE(tenant_id, provider, provider_sub) is idempotent: roll back
+// to the savepoint and re-SELECT to return the winner's ref.
+// A 23505 on UNIQUE(tenant_id, user_id, provider) means the user is already
+// pinned to a DIFFERENT sub — surface as ConflictError (R13, sub-pinned).
+export async function linkFirstWithClient(
+  client: PoolClient,
+  tenantId: string,
+  input: NewOAuthIdentity,
+): Promise<OAuthIdentityRef> {
+  // Use a SAVEPOINT so that a 23505 unique-violation only aborts the INSERT
+  // sub-statement rather than the entire outer transaction. Without the
+  // savepoint, Postgres puts the whole tx into the "aborted" state and the
+  // re-SELECT below would fail with SQLSTATE 25P02.
+  await client.query('SAVEPOINT link_first');
+  try {
+    const res = await client.query<{ id: string; user_id: string }>(
+      `INSERT INTO oauth_identities (tenant_id, user_id, provider, provider_sub, email)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING id, user_id`,
+      [tenantId, input.userId, input.provider, input.providerSub, input.email],
+    );
+    const row = res.rows[0] as { id: string; user_id: string };
+    return { id: row.id, userId: row.user_id };
+  } catch (err) {
+    // A 23505 here can be EITHER of the table's two UNIQUE constraints, and
+    // they mean opposite things — so we must distinguish, not assume:
+    //
+    //   (a) UNIQUE(tenant_id, provider, provider_sub) — a concurrent first-link
+    //       for the SAME sub already won. Idempotent: roll back to the savepoint
+    //       and re-resolve by (provider, provider_sub) to return the winner's ref.
+    //       Under READ COMMITTED the winner row is visible by the time we receive
+    //       the 23505.
+    //
+    //   (b) UNIQUE(tenant_id, user_id, provider) — this user is ALREADY linked to a
+    //       DIFFERENT Google sub in this tenant (an attempt to re-pin the account to
+    //       a new identity). The re-SELECT by the NEW (provider, provider_sub) then
+    //       finds ZERO rows. This is a security-relevant rejection (threat model R13:
+    //       sub-pinned), NOT an idempotent retry — surface it as a ConflictError so
+    //       the app layer rejects with 401 instead of dereferencing rows[0] (which
+    //       would throw and 500 — the bug this guards against).
+    if (isUniqueViolation(err)) {
+      await client.query('ROLLBACK TO SAVEPOINT link_first');
+      const existing = await client.query<{ id: string; user_id: string }>(
+        `SELECT id, user_id
+           FROM oauth_identities
+          WHERE provider = $1 AND provider_sub = $2`,
+        [input.provider, input.providerSub],
+      );
+      const row = existing.rows[0];
+      if (!row) {
+        throw new ConflictError('user is already linked to a different identity for this provider');
+      }
+      return { id: row.id, userId: row.user_id };
+    }
+    throw err;
+  }
+}
+
 // PgOAuthIdentityRepository persists OAuth identity links under tenant RLS
 // (migration 000017). Every statement arms RLS via withTenantTx so no identity
 // is ever visible outside its tenant. The logalot_app pool (NOSUPERUSER) is the
@@ -63,57 +129,9 @@ export class PgOAuthIdentityRepository implements OAuthIdentityRepository {
   }
 
   async linkFirst(tenantId: string, input: NewOAuthIdentity): Promise<OAuthIdentityRef> {
-    return withTenantTx(this.pool, tenantId, async (client) => {
-      // Use a SAVEPOINT so that a 23505 unique-violation only aborts the INSERT
-      // sub-statement rather than the entire outer transaction. Without the
-      // savepoint, Postgres puts the whole tx into the "aborted" state and the
-      // re-SELECT below would fail with SQLSTATE 25P02.
-      await client.query('SAVEPOINT link_first');
-      try {
-        const res = await client.query<{ id: string; user_id: string }>(
-          `INSERT INTO oauth_identities (tenant_id, user_id, provider, provider_sub, email)
-           VALUES ($1, $2, $3, $4, $5)
-           RETURNING id, user_id`,
-          [tenantId, input.userId, input.provider, input.providerSub, input.email],
-        );
-        const row = res.rows[0] as { id: string; user_id: string };
-        return { id: row.id, userId: row.user_id };
-      } catch (err) {
-        // A 23505 here can be EITHER of the table's two UNIQUE constraints, and
-        // they mean opposite things — so we must distinguish, not assume:
-        //
-        //   (a) UNIQUE(tenant_id, provider, provider_sub) — a concurrent first-link
-        //       for the SAME sub already won. Idempotent: roll back to the savepoint
-        //       and re-resolve by (provider, provider_sub) to return the winner's ref.
-        //       Under READ COMMITTED the winner row is visible by the time we receive
-        //       the 23505.
-        //
-        //   (b) UNIQUE(tenant_id, user_id, provider) — this user is ALREADY linked to a
-        //       DIFFERENT Google sub in this tenant (an attempt to re-pin the account to
-        //       a new identity). The re-SELECT by the NEW (provider, provider_sub) then
-        //       finds ZERO rows. This is a security-relevant rejection (threat model R13:
-        //       sub-pinned), NOT an idempotent retry — surface it as a ConflictError so
-        //       the app layer rejects with 401 instead of dereferencing rows[0] (which
-        //       would throw and 500 — the bug this guards against).
-        if (isUniqueViolation(err)) {
-          await client.query('ROLLBACK TO SAVEPOINT link_first');
-          const existing = await client.query<{ id: string; user_id: string }>(
-            `SELECT id, user_id
-               FROM oauth_identities
-              WHERE provider = $1 AND provider_sub = $2`,
-            [input.provider, input.providerSub],
-          );
-          const row = existing.rows[0];
-          if (!row) {
-            throw new ConflictError(
-              'user is already linked to a different identity for this provider',
-            );
-          }
-          return { id: row.id, userId: row.user_id };
-        }
-        throw err;
-      }
-    });
+    return withTenantTx(this.pool, tenantId, (client) =>
+      linkFirstWithClient(client, tenantId, input),
+    );
   }
 
   async touchLastLogin(tenantId: string, id: string, now: Date): Promise<void> {
