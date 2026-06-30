@@ -34,6 +34,9 @@ export const OPERATIONS = [
   'dashboard:list',
   'dashboard:update',
   'dashboard:delete',
+  'invite:create',
+  'invite:list',
+  'invite:revoke',
 ] as const;
 
 export type Operation = (typeof OPERATIONS)[number];
@@ -84,6 +87,9 @@ const MATRIX: Record<Role, ReadonlySet<Operation>> = {
     'dashboard:list',
     'dashboard:update',
     'dashboard:delete',
+    'invite:create',
+    'invite:list',
+    'invite:revoke',
   ]),
   // member is read-mostly within its tenant: it can SEE alert rules, saved
   // queries, and dashboards — but writing config is a tenant_admin verb.

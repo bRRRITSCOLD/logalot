@@ -34,4 +34,22 @@ describe('can — client RBAC mirror (display-only)', () => {
     expect(can('platform_operator', 'user:list')).toBe(false);
     expect(can('platform_operator', 'retention:read')).toBe(false);
   });
+
+  it('tenant_admin is granted all invite operations (R-INV-7, R-INV-8)', () => {
+    expect(can('tenant_admin', 'invite:create')).toBe(true);
+    expect(can('tenant_admin', 'invite:list')).toBe(true);
+    expect(can('tenant_admin', 'invite:revoke')).toBe(true);
+  });
+
+  it('member is denied all invite operations', () => {
+    expect(can('member', 'invite:create')).toBe(false);
+    expect(can('member', 'invite:list')).toBe(false);
+    expect(can('member', 'invite:revoke')).toBe(false);
+  });
+
+  it('platform_operator is denied all invite operations', () => {
+    expect(can('platform_operator', 'invite:create')).toBe(false);
+    expect(can('platform_operator', 'invite:list')).toBe(false);
+    expect(can('platform_operator', 'invite:revoke')).toBe(false);
+  });
 });

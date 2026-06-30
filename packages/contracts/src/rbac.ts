@@ -34,6 +34,9 @@ export const UI_OPERATIONS = [
   'alert:list',
   'alert:update',
   'alert:delete',
+  'invite:create',
+  'invite:list',
+  'invite:revoke',
 ] as const;
 
 export type UiOperation = (typeof UI_OPERATIONS)[number];
@@ -60,6 +63,9 @@ const MATRIX: Record<Role, ReadonlySet<UiOperation>> = {
     'alert:list',
     'alert:update',
     'alert:delete',
+    'invite:create',
+    'invite:list',
+    'invite:revoke',
   ]),
   member: new Set<UiOperation>(['tenant:read', 'retention:read', 'alert:read', 'alert:list']),
 };
