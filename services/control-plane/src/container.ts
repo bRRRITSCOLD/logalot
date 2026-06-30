@@ -16,6 +16,7 @@ import { PgApiKeyRepository } from './adapters/postgres/api-key-repository';
 import { PgDashboardRepository } from './adapters/postgres/dashboard-repository';
 import { PgInviteRepository } from './adapters/postgres/invite-repository';
 import { PgOAuthIdentityRepository } from './adapters/postgres/oauth-identity-repository';
+import { PgInviteProvisioner } from './adapters/postgres/pg-invite-provisioner';
 import { PgRefreshTokenRepository } from './adapters/postgres/refresh-token-repository';
 import { PgRetentionRepository } from './adapters/postgres/retention-repository';
 import { PgSavedQueryRepository } from './adapters/postgres/saved-query-repository';
@@ -99,6 +100,7 @@ export function buildContainer(pool: Pool, config: Config): Container {
   const idGenerator = new NodeIdGenerator();
   const clock = new SystemClock();
 
+  // ── Repositories ──────────────────────────────────────────────────────────
   const tenantRepo = new PgTenantRepository(pool);
   const userRepo = new PgUserRepository(pool);
   const apiKeyRepo = new PgApiKeyRepository(pool);
@@ -110,20 +112,67 @@ export function buildContainer(pool: Pool, config: Config): Container {
   const oauthIdentityRepo = new PgOAuthIdentityRepository(pool);
   const inviteRepo = new PgInviteRepository(pool);
 
-  // Email adapter — selected from EMAIL_PROVIDER; NEVER derived from request data
-  // (ADR-0013, R-INV-14). NoOpEmailSender is the safe default (no network I/O).
-  // Constructed before services so InviteService can receive it at composition time.
-  const emailSender: EmailSender =
-    config.emailProvider === 'smtp' && config.smtpHost && config.smtpPort && config.smtpFrom
-      ? new SmtpEmailSender({
-          host: config.smtpHost,
-          port: config.smtpPort,
-          user: config.smtpUser,
-          pass: config.smtpPass,
-          from: config.smtpFrom,
-        })
-      : new NoOpEmailSender();
+  // ── Email adapter ──────────────────────────────────────────────────────────
+  // Selected from EMAIL_PROVIDER at startup; NEVER derived from request data
+  // (ADR-0013, R-INV-14). Provider secrets (SMTP_PASS) reach only this block;
+  // they MUST NOT propagate into services or routes (R-INV-14 — secret confinement).
+  //
+  //   'none' / unset → NoOpEmailSender (default; no network I/O, link in API response)
+  //   'smtp'         → SmtpEmailSender (nodemailer; requires SMTP_* config validated by EnvSchema)
+  //   'ses'          → not yet built (YAGNI); falls back to NoOp + startup warning
+  let emailSender: EmailSender;
+  if (config.emailProvider === 'smtp' && config.smtpHost && config.smtpPort && config.smtpFrom) {
+    emailSender = new SmtpEmailSender({
+      host: config.smtpHost,
+      port: config.smtpPort,
+      user: config.smtpUser,
+      // smtpPass is a secret — consumed ONLY here and never forwarded to any service
+      // or route (R-INV-14). The SMTP transport closes over it internally.
+      pass: config.smtpPass,
+      from: config.smtpFrom,
+    });
+  } else {
+    if (config.emailProvider === 'ses') {
+      process.stderr.write(
+        `${JSON.stringify({
+          type: 'email_provider_fallback',
+          configured: 'ses',
+          actual: 'noop',
+          reason: 'SES adapter is not yet built; falling back to NoOp',
+        })}\n`,
+      );
+    }
+    emailSender = new NoOpEmailSender();
+  }
 
+  // ── Invite components ──────────────────────────────────────────────────────
+  // InviteProvisioner — single tenant-armed unit-of-work: consume + user +
+  // membership + identity link in one transaction (ADR-0012 §5, R-INV-17).
+  // Uses the OIDC audit logger because provisioning fires from within handleCallback
+  // (the invite_provisioned / reject_no_valid_invite outcomes live in OAuthAuditOutcome).
+  const inviteProvisioner = new PgInviteProvisioner({
+    pool,
+    auditLogger: new ConsoleOAuthAuditLogger(),
+  });
+
+  // InviteService — admin-facing create/list/revoke + cap enforcement + best-effort email.
+  // emailSender is injected here and consumed ONLY within InviteService — it is NOT
+  // forwarded to routes or other services (R-INV-14 — secret confinement).
+  const inviteService = new InviteService(
+    inviteRepo,
+    tenantRepo,
+    secretGenerator,
+    clock,
+    emailSender,
+    new ConsoleInviteAuditLogger(),
+    {
+      inviteTtlSeconds: config.inviteTtlSeconds,
+      inviteMaxOutstandingPerTenant: config.inviteMaxOutstandingPerTenant,
+      inviteAcceptBaseUrl: config.inviteAcceptBaseUrl,
+    },
+  );
+
+  // ── Application services ───────────────────────────────────────────────────
   const services: Services = {
     auth: new AuthService({
       tenants: tenantRepo,
@@ -143,22 +192,11 @@ export function buildContainer(pool: Pool, config: Config): Container {
     alerts: new AlertRuleService(alertRuleRepo),
     savedQueries: new SavedQueryService(savedQueryRepo),
     dashboards: new DashboardService(dashboardRepo),
-    invites: new InviteService(
-      inviteRepo,
-      tenantRepo,
-      secretGenerator,
-      clock,
-      emailSender,
-      new ConsoleInviteAuditLogger(),
-      {
-        inviteTtlSeconds: config.inviteTtlSeconds,
-        inviteMaxOutstandingPerTenant: config.inviteMaxOutstandingPerTenant,
-        inviteAcceptBaseUrl: config.inviteAcceptBaseUrl,
-      },
-    ),
+    invites: inviteService,
   };
 
-  // OAuth state store — Redis when REDIS_URL is configured, in-memory fake otherwise.
+  // ── OAuth state store ──────────────────────────────────────────────────────
+  // Redis when REDIS_URL is configured, in-memory fake otherwise.
   // The in-memory store is safe for single-process dev/test; use Redis in production
   // and any multi-replica deployment so state survives between request handlers.
   //
@@ -170,8 +208,9 @@ export function buildContainer(pool: Pool, config: Config): Container {
     ? new RedisOAuthStateStore(redisClient)
     : new InMemoryOAuthStateStore();
 
-  // Google OAuth adapters — only wired when both client_id and client_secret are
-  // configured. Absence in dev/test is expected; routes guard against undefined.
+  // ── Google OAuth adapters ──────────────────────────────────────────────────
+  // Only wired when both client_id and client_secret are configured.
+  // Absence in dev/test is expected; routes guard against undefined.
   const googleIdTokenVerifier: GoogleIdTokenVerifier | undefined = config.googleClientId
     ? new JoseGoogleIdTokenVerifier({ clientId: config.googleClientId })
     : undefined;
@@ -183,8 +222,10 @@ export function buildContainer(pool: Pool, config: Config): Container {
           clientSecret: config.googleClientSecret,
         })
       : undefined;
-  // OidcAuthenticator — beginAuthorize (issue #95) + handleCallback (issue #96) +
-  // account-linking + audit (issue #97).
+
+  // ── OidcAuthenticator ─────────────────────────────────────────────────────
+  // beginAuthorize (issue #95) + handleCallback (issue #96) + account-linking
+  // + audit (issue #97) + invite-acceptance (ADR-0012 §5).
   // clientId and redirectUri are required in production; they are optional in
   // config so tests that don't exercise the OIDC path don't need to provide them.
   // The callback-half deps (tokenExchangeClient, idTokenVerifier, oauthIdentities)
@@ -217,6 +258,12 @@ export function buildContainer(pool: Pool, config: Config): Container {
     // Structured audit logger — ConsoleOAuthAuditLogger writes one JSON line per
     // callback outcome to stderr (privacy-safe: only hashed sub is logged).
     auditLogger: new ConsoleOAuthAuditLogger(),
+    // InviteProvisioner enables the invite-acceptance path in handleCallback
+    // (ADR-0012 §5). Providing a real provisioner here means the authenticator
+    // will attempt JIT provisioning when inviteTokenHash is present on the callback
+    // command. The existing reject_no_provisioned_user path is preserved when
+    // inviteTokenHash is absent (R-INV-17, backward compatible).
+    inviteProvisioner,
   });
 
   return {

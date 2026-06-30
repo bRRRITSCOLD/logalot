@@ -1,12 +1,15 @@
 import type { InviteAuditEvent, InviteAuditLogger } from '../../app/ports';
 
 // ConsoleInviteAuditLogger writes a single structured JSON line per event to
-// stderr. Mirrors ConsoleOAuthAuditLogger: one JSON-per-line sink compatible
-// with any log aggregator (CloudWatch, Datadog, Loki). Failures are swallowed —
-// audit logging must never abort the invite flow (ADR-0012, R-INV-9).
+// stderr. It is the production adapter for v1 — a proper sink can be wired
+// behind this port without changing the application core. Failures are
+// swallowed: audit logging must never abort the invite lifecycle flow.
 //
-// Privacy invariant: the log line carries the invite id and actor id, but NEVER
-// the token, token hash, or the one-time inviteUrl (R-INV-9).
+// Each line is a valid JSON object consumable by any JSON-per-line log
+// aggregator (CloudWatch, Datadog, Loki, etc.).
+//
+// Privacy-safe: the token plaintext and secret hash are NEVER logged — only
+// the invite id, actor id, outcome, normalized email, and role (R-INV-9).
 export class ConsoleInviteAuditLogger implements InviteAuditLogger {
   log(event: InviteAuditEvent): void {
     try {
