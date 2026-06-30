@@ -7,6 +7,8 @@ import { JoseTokenService } from './adapters/crypto/jose-token-service';
 import { NodeKeyMaterialGenerator } from './adapters/crypto/node-key-material';
 import { NodeIdGenerator, NodeSecretGenerator } from './adapters/crypto/node-random';
 import { SystemClock } from './adapters/crypto/system-clock';
+import { NoOpEmailSender } from './adapters/email/noop-email-sender';
+import { SmtpEmailSender } from './adapters/email/smtp-email-sender';
 import { GoogleTokenExchangeHttpClient } from './adapters/http/google-token-exchange-client';
 import { PgAlertRuleRepository } from './adapters/postgres/alert-rule-repository';
 import { PgApiKeyRepository } from './adapters/postgres/api-key-repository';
@@ -26,6 +28,7 @@ import { AuthService } from './app/auth-service';
 import { DashboardService } from './app/dashboard-service';
 import { OidcAuthenticator } from './app/oidc-authenticator';
 import type {
+  EmailSender,
   GoogleIdTokenVerifier,
   GoogleTokenExchangeClient,
   OAuthStateStore,
@@ -66,6 +69,13 @@ export interface Container {
    * the rate-limit plugin's default in-memory store).
    */
   redisClient: Redis | undefined;
+  /**
+   * Outbound email adapter selected at startup from EMAIL_PROVIDER (ADR-0013).
+   * 'none' / unset → NoOpEmailSender (default, no network calls).
+   * 'smtp'         → SmtpEmailSender (nodemailer; requires SMTP_* config).
+   * Exposed so InviteService (Task 12) and future services can inject it.
+   */
+  emailSender: EmailSender;
   /** Release infrastructure resources (Redis connection, etc.) on graceful shutdown. */
   shutdown: () => Promise<void>;
 }
@@ -177,6 +187,19 @@ export function buildContainer(pool: Pool, config: Config): Container {
     auditLogger: new ConsoleOAuthAuditLogger(),
   });
 
+  // Email adapter — selected from EMAIL_PROVIDER; NEVER derived from request data
+  // (ADR-0013, R-INV-14). NoOpEmailSender is the safe default (no network I/O).
+  const emailSender: EmailSender =
+    config.emailProvider === 'smtp' && config.smtpHost && config.smtpPort && config.smtpFrom
+      ? new SmtpEmailSender({
+          host: config.smtpHost,
+          port: config.smtpPort,
+          user: config.smtpUser,
+          pass: config.smtpPass,
+          from: config.smtpFrom,
+        })
+      : new NoOpEmailSender();
+
   return {
     services,
     tokenService,
@@ -185,6 +208,7 @@ export function buildContainer(pool: Pool, config: Config): Container {
     googleTokenExchangeClient,
     oidcAuthenticator,
     redisClient,
+    emailSender,
     shutdown: async () => {
       if (redisClient) await redisClient.quit();
     },
