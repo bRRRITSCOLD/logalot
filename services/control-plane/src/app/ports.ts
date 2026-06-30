@@ -526,6 +526,13 @@ export interface InviteRepository {
     input: { tokenHash: Buffer; email: string; now: Date },
   ): Promise<ConsumedInvite | null>;
 
+  /**
+   * Counts the number of outstanding (pending) invites for the tenant.
+   * Used by InviteService to enforce the cap before writing a new row (R-INV-10).
+   * Runs under RLS so it cannot count another tenant's rows.
+   */
+  countPending(tenantId: string): Promise<number>;
+
   /** Lists all invites for the tenant — admin view; no tokens/hashes in the projection. */
   listByTenant(tenantId: string): Promise<Invite[]>;
 
