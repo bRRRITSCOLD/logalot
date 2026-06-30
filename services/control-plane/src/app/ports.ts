@@ -508,11 +508,7 @@ export interface InviteRepository {
    * below is the sole single-use gate. Returns null on any failure so callers
    * emit a uniform 401 (R-INV-6 — no enumeration).
    */
-  findValidByTokenHash(
-    tenantId: string,
-    tokenHash: Buffer,
-    now: Date,
-  ): Promise<InviteRef | null>;
+  findValidByTokenHash(tenantId: string, tokenHash: Buffer, now: Date): Promise<InviteRef | null>;
 
   /**
    * The security authority: a single atomic conditional UPDATE that folds

@@ -1,12 +1,11 @@
-import { randomBytes } from 'node:crypto';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import type { Invite, InviteRef, ConsumedInvite } from '../../src/domain/entities';
+import type { ConsumedInvite, Invite, InviteRef } from '../../src/domain/entities';
 import {
-  INVITE_PREFIX,
-  INVITE_SECRET_BYTES,
   assembleInviteToken,
   hashInviteSecret,
+  INVITE_PREFIX,
+  INVITE_SECRET_BYTES,
   mintInviteToken,
   parseInviteToken,
 } from '../../src/domain/invite';
