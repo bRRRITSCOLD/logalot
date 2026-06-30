@@ -2,11 +2,7 @@ import type { Config } from '../config/env';
 import { normalizeEmail } from '../domain/email';
 import type { Invite } from '../domain/entities';
 import { ConflictError, NotFoundError } from '../domain/errors';
-import {
-  assembleInviteToken,
-  hashInviteSecret,
-  INVITE_SECRET_BYTES,
-} from '../domain/invite';
+import { assembleInviteToken, hashInviteSecret, INVITE_SECRET_BYTES } from '../domain/invite';
 import type { TenantContext } from '../domain/tenant-context';
 import { assertCan } from './authorize';
 import type {

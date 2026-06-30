@@ -107,11 +107,21 @@ class FakeTenantRepo implements Partial<TenantRepository> {
   }
 
   // Stub out the rest to satisfy the interface type in tests — only findById is called.
-  async create(): Promise<Tenant> { throw new Error('not used'); }
-  async list(): Promise<Tenant[]> { return []; }
-  async findByPublicId(): Promise<Tenant | null> { return null; }
-  async update(): Promise<Tenant | null> { return null; }
-  async delete(): Promise<boolean> { return false; }
+  async create(): Promise<Tenant> {
+    throw new Error('not used');
+  }
+  async list(): Promise<Tenant[]> {
+    return [];
+  }
+  async findByPublicId(): Promise<Tenant | null> {
+    return null;
+  }
+  async update(): Promise<Tenant | null> {
+    return null;
+  }
+  async delete(): Promise<boolean> {
+    return false;
+  }
 }
 
 class ThrowingEmailSender implements EmailSender {
@@ -188,7 +198,10 @@ describe('InviteService.create', () => {
 
   it('R-INV-12: inviteUrl contains the assembled plaintext token including tenant publicId', async () => {
     const { svc } = buildService();
-    const result = await svc.create(ctx('tenant_admin'), { email: 'bob@example.com', role: 'member' });
+    const result = await svc.create(ctx('tenant_admin'), {
+      email: 'bob@example.com',
+      role: 'member',
+    });
 
     // Token format: lginv_<publicId>_<secret>
     expect(result.inviteUrl).toContain(`lginv_${TENANT_PUBLIC_ID}_${FIXED_SECRET}`);
@@ -197,7 +210,10 @@ describe('InviteService.create', () => {
   it('R-INV-9: emits invite_created audit with inviteId + actorId, never the token', async () => {
     const logSpy = vi.fn();
     const { svc } = buildService({ auditLogger: { log: logSpy } });
-    const result = await svc.create(ctx('tenant_admin'), { email: 'carol@example.com', role: 'member' });
+    const result = await svc.create(ctx('tenant_admin'), {
+      email: 'carol@example.com',
+      role: 'member',
+    });
 
     expect(logSpy).toHaveBeenCalledOnce();
     const [evt] = logSpy.mock.calls[0] as Parameters<InviteAuditLogger['log']>;
@@ -212,7 +228,10 @@ describe('InviteService.create', () => {
 
   it('R-INV-14: a throwing EmailSender does NOT fail create; inviteUrl is still returned', async () => {
     const { svc } = buildService({ emailSender: new ThrowingEmailSender() });
-    const result = await svc.create(ctx('tenant_admin'), { email: 'dave@example.com', role: 'member' });
+    const result = await svc.create(ctx('tenant_admin'), {
+      email: 'dave@example.com',
+      role: 'member',
+    });
 
     expect(result.invite.id).toBeDefined();
     expect(result.inviteUrl).toBeDefined();
@@ -222,7 +241,10 @@ describe('InviteService.create', () => {
     const emailSender = new NoOpEmailSender();
     const logSpy = vi.fn();
     const { svc } = buildService({ emailSender, auditLogger: { log: logSpy } });
-    const result = await svc.create(ctx('tenant_admin'), { email: 'eve@example.com', role: 'member' });
+    const result = await svc.create(ctx('tenant_admin'), {
+      email: 'eve@example.com',
+      role: 'member',
+    });
 
     expect(result.inviteUrl).toBeDefined();
     // Email send was attempted with the correct recipient.
@@ -263,7 +285,10 @@ describe('InviteService.create', () => {
   it('R-INV-8: tenant_admin role is permitted to create invite', async () => {
     const { svc } = buildService();
     // Must not throw.
-    const result = await svc.create(ctx('tenant_admin'), { email: 'iris@example.com', role: 'member' });
+    const result = await svc.create(ctx('tenant_admin'), {
+      email: 'iris@example.com',
+      role: 'member',
+    });
     expect(result.invite).toBeDefined();
   });
 
@@ -277,7 +302,10 @@ describe('InviteService.create', () => {
 
   it('stamps expiresAt from config.inviteTtlSeconds', async () => {
     const { svc } = buildService();
-    const result = await svc.create(ctx('tenant_admin'), { email: 'kim@example.com', role: 'member' });
+    const result = await svc.create(ctx('tenant_admin'), {
+      email: 'kim@example.com',
+      role: 'member',
+    });
     expect(result.invite.expiresAt).toEqual(FIXED_EXPIRES_AT);
   });
 });

@@ -22,6 +22,7 @@ function makeStubServices(): Services {
     alerts: {} as unknown as Services['alerts'],
     savedQueries: {} as unknown as Services['savedQueries'],
     dashboards: {} as unknown as Services['dashboards'],
+    invites: {} as unknown as Services['invites'],
   };
 }
 
