@@ -136,6 +136,42 @@ export interface OAuthIdentity {
   updatedAt: Date;
 }
 
+// InviteStatus is the closed lifecycle state of an invite row. A pending
+// invite may be consumed exactly once; expiry is enforced by expires_at.
+export type InviteStatus = 'pending' | 'consumed' | 'expired' | 'revoked';
+
+// Invite is the public metadata projection of an invites row. It NEVER carries
+// the plaintext token, secret, or secret hash — those are one-time values
+// produced at creation only (see InviteToken in domain/invite.ts).
+export interface Invite {
+  id: string;
+  tenantId: string;
+  email: string;
+  role: string;
+  status: InviteStatus;
+  invitedBy: string | null;
+  expiresAt: Date;
+  consumedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+// InviteRef is a lightweight reference to an invite, suitable for embedding in
+// events or audit records without pulling the full projection.
+export interface InviteRef {
+  id: string;
+  tenantId: string;
+  email: string;
+}
+
+// ConsumedInvite records the outcome of a successful invite consumption:
+// the invite id, the user that was provisioned, and the timestamp.
+export interface ConsumedInvite {
+  inviteId: string;
+  userId: string;
+  consumedAt: Date;
+}
+
 // AlertRule is the public projection of an alert_rules row. The state +
 // last_evaluated_at/last_triggered_at fields are owned by the alert-evaluator
 // worker and are read-only here (the control-plane never writes them).
