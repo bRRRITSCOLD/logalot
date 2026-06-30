@@ -100,6 +100,10 @@ export type OidcAuthorizeResponse = z.infer<typeof oidcAuthorizeResponseSchema>;
  *
  * RFC 6749 §4.1.2 / OIDC Core §3.1.2.5: the authorization server MUST
  * return `code` and `state`; both are non-empty opaque strings.
+ *
+ * `inviteToken` is an optional plaintext invite token forwarded in the
+ * request body only (R-INV-12: never in a query param).  When present, the
+ * control-plane uses it to associate the new user with an outstanding invite.
  */
 export const oidcCallbackRequestSchema = z
   .object({
@@ -111,6 +115,12 @@ export const oidcCallbackRequestSchema = z
      * server validates it against the session to prevent CSRF.
      */
     state: z.string().min(1).max(1024),
+    /**
+     * Optional plaintext invite token (body only — R-INV-12).
+     * The control-plane uses this to consume an outstanding invite and
+     * assign the newly-authenticated user to the invited tenant + role.
+     */
+    inviteToken: z.string().min(1).max(512).optional(),
   })
   .strict();
 export type OidcCallbackRequest = z.infer<typeof oidcCallbackRequestSchema>;

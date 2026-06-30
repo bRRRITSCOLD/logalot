@@ -240,4 +240,30 @@ describe('oidcCallbackRequestSchema', () => {
     const result = oidcCallbackRequestSchema.safeParse({ ...valid, state: 'a'.repeat(1025) });
     expect(result.success).toBe(false);
   });
+
+  it('accepts a callback with an inviteToken (optional field)', () => {
+    const result = oidcCallbackRequestSchema.safeParse({ ...valid, inviteToken: 'inv_abc123' });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts a callback without an inviteToken (optional)', () => {
+    const result = oidcCallbackRequestSchema.safeParse(valid);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.inviteToken).toBeUndefined();
+    }
+  });
+
+  it('rejects an inviteToken exceeding 512 characters', () => {
+    const result = oidcCallbackRequestSchema.safeParse({
+      ...valid,
+      inviteToken: 'a'.repeat(513),
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects an empty inviteToken (min 1)', () => {
+    const result = oidcCallbackRequestSchema.safeParse({ ...valid, inviteToken: '' });
+    expect(result.success).toBe(false);
+  });
 });

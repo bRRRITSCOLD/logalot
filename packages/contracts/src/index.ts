@@ -9,6 +9,7 @@
 export * from './alertRule.js';
 export * from './apiKey.js';
 export * from './auth.js';
+export * from './invite.js';
 export * from './dashboard.js';
 export * from './ids.js';
 export * from './oauth.js';
