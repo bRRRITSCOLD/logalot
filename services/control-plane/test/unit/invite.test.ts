@@ -124,11 +124,14 @@ describe('Invite projection — no plaintext outward (R-INV-2)', () => {
   it('ConsumedInvite carries no secret fields', () => {
     const consumed: ConsumedInvite = {
       inviteId: 'uuid-1',
-      userId: 'user-uuid',
+      role: 'member',
+      email: 'user@example.com',
       consumedAt: new Date(),
     };
     const keys = Object.keys(consumed);
     expect(keys).not.toContain('token');
     expect(keys).not.toContain('secret');
+    expect(keys).not.toContain('tokenHash');
+    expect(keys).not.toContain('secretHash');
   });
 });

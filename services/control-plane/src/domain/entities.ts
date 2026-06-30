@@ -164,11 +164,14 @@ export interface InviteRef {
   email: string;
 }
 
-// ConsumedInvite records the outcome of a successful invite consumption:
-// the invite id, the user that was provisioned, and the timestamp.
+// ConsumedInvite records the outcome of a successful atomic invite consumption:
+// the invite id, the role and email from the row (for the provisioner to JIT-create the
+// user and translate the role), and the timestamp the consume set consumed_at to.
+// NEVER carries token, secret, or hash outward (ADR-0012, R-INV-2).
 export interface ConsumedInvite {
   inviteId: string;
-  userId: string;
+  role: string;
+  email: string;
   consumedAt: Date;
 }
 
