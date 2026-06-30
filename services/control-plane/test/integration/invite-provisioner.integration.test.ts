@@ -233,10 +233,11 @@ describe('PgInviteProvisioner integration', () => {
     expect(identities).toHaveLength(0);
   });
 
-  // ── AC: R13 different-sub conflict → null, invite not consumed (R-INV-17 / R13)
-  // A second provisioning attempt for the same email (with a new invite, since the
-  // first is consumed) collapses to null because the email is already taken —
-  // insertUserWithMembership hits a ConflictError, rolling back the tx.
+  // ── AC: step-2 email-conflict on re-invite → null, second invite not consumed ──
+  // A second invite for the same email collapses to null at step 2 (not step 3)
+  // because insertUserWithMembership hits a unique violation on email — the user
+  // already exists. This exercises R-INV-17 atomicity at step 2, NOT the R13
+  // step-3 conflict tested below.
 
   it('returns null on second invite for an existing email and leaves second invite pending (R-INV-17)', async () => {
     const email = `r13-user-${randomUUID()}@inv-prov.example`;
@@ -285,6 +286,73 @@ describe('PgInviteProvisioner integration', () => {
       [userId],
     );
     expect(identities.map((r) => r.provider_sub)).toEqual([firstSub]);
+  });
+
+  // ── AC: R13 step-3 conflict — same sub already linked to a DIFFERENT user ──────
+  // Sub X is pre-linked to user A. A second invite (different email) is accepted by
+  // the same Google account (sub X). Step 3 linkFirstWithClient finds sub X already
+  // owned by A, returns A's ref. The provisioner detects link.userId !== user.id and
+  // throws ConflictError → entire tx rolls back → null, invite stays 'pending', no
+  // orphan user/membership row is committed (R-INV-17 / R13 step-3 discharge).
+
+  it('returns null when the Google sub is already linked to a different user, leaving second invite pending and no orphan rows (R-INV-17 / R13)', async () => {
+    const emailA = `sub-clash-a-${randomUUID()}@inv-prov.example`;
+    const emailB = `sub-clash-b-${randomUUID()}@inv-prov.example`;
+    const sharedSub = `sub-shared-${randomUUID()}`;
+    const provisioner = new PgInviteProvisioner({ pool: env.appPool });
+
+    // Provision user A with sharedSub via the first invite.
+    const { secretHash: secretHashA } = await seedInvite({ email: emailA, role: 'member' });
+    const resultA = await provisioner.provisionFromInvite(tenantId, {
+      email: emailA,
+      inviteTokenHash: secretHashA,
+      providerSub: sharedSub,
+      now: new Date(),
+    });
+    expect(resultA).not.toBeNull();
+    const userAId = (resultA as { userId: string }).userId;
+
+    // Seed a second invite for a completely different email.
+    const { id: inviteBId, secretHash: secretHashB } = await seedInvite({
+      email: emailB,
+      role: 'member',
+    });
+
+    // Attempt to provision user B using the SAME Google sub (sharedSub).
+    // Step 1 (consume) succeeds, step 2 (insert user B) succeeds, but step 3
+    // (linkFirstWithClient) finds sub already owned by user A — provisioner
+    // detects link.userId !== user.id → ConflictError → tx rolls back.
+    const resultB = await provisioner.provisionFromInvite(tenantId, {
+      email: emailB,
+      inviteTokenHash: secretHashB,
+      providerSub: sharedSub,
+      now: new Date(),
+    });
+
+    // Returns null — not thrown.
+    expect(resultB).toBeNull();
+
+    // Invite B reverted to 'pending' (entire tx rolled back).
+    expect(await getInviteStatus(inviteBId)).toBe('pending');
+
+    // Zero users with emailB — no orphan user row was committed.
+    const orphanUsers = await env.adminPool.query<{ id: string }>(
+      `SELECT id FROM users WHERE tenant_id = $1 AND email = $2`,
+      [tenantId, emailB],
+    );
+    expect(orphanUsers.rows).toHaveLength(0);
+
+    // Zero memberships for any would-be user B — no orphan membership.
+    // (We verify via the emailB check above; cross-check via sub as well.)
+    const identitiesForSub = await armedQuery<{ user_id: string }>(
+      env.appPool,
+      tenantId,
+      `SELECT user_id FROM oauth_identities WHERE provider_sub = $1`,
+      [sharedSub],
+    );
+    // The sub is still linked ONLY to user A.
+    expect(identitiesForSub).toHaveLength(1);
+    expect(identitiesForSub[0]?.user_id).toBe(userAId);
   });
 
   // ── AC: two concurrent provisionFromInvite → one success, one null, one user (R-INV-3 race)

@@ -52,11 +52,18 @@ export interface PgInviteProvisionerDeps {
 //       error rolls back the entire tx — the invite reverts to 'pending'.
 //
 //   (3) linkFirstWithClient — links the Google OAuth identity to the new user
-//       (R-INV-17 atomicity). A ConflictError (R13: user already pinned to a
-//       different Google sub) rolls back the entire tx and surfaces as null.
+//       (R-INV-17 atomicity). Because the user was just created in step 2, the
+//       UNIQUE(tenant_id,user_id,provider) conflict (user already pinned to a
+//       different sub) is unreachable. The reachable conflict is
+//       UNIQUE(tenant_id,provider,provider_sub): the same Google sub is already
+//       linked to a DIFFERENT user in this tenant. linkFirstWithClient handles
+//       that idempotently — it returns the OTHER user's ref. We detect this via
+//       link.userId !== user.id and throw a ConflictError, which the outer catch
+//       converts to null, rolling back the entire tx so the invite reverts to
+//       'pending' (R-INV-17) and no orphan user/membership row is committed.
 //
-// On success: emits an `invite_provisioned` audit event (hashed sub/email,
-// never the raw values — privacy-by-design, R17) and returns { userId }.
+// On success: emits an `invite_provisioned` audit event (hashed providerSub,
+// never the raw value — privacy-by-design, R17) and returns { userId }.
 // On ANY failure: returns null so the authenticator throws a uniform 401 (no
 // enumeration oracle).
 export class PgInviteProvisioner implements InviteProvisioner {
@@ -96,16 +103,24 @@ export class PgInviteProvisioner implements InviteProvisioner {
         });
 
         // ── Step 3: Link the OAuth identity in the same transaction (R-INV-17). ──
-        // linkFirstWithClient uses a SAVEPOINT internally to handle idempotent
-        // concurrent first-links (same sub → winner ref). A ConflictError from a
-        // DIFFERENT sub already pinned to this user (R13) propagates — the enclosing
-        // try/catch catches it and returns null, rolling back the whole tx.
-        await linkFirstWithClient(client, tenantId, {
+        // linkFirstWithClient uses a SAVEPOINT internally. If the same Google sub is
+        // already linked to a DIFFERENT user in this tenant, linkFirstWithClient rolls
+        // back to its savepoint, re-SELECTs, and returns the OTHER user's ref — it
+        // does NOT throw. We must detect this case explicitly: if link.userId differs
+        // from user.id, the Google account is already taken by someone else. Throw a
+        // ConflictError so the outer catch rolls back the entire tx (invite reverts to
+        // 'pending', no orphan user/membership row is committed — R-INV-17).
+        const link = await linkFirstWithClient(client, tenantId, {
           userId: user.id,
           provider: 'google',
           providerSub: input.providerSub,
           email: input.email,
         });
+        if (link.userId !== user.id) {
+          throw new ConflictError(
+            'Google account is already linked to a different user in this tenant',
+          );
+        }
 
         return { userId: user.id };
       });
@@ -113,9 +128,9 @@ export class PgInviteProvisioner implements InviteProvisioner {
       if (!result) return null;
 
       // ── Emit invite_provisioned audit event on success. ──
-      // Raw providerSub and email are NEVER logged — only their SHA-256 hex
-      // digests (privacy-by-design, threat model R17). Failures are swallowed:
-      // audit logging must never abort the provisioning flow.
+      // Raw providerSub is NEVER logged — only its SHA-256 hex digest
+      // (privacy-by-design, threat model R17). Email is not logged at all.
+      // Failures are swallowed: audit logging must never abort the provisioning flow.
       try {
         this.auditLogger.log({
           tenantId,
@@ -131,13 +146,15 @@ export class PgInviteProvisioner implements InviteProvisioner {
 
       return result;
     } catch (err) {
-      // ConflictError from linkFirstWithClient (R13 different-sub): the enclosing
-      // withTenantTx already rolled back the transaction. Return null so the
-      // authenticator throws a uniform 401 (R-INV-17 / no enumeration oracle).
-      //
-      // ConflictError from insertUserWithMembership (duplicate email) also collapses
-      // to null — a user with that email already exists; provisioning is not possible
-      // via this invite path.
+      // ConflictError bubbles from three sources, all collapse to null:
+      //   • step 2 (insertUserWithMembership): duplicate email — a user with that
+      //     address already exists; provisioning is not possible via this invite.
+      //   • step 3 (our explicit check): the Google sub is already linked to a
+      //     DIFFERENT user in this tenant; the tx is rolled back by withTenantTx.
+      //   • step 3 (linkFirstWithClient case b): user already pinned to a different
+      //     sub — unreachable here (user was just created in step 2) but handled
+      //     defensively. The enclosing withTenantTx already rolled back the tx.
+      // Return null so the authenticator throws a uniform 401 (no enumeration oracle).
       if (err instanceof ConflictError) return null;
       throw err;
     }
