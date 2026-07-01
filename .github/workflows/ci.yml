@@ -93,9 +93,31 @@ jobs:
       - name: typecheck
         run: make node-typecheck
 
+  node-test-integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: make node-install
+      - name: control-plane integration tests (testcontainers Postgres/Redis)
+        run: make node-test-integration
+
   infra-test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Caddy access-log hygiene (issue #158, R-INV-12)
         run: make infra-test
+
+  security-r-inv-gate:
+    name: security review gate — R-INV Critical/High sign-off (issue #161)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: assert every Critical/High R-INV requirement has a live test
+        run: make security-r-inv-gate
