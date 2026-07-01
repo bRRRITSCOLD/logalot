@@ -1,6 +1,6 @@
 import type { Panel, SavedQueryResponse } from '@logalot/contracts';
 import { describe, expect, it } from 'vitest';
-import { defaultGrid, newPanelId, savedQuerySubtitle } from './types';
+import { defaultGrid, newPanelId, removePanelById, savedQuerySubtitle, upsertPanel } from './types';
 
 function savedQuery(overrides: Partial<SavedQueryResponse> = {}): SavedQueryResponse {
   return {
@@ -52,5 +52,31 @@ describe('newPanelId', () => {
 describe('defaultGrid', () => {
   it('returns a top-left placement with a sensible default size', () => {
     expect(defaultGrid()).toEqual({ x: 0, y: 0, w: 4, h: 2 });
+  });
+});
+
+describe('upsertPanel', () => {
+  it('appends a panel whose id is not already present', () => {
+    const existing = [panel({ id: 'p1' })];
+    const added = panel({ id: 'p2', title: 'New panel' });
+    expect(upsertPanel(existing, added)).toEqual([existing[0], added]);
+  });
+
+  it('replaces the panel with a matching id in place', () => {
+    const existing = [panel({ id: 'p1', title: 'Original' }), panel({ id: 'p2' })];
+    const edited = panel({ id: 'p1', title: 'Edited' });
+    expect(upsertPanel(existing, edited)).toEqual([edited, existing[1]]);
+  });
+});
+
+describe('removePanelById', () => {
+  it('filters out the panel matching the given id', () => {
+    const existing = [panel({ id: 'p1' }), panel({ id: 'p2' })];
+    expect(removePanelById(existing, 'p1')).toEqual([existing[1]]);
+  });
+
+  it('is a no-op when the id is not present', () => {
+    const existing = [panel({ id: 'p1' })];
+    expect(removePanelById(existing, 'missing')).toEqual(existing);
   });
 });

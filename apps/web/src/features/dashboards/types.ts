@@ -69,3 +69,22 @@ export function savedQuerySubtitle(
   const match = savedQueries.find((q) => q.id === panel.savedQueryId);
   return match ? match.name : `${panel.savedQueryId.slice(0, 8)}…`;
 }
+
+/**
+ * Pure `layout.panels[]` mutations shared by the panel dialog (add/edit) and the
+ * per-panel remove control. There is no per-panel endpoint (see #197) — every
+ * mutation clones the array, applies the change, and the caller PATCHes the whole
+ * `layout` back. Kept dependency-free so they're unit-testable without React.
+ */
+
+/** Appends `panel` (new id) or replaces the panel with a matching id (edit). */
+export function upsertPanel(panels: readonly Panel[], panel: Panel): Panel[] {
+  const index = panels.findIndex((p) => p.id === panel.id);
+  if (index === -1) return [...panels, panel];
+  return panels.map((p, i) => (i === index ? panel : p));
+}
+
+/** Returns `panels` with the panel matching `id` filtered out. */
+export function removePanelById(panels: readonly Panel[], id: string): Panel[] {
+  return panels.filter((p) => p.id !== id);
+}

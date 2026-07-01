@@ -1,12 +1,14 @@
-import type { DashboardResponse, SavedQueryResponse } from '@logalot/contracts';
+import type { DashboardResponse, Panel, SavedQueryResponse } from '@logalot/contracts';
 import { useForm } from '@tanstack/react-form';
 import { parseAsString, useQueryStates } from 'nuqs';
 import * as React from 'react';
 import { Alert, Button, Dialog, DialogContent, DialogFooter, TextField } from '../../components/ui';
 import { useCan } from '../../hooks/use-can';
 import { updateDashboardFn } from '../../server/dashboards';
+import { PanelDialog } from './panel-dialog';
 import { PanelGrid } from './panel-grid';
 import { type TimeRange, TimeRangePicker } from './time-range-picker';
+import { removePanelById } from './types';
 
 export interface DashboardDetailProps {
   dashboard: DashboardResponse;
@@ -36,6 +38,30 @@ export function DashboardDetail({ dashboard, savedQueries, onChanged }: Dashboar
   const can = useCan();
   const canEdit = can('dashboard:update');
   const [editing, setEditing] = React.useState(false);
+  // `undefined` = closed, `null` = add, a `Panel` = edit that panel.
+  const [panelDialog, setPanelDialog] = React.useState<Panel | null | undefined>(undefined);
+  const [removing, setRemoving] = React.useState<Panel | null>(null);
+  const [removeBusy, setRemoveBusy] = React.useState(false);
+  const [removeError, setRemoveError] = React.useState<string | null>(null);
+
+  const onRemovePanel = React.useCallback(async () => {
+    if (!removing) return;
+    setRemoveBusy(true);
+    setRemoveError(null);
+    const outcome = await updateDashboardFn({
+      data: {
+        id: dashboard.id,
+        patch: { layout: { panels: removePanelById(dashboard.layout.panels, removing.id) } },
+      },
+    });
+    setRemoveBusy(false);
+    if (outcome.ok) {
+      setRemoving(null);
+      await onChanged();
+    } else {
+      setRemoveError(outcome.error.message);
+    }
+  }, [removing, dashboard, onChanged]);
 
   const [urlRange, setUrlRange] = useQueryStates(
     { from: parseAsString.withDefault(''), to: parseAsString.withDefault('') },
@@ -70,11 +96,26 @@ export function DashboardDetail({ dashboard, savedQueries, onChanged }: Dashboar
               Edit dashboard
             </Button>
           ) : null}
+          {canEdit ? (
+            <Button size="sm" onClick={() => setPanelDialog(null)}>
+              Add panel
+            </Button>
+          ) : null}
           <TimeRangePicker value={range} onChange={onRangeChange} />
         </div>
       </header>
 
-      <PanelGrid panels={dashboard.layout.panels} savedQueries={savedQueries} range={range} />
+      <PanelGrid
+        panels={dashboard.layout.panels}
+        savedQueries={savedQueries}
+        range={range}
+        canEdit={canEdit}
+        onEditPanel={setPanelDialog}
+        onRemovePanel={(panel) => {
+          setRemoveError(null);
+          setRemoving(panel);
+        }}
+      />
 
       {editing ? (
         <EditDashboardDialog
@@ -86,6 +127,45 @@ export function DashboardDetail({ dashboard, savedQueries, onChanged }: Dashboar
           }}
         />
       ) : null}
+
+      {panelDialog !== undefined ? (
+        <PanelDialog
+          dashboard={dashboard}
+          savedQueries={savedQueries}
+          editing={panelDialog}
+          onClose={() => setPanelDialog(undefined)}
+          onSaved={async () => {
+            setPanelDialog(undefined);
+            await onChanged();
+          }}
+        />
+      ) : null}
+
+      <Dialog
+        open={removing !== null}
+        onOpenChange={(open) => {
+          if (!open) setRemoving(null);
+        }}
+      >
+        <DialogContent
+          title="Remove panel"
+          description={removing ? `“${removing.title}” will be removed from this dashboard.` : ''}
+        >
+          {removeError ? (
+            <Alert tone="danger" title="Couldn't remove the panel">
+              {removeError}
+            </Alert>
+          ) : null}
+          <DialogFooter>
+            <Button type="button" variant="ghost" onClick={() => setRemoving(null)}>
+              Cancel
+            </Button>
+            <Button type="button" variant="danger" disabled={removeBusy} onClick={onRemovePanel}>
+              {removeBusy ? 'Removing…' : 'Remove panel'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
