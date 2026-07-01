@@ -1,8 +1,8 @@
 # Logalot local stack (docs/architecture/overview.md §7).
 # One command brings up the full data plane: postgres, mongodb (reserved),
-# redis, rabbitmq, floci (AWS-local). Every service has a healthcheck, a named
-# volume, and lives on the user-defined `logalot` network. All config comes
-# from a single `.env` (copy `.env.example` -> `.env`).
+# redis, rabbitmq, floci (AWS-local), mailhog (local SMTP catcher, ADR-0013).
+# Every service has a healthcheck and lives on the user-defined `logalot`
+# network. All config comes from a single `.env` (copy `.env.example` -> `.env`).
 
 name: logalot
 
@@ -121,6 +121,25 @@ services:
       timeout: 5s
       retries: 10
       start_period: 20s
+
+  mailhog:
+    # Local mail catcher for the dev loop (ADR-0013 local-parity). Accepts SMTP
+    # on :1025 (no auth — matches EMAIL_PROVIDER=smtp dev config) and serves a
+    # web UI on :8025 to inspect rendered invite emails without a real send.
+    image: mailhog/mailhog:v1.0.1
+    container_name: logalot-mailhog
+    restart: unless-stopped
+    ports:
+      - "${MAILHOG_SMTP_PORT:-1025}:1025"
+      - "${MAILHOG_UI_PORT:-8025}:8025"
+    networks:
+      - logalot
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:8025/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
 
 volumes:
   postgres-data:
