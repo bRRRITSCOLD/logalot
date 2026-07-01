@@ -1,5 +1,16 @@
 // Public API of the dashboards feature surface (types + helpers only — no
 // components yet; see the plan's barrel chain, T4/T5/T8/T9 add those serially).
+
+export {
+  buildPanelDataParams,
+  gapFillBuckets,
+  MAX_PANEL_BUCKETS,
+  type PanelBucket,
+  type PanelDataOutcome,
+  type PanelDataParamsInput,
+  type PanelDataResult,
+  panelDataResponseSchema,
+} from './panel-data';
 export {
   type DashboardDialogState,
   type DashboardLayout,
