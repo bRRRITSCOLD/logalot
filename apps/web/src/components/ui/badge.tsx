@@ -12,6 +12,7 @@ export const badgeVariants = cva(
         success: 'border-transparent bg-bg-elevated text-status-success',
         warning: 'border-transparent bg-bg-elevated text-status-warning',
         danger: 'border-transparent bg-bg-elevated text-status-danger',
+        info: 'border-transparent bg-bg-elevated text-status-info',
       },
     },
     defaultVariants: { tone: 'neutral' },
