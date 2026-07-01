@@ -52,4 +52,33 @@ describe('can — client RBAC mirror (display-only)', () => {
     expect(can('platform_operator', 'invite:list')).toBe(false);
     expect(can('platform_operator', 'invite:revoke')).toBe(false);
   });
+
+  it('member may read/list dashboards but not write them', () => {
+    expect(can('member', 'dashboard:list')).toBe(true);
+    expect(can('member', 'dashboard:read')).toBe(true);
+    expect(can('member', 'dashboard:create')).toBe(false);
+    expect(can('member', 'dashboard:update')).toBe(false);
+    expect(can('member', 'dashboard:delete')).toBe(false);
+  });
+
+  it('tenant_admin owns all dashboard operations', () => {
+    expect(can('tenant_admin', 'dashboard:create')).toBe(true);
+    expect(can('tenant_admin', 'dashboard:read')).toBe(true);
+    expect(can('tenant_admin', 'dashboard:list')).toBe(true);
+    expect(can('tenant_admin', 'dashboard:update')).toBe(true);
+    expect(can('tenant_admin', 'dashboard:delete')).toBe(true);
+  });
+
+  it('platform_operator is denied all dashboard operations', () => {
+    expect(can('platform_operator', 'dashboard:create')).toBe(false);
+    expect(can('platform_operator', 'dashboard:read')).toBe(false);
+    expect(can('platform_operator', 'dashboard:list')).toBe(false);
+    expect(can('platform_operator', 'dashboard:update')).toBe(false);
+    expect(can('platform_operator', 'dashboard:delete')).toBe(false);
+  });
+
+  it('unknown role fails closed', () => {
+    // @ts-expect-error — intentionally exercising the runtime fail-closed path
+    expect(can('nonexistent_role', 'dashboard:list')).toBe(false);
+  });
 });

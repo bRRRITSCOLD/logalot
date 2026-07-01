@@ -37,6 +37,11 @@ export const UI_OPERATIONS = [
   'invite:create',
   'invite:list',
   'invite:revoke',
+  'dashboard:create',
+  'dashboard:read',
+  'dashboard:list',
+  'dashboard:update',
+  'dashboard:delete',
 ] as const;
 
 export type UiOperation = (typeof UI_OPERATIONS)[number];
@@ -66,8 +71,20 @@ const MATRIX: Record<Role, ReadonlySet<UiOperation>> = {
     'invite:create',
     'invite:list',
     'invite:revoke',
+    'dashboard:create',
+    'dashboard:read',
+    'dashboard:list',
+    'dashboard:update',
+    'dashboard:delete',
   ]),
-  member: new Set<UiOperation>(['tenant:read', 'retention:read', 'alert:read', 'alert:list']),
+  member: new Set<UiOperation>([
+    'tenant:read',
+    'retention:read',
+    'alert:read',
+    'alert:list',
+    'dashboard:read',
+    'dashboard:list',
+  ]),
 };
 
 /**
