@@ -1,6 +1,7 @@
 import type { Pool, PoolClient } from 'pg';
 import type { InviteRepository, NewInvite } from '../../app/ports';
 import type { ConsumedInvite, Invite, InviteRef } from '../../domain/entities';
+import { isInviteStatus } from '../../domain/entities';
 import { withTenantTx } from './tenant-tx';
 
 // InviteRow is the raw postgres row shape for the invites table (migration 000018).
@@ -41,12 +42,21 @@ const COLUMNS =
   'id, tenant_id, email, role, status, created_by, expires_at, consumed_at, created_at, updated_at';
 
 function toInvite(row: InviteRow): Invite {
+  // Fail loud HERE (500, server logs) rather than casting an unexpected DB
+  // value through untyped and letting it surface downstream as the BFF's
+  // confusing Zod parse failure (the #208 `invitedBy`/`createdBy` class of
+  // bug, issue #209). The DB CHECK constraint (migration 000018) should make
+  // this unreachable in practice; this guard exists for the day a future
+  // migration or expiry sweep drifts from it.
+  if (!isInviteStatus(row.status)) {
+    throw new Error(`invite ${row.id} has an unrecognized status: ${row.status}`);
+  }
   return {
     id: row.id,
     tenantId: row.tenant_id,
     email: row.email,
     role: row.role,
-    status: row.status as Invite['status'],
+    status: row.status,
     createdBy: row.created_by,
     expiresAt: row.expires_at,
     consumedAt: row.consumed_at,

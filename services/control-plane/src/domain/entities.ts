@@ -136,9 +136,20 @@ export interface OAuthIdentity {
   updatedAt: Date;
 }
 
-// InviteStatus is the closed lifecycle state of an invite row. A pending
-// invite may be consumed exactly once; expiry is enforced by expires_at.
-export type InviteStatus = 'pending' | 'consumed' | 'expired' | 'revoked';
+// INVITE_STATUSES is the closed lifecycle state of an invite row. A pending
+// invite may be consumed exactly once; expiry is enforced by comparing
+// expires_at to now (no row is ever written with a stored 'expired' status —
+// there is no expiry sweep). Mirrors the `invites.status` CHECK constraint
+// (migration 000018) and the shared `inviteStatusSchema` (contracts/invite.ts)
+// exactly. Keep all three in lockstep: a status value accepted here but not by
+// the shared contract would reproduce the #208 `invitedBy`/`createdBy` class of
+// bug the moment any code ever wrote it (issue #209).
+export const INVITE_STATUSES = ['pending', 'consumed', 'revoked'] as const;
+export type InviteStatus = (typeof INVITE_STATUSES)[number];
+
+export function isInviteStatus(value: unknown): value is InviteStatus {
+  return typeof value === 'string' && (INVITE_STATUSES as readonly string[]).includes(value);
+}
 
 // Invite is the public metadata projection of an invites row. It NEVER carries
 // the plaintext token, secret, or secret hash — those are one-time values
