@@ -336,8 +336,12 @@ describe('POST /v1/auth/oidc/google/callback: inviteToken hash threading', () =>
     });
     await app.ready();
 
-    const plaintext = `acme.${'a'.repeat(64)}`; // typical assembled invite token
-    const expectedHash = createHash('sha256').update(plaintext, 'utf8').digest();
+    // Wire format: `lginv_<tenantPublicId>_<secret>` (domain/invite.ts). Only the
+    // SECRET is hashed — that's what invites.token_hash stores (InviteService
+    // hashes the secret alone via hashInviteSecret, never the assembled string).
+    const secret = 'a'.repeat(64);
+    const plaintext = `lginv_acme_${secret}`;
+    const expectedHash = createHash('sha256').update(secret, 'utf8').digest();
 
     try {
       await app.inject({
@@ -403,7 +407,7 @@ describe('invite routes + callback: no plaintext token in logs (R-INV-12)', () =
     const { stream, lines } = makeCaptureStream();
     const inviteService = makeStubInviteService();
     const oidcAuthenticator = makeStubOidcAuthenticator();
-    const rawInviteToken = `acme.${'b'.repeat(64)}`;
+    const rawInviteToken = `lginv_acme_${'b'.repeat(64)}`;
     const rawInviteUrl = 'https://app.example.com/invite/accept?token=should-not-appear';
 
     // Override create to return a URL with distinct sentinel string.

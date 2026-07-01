@@ -23,6 +23,7 @@ import { z } from 'zod';
 import type { OidcAuthenticator } from '../../app/oidc-authenticator';
 import type { TokenService } from '../../app/ports';
 import type { Services } from '../../container';
+import { parseInviteToken } from '../../domain/invite';
 import { piiHash } from '../../domain/pii-log';
 import { sha256 } from '../../domain/secret-hash';
 import { makeAuthenticate, requireTenantContext } from './auth-plugin';
@@ -129,10 +130,24 @@ export function registerRoutes(app: FastifyInstance, deps: RouteDeps): void {
       // lets us correlate without exposing the anti-CSRF token. inviteToken is
       // NEVER logged — not even a piiHash of it (ADR-0012, R-INV-12).
       req.log.info({ stateHash: piiHash(body.state) }, 'oidc callback received');
-      // Hash the invite token at the route layer — the app core never sees the
-      // plaintext (ADR-0012). sha256() returns 32 raw bytes, matching the bytea
-      // token_hash column in the invites table (migration 000018, R-INV-9).
-      const inviteTokenHash = body.inviteToken ? sha256(body.inviteToken) : undefined;
+      // Hash the invite token's SECRET component at the route layer — the app
+      // core never sees the plaintext (ADR-0012). The wire token is
+      // `lginv_<tenantPublicId>_<secret>` (domain/invite.ts); only the secret
+      // is what invites.token_hash stores (hashInviteSecret in InviteService),
+      // so we must parse the token and hash JUST the secret, not the whole
+      // string, or every accept would 401 (mismatched hash). hashInviteSecret
+      // is byte-identical to sha256() (both raw 32-byte SHA-256 digests) —
+      // reused via secret-hash.ts's sha256, matching the bytea token_hash
+      // column (migration 000018, R-INV-9). A malformed token fails parsing
+      // and falls through to the uniform no-provisioned-account 401 (R-INV-6).
+      let inviteTokenHash: Buffer | undefined;
+      if (body.inviteToken) {
+        try {
+          inviteTokenHash = sha256(parseInviteToken(body.inviteToken).secret);
+        } catch {
+          inviteTokenHash = undefined;
+        }
+      }
       const result = await oidcAuthenticator.handleCallback({
         code: body.code,
         state: body.state,
