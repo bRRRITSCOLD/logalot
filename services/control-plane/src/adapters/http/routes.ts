@@ -2,6 +2,7 @@ import {
   createAlertRuleRequestSchema,
   createApiKeyRequestSchema,
   createDashboardRequestSchema,
+  createInviteRequestSchema,
   createSavedQueryRequestSchema,
   createTenantRequestSchema,
   createUserRequestSchema,
@@ -23,6 +24,7 @@ import type { OidcAuthenticator } from '../../app/oidc-authenticator';
 import type { TokenService } from '../../app/ports';
 import type { Services } from '../../container';
 import { piiHash } from '../../domain/pii-log';
+import { sha256 } from '../../domain/secret-hash';
 import { makeAuthenticate, requireTenantContext } from './auth-plugin';
 import { makeRequireOperation } from './rbac-guard';
 import { parse } from './validation';
@@ -123,12 +125,18 @@ export function registerRoutes(app: FastifyInstance, deps: RouteDeps): void {
     async (req, reply) => {
       const body = parse(oidcCallbackRequestSchema, req.body);
       // Log the request BEFORE the outbound Google call, with no secret fields.
-      // body.code and body.state are NOT logged; stateHash lets us correlate
-      // without exposing the anti-CSRF token.
+      // body.code, body.state, and body.inviteToken are NOT logged; stateHash
+      // lets us correlate without exposing the anti-CSRF token. inviteToken is
+      // NEVER logged — not even a piiHash of it (ADR-0012, R-INV-12).
       req.log.info({ stateHash: piiHash(body.state) }, 'oidc callback received');
+      // Hash the invite token at the route layer — the app core never sees the
+      // plaintext (ADR-0012). sha256() returns 32 raw bytes, matching the bytea
+      // token_hash column in the invites table (migration 000018, R-INV-9).
+      const inviteTokenHash = body.inviteToken ? sha256(body.inviteToken) : undefined;
       const result = await oidcAuthenticator.handleCallback({
         code: body.code,
         state: body.state,
+        inviteTokenHash,
       });
       // Log success with hashed sub — no PII in structured logs.
       req.log.info(
@@ -475,6 +483,52 @@ export function registerRoutes(app: FastifyInstance, deps: RouteDeps): void {
     async (req, reply) => {
       const { id } = parse(uuidParamSchema, req.params);
       await services.dashboards.remove(requireTenantContext(req), id);
+      return reply.code(204).send();
+    },
+  );
+
+  // ── Invites (tenant_admin; create is rate-limited to shed email-sender abuse) ──
+  // POST /v1/invites — issue a new invite; returns 201 with { ...invite, inviteUrl }.
+  // The inviteUrl embeds the one-time plaintext token and is shown exactly once;
+  // it is never stored or logged after this response is sent (ADR-0012, R-INV-9).
+  // Rate-limited per-IP at the same ceiling as the OIDC routes (R-INV-10): each
+  // create triggers best-effort outbound email which must be shed at the HTTP layer.
+  app.post(
+    '/v1/invites',
+    {
+      preHandler: [authenticate, makeRequireOperation('invite:create')],
+      config: { rateLimit: oidcRateLimit },
+    },
+    async (req, reply) => {
+      const body = parse(createInviteRequestSchema, req.body);
+      const { invite, inviteUrl } = await services.invites.create(requireTenantContext(req), {
+        email: body.email,
+        role: body.role,
+      });
+      // Log invite creation without the URL/token — actor + invite id is enough
+      // for the audit trail. inviteUrl must never appear in structured logs (R-INV-12).
+      req.log.info({ inviteId: invite.id }, 'invite created');
+      return reply.code(201).send({ ...invite, inviteUrl });
+    },
+  );
+
+  // GET /v1/invites — list all invites for the caller's tenant (no tokens/hashes).
+  app.get(
+    '/v1/invites',
+    { preHandler: [authenticate, makeRequireOperation('invite:list')] },
+    async (req) => ({ invites: await services.invites.list(requireTenantContext(req)) }),
+  );
+
+  // POST /v1/invites/:id/revoke — flip an outstanding invite to 'revoked'; 204 on
+  // success, 404 when the invite is absent or already consumed/revoked (RLS hides
+  // cross-tenant ids transparently — the caller sees 404, not 403, for cross-tenant
+  // ids, matching the behavior of every other scoped resource, R-INV-15).
+  app.post(
+    '/v1/invites/:id/revoke',
+    { preHandler: [authenticate, makeRequireOperation('invite:revoke')] },
+    async (req, reply) => {
+      const { id } = parse(uuidParamSchema, req.params);
+      await services.invites.revoke(requireTenantContext(req), id);
       return reply.code(204).send();
     },
   );
