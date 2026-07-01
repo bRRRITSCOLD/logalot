@@ -17,6 +17,7 @@ SLICE_SERVICES := ingest-service processor query-service alert-evaluator
 INGEST_PORT ?= 8080
 QUERY_PORT  ?= 8081
 CONTROL_PLANE_PORT ?= 8082
+MAILHOG_UI_PORT ?= 8025
 
 # Load .env (when present) so the migrate runner can build DATABASE_URL from the
 # same Postgres creds compose uses. `-include` is silent before the first `make up`
@@ -132,13 +133,14 @@ seed:
 
 ## slice-up: bring up the full slice (infra + migrate + seed + the 3 services)
 slice-up: .env
-	$(COMPOSE) up -d --wait postgres redis rabbitmq
+	$(COMPOSE) up -d --wait postgres redis rabbitmq mailhog
 	$(MAKE) migrate-up
 	$(MAKE) seed
 	$(COMPOSE_SLICE) up -d --build $(SLICE_SERVICES)
 	@echo ""
 	@echo "slice up. ingest -> http://localhost:$(INGEST_PORT) | query -> http://localhost:$(QUERY_PORT)"
 	@echo "dev API key: lgk_dev_devkey001_devsecret0123456789  (see docs/demo.md)"
+	@echo "mailhog UI -> http://localhost:$(MAILHOG_UI_PORT)  (invite emails, EMAIL_PROVIDER=smtp)"
 
 ## slice-down: stop the slice services AND the infra (keeps volumes)
 slice-down:
