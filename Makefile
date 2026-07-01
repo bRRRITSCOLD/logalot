@@ -61,8 +61,8 @@ GO_SERVICES := ingest-service processor query-service alert-evaluator retention-
 	dev dev-up dev-down dev-logs \
 	cold-tier-spike cold-tier-spike-athena cold-smoke-aws \
 	go-sync go-build go-test go-fmt go-lint \
-	node-install node-test node-lint node-typecheck \
-	infra-test \
+	node-install node-test node-test-integration node-lint node-typecheck \
+	infra-test security-r-inv-gate \
 	test lint \
 	buildx-go buildx-control-plane buildx-web buildx-all
 
@@ -264,6 +264,14 @@ node-install:
 node-test:
 	pnpm -r test
 
+## node-test-integration: Docker-backed integration suite (testcontainers Postgres/Redis).
+# Kept separate from node-test because it requires a container runtime.
+# Discharges the Critical/High R-INV invariants that only an atomic-transaction
+# / RLS-armed Postgres can prove (R-INV-3, R-INV-15, R-INV-17, migration
+# CHECK/UNIQUE constraints) — see issue #161.
+node-test-integration:
+	pnpm --filter @logalot/control-plane test:integration
+
 ## node-lint: run biome across the repo
 node-lint:
 	pnpm lint
@@ -282,6 +290,12 @@ node-typecheck:
 # asserts the invite-accept token never lands in the access log.
 infra-test:
 	./infra/aws/caddyfile-log-hygiene.integration.sh
+
+## security-r-inv-gate: assert every Critical/High R-INV requirement (issue #161)
+# still has a live, named discharging test. Cheap/no-Docker drift guard —
+# the invariants themselves are proven by node-test + node-test-integration.
+security-r-inv-gate:
+	./scripts/r-inv-gate-assert.sh
 
 ## test: run all Go + Node tests
 test: go-test node-test
