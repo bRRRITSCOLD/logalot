@@ -8,6 +8,49 @@ import type { Redis } from 'ioredis';
 import { DomainError } from '../../domain/errors';
 import { type RouteDeps, registerRoutes } from './routes';
 
+// LOG_REDACT_PATHS — the never-log denylist for the default Fastify logger
+// (ADR-0007, NFR-5: secrets are never logged). Exported so it can be
+// exercised directly against pino in tests without standing up the full
+// HTTP stack.
+//
+//   - Standard auth/session headers.
+//   - Cookie (may carry session tokens).
+//   - id_token / client_secret / code — OIDC secrets Fastify does not log by
+//     default (no request-body logging), stripped here as defence-in-depth
+//     in case a future log call ever serialises req.body.
+//   - Invite secrets (issue #158, R-INV-12): the plaintext invite token
+//     (req.body.inviteToken / req.body.token, and the query-string variant a
+//     stray GET handler might one day accept), the one-time inviteUrl a
+//     response might echo back, and token_hash — the persisted lookup hash
+//     is not secret-equivalent to the plaintext, but it is still excluded
+//     so no log sink ever lets an operator correlate a hash back to an
+//     active invite. The wildcard (`*.field`) forms catch these fields
+//     wherever a future log call nests them, not just under req/res.
+export const LOG_REDACT_PATHS: readonly string[] = [
+  'req.headers.authorization',
+  'req.headers.cookie',
+  'req.body.id_token',
+  'req.body.client_secret',
+  'req.body.code',
+  'req.body.token',
+  'req.body.inviteToken',
+  'req.query.token',
+  'req.query.inviteToken',
+  'res.body.inviteUrl',
+  'res.body.token_hash',
+  // Bare top-level forms: covers a log call that passes these fields
+  // directly as the merging-object (e.g. `log.info({ token_hash }, msg)`),
+  // which fast-redact's `*.field` wildcard does NOT match — `*` requires one
+  // level of nesting under some other key.
+  'token_hash',
+  'inviteToken',
+  'inviteUrl',
+  // One level of nesting under an arbitrary top-level key.
+  '*.token_hash',
+  '*.inviteUrl',
+  '*.inviteToken',
+];
+
 // BuildServerOptions re-exports RouteDeps to keep the server layer thin — all
 // route dependencies are threaded through unchanged.
 export interface BuildServerOptions extends RouteDeps {
@@ -52,27 +95,15 @@ export function buildServer(opts: BuildServerOptions): FastifyInstance {
     //
     // Callers (tests) may override via opts.trustProxy.
     trustProxy: opts.trustProxy ?? 1,
-    // Redact credentials so tokens/passwords never reach the logs (ADR-0007,
-    // NFR-5: secrets are never logged). Fastify does not log request bodies by
-    // default, so passwords/secrets in bodies stay out of the logs too.
-    //
-    // Extended redact list covers:
-    //   - Standard auth/session headers
-    //   - Cookie (may carry session tokens)
-    //   - Any top-level field named id_token / client_secret that might be
-    //     accidentally serialised into a log object by a future log call.
+    // Redact credentials so tokens/passwords never reach the logs — see
+    // LOG_REDACT_PATHS above for the full denylist + rationale. Fastify does
+    // not log request bodies by default, so passwords/secrets in bodies stay
+    // out of the logs even without this list; it's defence-in-depth for any
+    // future log call that does serialise req.body/res.body.
     logger: opts.logger ?? {
       level: opts.logLevel ?? 'info',
       redact: {
-        paths: [
-          'req.headers.authorization',
-          'req.headers.cookie',
-          // Defence-in-depth: if any route ever logs req.body (it should not),
-          // these fields are stripped before the record is emitted.
-          'req.body.id_token',
-          'req.body.client_secret',
-          'req.body.code',
-        ],
+        paths: [...LOG_REDACT_PATHS],
         remove: true,
       },
     },

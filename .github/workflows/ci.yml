@@ -92,3 +92,10 @@ jobs:
       - run: make node-install
       - name: typecheck
         run: make node-typecheck
+
+  infra-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Caddy access-log hygiene (issue #158, R-INV-12)
+        run: make infra-test

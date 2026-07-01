@@ -62,6 +62,7 @@ GO_SERVICES := ingest-service processor query-service alert-evaluator retention-
 	cold-tier-spike cold-tier-spike-athena cold-smoke-aws \
 	go-sync go-build go-test go-fmt go-lint \
 	node-install node-test node-lint node-typecheck \
+	infra-test \
 	test lint \
 	buildx-go buildx-control-plane buildx-web buildx-all
 
@@ -275,6 +276,12 @@ node-typecheck:
 	pnpm --filter @logalot/control-plane exec tsc --noEmit
 	pnpm --filter @logalot/contracts exec tsc --noEmit
 	pnpm --filter @logalot/web run typecheck
+
+## infra-test: log-capture integration test for the Caddy access-log hygiene
+# fix (issue #158, R-INV-12) — runs the real infra/aws/Caddyfile in Docker and
+# asserts the invite-accept token never lands in the access log.
+infra-test:
+	./infra/aws/caddyfile-log-hygiene.integration.sh
 
 ## test: run all Go + Node tests
 test: go-test node-test

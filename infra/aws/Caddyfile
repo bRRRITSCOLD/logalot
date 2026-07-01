@@ -123,9 +123,27 @@
 	}
 
 	# Structured request log — one line per request, includes status + latency.
+	#
+	# Access-log hygiene (issue #158, R-INV-12): the invite-accept link
+	# (`/invite/accept?token=<secret>`) is served by the catch-all `handle`
+	# above (routed to the web BFF), so it flows through this SAME log block —
+	# a plain `format json` would otherwise write the raw token straight into
+	# the access log on the very first hit, before the BFF ever gets a chance
+	# to strip it from the URL. `format filter` wraps the json encoder and
+	# redacts the `token` query-string parameter on every request line
+	# (`request>uri`), regardless of path, so no plaintext invite token — or
+	# any other secret a future route might name `token` — ever reaches
+	# stdout/the log aggregator.
 	log {
 		output stdout
-		format json
+		format filter {
+			wrap json
+			fields {
+				request>uri query {
+					replace token REDACTED
+				}
+			}
+		}
 		level INFO
 	}
 }
