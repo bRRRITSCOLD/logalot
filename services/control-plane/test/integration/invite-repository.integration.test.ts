@@ -81,7 +81,7 @@ describe('PgInviteRepository integration', () => {
     expect(invite.email).toBe('alice@create.example');
     expect(invite.role).toBe('member');
     expect(invite.status).toBe('pending');
-    expect(invite.invitedBy).toBe(userAId);
+    expect(invite.createdBy).toBe(userAId);
     expect(invite.expiresAt).toBeInstanceOf(Date);
     expect(invite.consumedAt).toBeNull();
 

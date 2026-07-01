@@ -149,7 +149,7 @@ export interface Invite {
   email: string;
   role: string;
   status: InviteStatus;
-  invitedBy: string | null;
+  createdBy: string | null;
   expiresAt: Date;
   consumedAt: Date | null;
   createdAt: Date;

@@ -101,7 +101,7 @@ describe('Invite projection — no plaintext outward (R-INV-2)', () => {
       email: 'user@example.com',
       role: 'member',
       status: 'pending',
-      invitedBy: null,
+      createdBy: null,
       expiresAt: new Date(),
       consumedAt: null,
       createdAt: new Date(),

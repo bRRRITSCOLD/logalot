@@ -58,7 +58,7 @@ class FakeInviteRepo implements InviteRepository {
       email: input.email,
       role: input.role,
       status: 'pending',
-      invitedBy: input.invitedBy,
+      createdBy: input.invitedBy,
       expiresAt: input.expiresAt,
       consumedAt: null,
       createdAt: FIXED_NOW,

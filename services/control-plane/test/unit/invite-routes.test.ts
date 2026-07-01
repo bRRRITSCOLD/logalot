@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { inviteListSchema } from '@logalot/contracts';
 import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { buildServer } from '../../src/adapters/http/server';
@@ -25,7 +26,7 @@ function makeInvite() {
     email: 'user@example.com',
     role: 'member',
     status: 'pending' as const,
-    invitedBy: USER_ID,
+    createdBy: USER_ID,
     expiresAt: FIXED_EXPIRES,
     consumedAt: null,
     createdAt: FIXED_NOW,
@@ -200,6 +201,23 @@ describe('invite routes: RBAC (R-INV-7)', () => {
       });
       expect(res.statusCode).toBe(200);
       expect(res.json()).toHaveProperty('invites');
+    });
+
+    // Intent: a non-empty list response must parse against the SAME contract
+    // schema the web BFF uses, so the projection can't drift to `invitedBy`.
+    it('InviteRoutes_ListNonEmpty_ResponseConformsToSharedContract', async () => {
+      // Regression: the projection drifted to `invitedBy` while the shared
+      // contract (consumed by the web BFF) requires `createdBy`. A non-empty
+      // list then failed the BFF's Zod parse — "invites won't load". This test
+      // parses the wire response with the SAME schema the BFF uses, so the two
+      // sides can never diverge again.
+      const res = await adminApp.inject({
+        method: 'GET',
+        url: '/v1/invites',
+        headers: auth('valid-token'),
+      });
+      const parsed = inviteListSchema.safeParse(res.json());
+      expect(parsed.success, JSON.stringify(parsed.error?.issues)).toBe(true);
     });
 
     it('returns 403 for member (R-INV-7)', async () => {

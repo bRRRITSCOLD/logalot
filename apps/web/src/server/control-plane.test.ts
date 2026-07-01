@@ -224,6 +224,27 @@ describe('cpAuthedSend (write proxy)', () => {
       cpAuthedSend('t', 'PATCH', '/v1/users/u1', z.unknown(), { role: 'tenant_admin' }),
     ).rejects.toMatchObject({ name: 'ControlPlaneError', status: 403, code: 'forbidden' });
   });
+
+  // Regression: a bodyless POST (invite/api-key revoke) must NOT declare
+  // content-type: application/json. Fastify's JSON parser rejects an empty body
+  // under that content-type — "Body cannot be empty when content-type is set to
+  // 'application/json'" — which surfaced as "Couldn't revoke the invite".
+  it('CpAuthedSend_BodylessPost_OmitsJsonContentType', async () => {
+    const fetchMock = vi.fn(
+      (..._args: Parameters<typeof fetch>): Promise<Response> =>
+        Promise.resolve(new Response(null, { status: 204 })),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      cpAuthedSend('t', 'POST', '/v1/invites/inv1/revoke', z.undefined()),
+    ).resolves.toBeUndefined();
+
+    const [, init] = fetchMock.mock.calls[0] ?? [];
+    const headers = (init as RequestInit).headers as Record<string, string>;
+    expect((init as RequestInit).body).toBeUndefined();
+    expect(headers['content-type']).toBeUndefined();
+  });
 });
 
 describe('cpOidcAuthorize', () => {
