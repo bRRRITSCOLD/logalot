@@ -18,16 +18,29 @@ export interface PanelGridProps {
   panels: Panel[];
   savedQueries: SavedQueryResponse[];
   range: PanelGridRange;
+  /** Show per-panel edit/remove controls (display-only RBAC mirror; see useCan). */
+  canEdit?: boolean;
+  onEditPanel?: (panel: Panel) => void;
+  onRemovePanel?: (panel: Panel) => void;
 }
 
 /**
  * Lays out a dashboard's `layout.panels[]` on a CSS grid, honoring each panel's
- * own `grid` placement ({x, y, w, h}) — the SAME coordinate system the (future)
- * panel editor writes. Each panel is an independent `DashboardPanelCard`: a
- * per-panel fetch failure (or a slow panel) degrades ONLY that card, never the
- * grid as a whole (see `usePanelData`).
+ * own `grid` placement ({x, y, w, h}) — the SAME coordinate system the panel
+ * dialog writes (see `panel-dialog.tsx` / #197). Each panel is an independent
+ * `DashboardPanelCard`: a per-panel fetch failure (or a slow panel) degrades ONLY
+ * that card, never the grid as a whole (see `usePanelData`). The caller
+ * (`dashboard-detail.tsx`) owns the RBAC gate and the actual mutations — this
+ * component only renders the controls and forwards clicks.
  */
-export function PanelGrid({ panels, savedQueries, range }: PanelGridProps) {
+export function PanelGrid({
+  panels,
+  savedQueries,
+  range,
+  canEdit = false,
+  onEditPanel,
+  onRemovePanel,
+}: PanelGridProps) {
   if (panels.length === 0) {
     return (
       <EmptyState
@@ -45,6 +58,9 @@ export function PanelGrid({ panels, savedQueries, range }: PanelGridProps) {
           panel={panel}
           savedQueries={savedQueries}
           range={range}
+          canEdit={canEdit}
+          onEditPanel={onEditPanel}
+          onRemovePanel={onRemovePanel}
         />
       ))}
     </div>
@@ -55,10 +71,16 @@ function DashboardPanelCard({
   panel,
   savedQueries,
   range,
+  canEdit,
+  onEditPanel,
+  onRemovePanel,
 }: {
   panel: Panel;
   savedQueries: SavedQueryResponse[];
   range: PanelGridRange;
+  canEdit: boolean;
+  onEditPanel?: (panel: Panel) => void;
+  onRemovePanel?: (panel: Panel) => void;
 }) {
   const { state, series, totalCount, errorMessage } = usePanelData(panel.savedQueryId, range);
 
@@ -77,11 +99,16 @@ function DashboardPanelCard({
             {savedQuerySubtitle(panel, savedQueries)}
           </p>
         </div>
-        {/* Placeholder seam for the panel editor (edit/duplicate/delete) — no
-            actions wired yet, so it's disabled rather than a dead-end menu. */}
-        <Button variant="ghost" size="sm" aria-label="Panel options" disabled>
-          ⋮
-        </Button>
+        {canEdit ? (
+          <div className="flex shrink-0 items-center gap-1">
+            <Button variant="ghost" size="sm" onClick={() => onEditPanel?.(panel)}>
+              Edit
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => onRemovePanel?.(panel)}>
+              Remove
+            </Button>
+          </div>
+        ) : null}
       </CardHeader>
       <CardContent className="flex-1">
         {panel.type === 'timeseries' ? (

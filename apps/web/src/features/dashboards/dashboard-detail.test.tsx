@@ -123,4 +123,71 @@ describe('DashboardDetail', () => {
     renderDetail('member');
     expect(screen.queryByRole('button', { name: 'Edit dashboard' })).not.toBeInTheDocument();
   });
+
+  it('hides panel authoring controls for a role without dashboard:update', () => {
+    loadPanelDataFn.mockResolvedValue({
+      ok: true,
+      data: { totalCount: 4, buckets: [], recentLogs: [] },
+    });
+    renderDetail('member');
+    expect(screen.queryByRole('button', { name: 'Add panel' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Remove' })).not.toBeInTheDocument();
+  });
+
+  it('opens the add-panel dialog and PATCHes the layout on submit', async () => {
+    loadPanelDataFn.mockResolvedValue({
+      ok: true,
+      data: { totalCount: 4, buckets: [], recentLogs: [] },
+    });
+    updateDashboardFn.mockResolvedValue({ ok: true, data: dashboard() });
+    const onChanged = vi.fn();
+    const u = userEvent.setup();
+
+    render(
+      <NuqsTestingAdapter>
+        <SessionProvider session={sessionForRole('tenant_admin')}>
+          <DashboardDetail
+            dashboard={dashboard()}
+            savedQueries={savedQueries}
+            onChanged={onChanged}
+          />
+        </SessionProvider>
+      </NuqsTestingAdapter>,
+    );
+    await waitFor(() => expect(loadPanelDataFn).toHaveBeenCalledTimes(1));
+
+    await u.click(screen.getByRole('button', { name: 'Add panel' }));
+    await u.type(screen.getByLabelText('Title'), 'New panel');
+    const addPanelButtons = screen.getAllByRole('button', { name: 'Add panel' });
+    await u.click(addPanelButtons[addPanelButtons.length - 1] as HTMLElement);
+
+    await waitFor(() => expect(updateDashboardFn).toHaveBeenCalledTimes(1));
+    const call = updateDashboardFn.mock.calls[0]?.[0] as {
+      data: { patch: { layout: { panels: unknown[] } } };
+    };
+    expect(call.data.patch.layout.panels).toHaveLength(2);
+    await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
+  });
+
+  it('removing a panel filters it out of the layout PATCH', async () => {
+    loadPanelDataFn.mockResolvedValue({
+      ok: true,
+      data: { totalCount: 4, buckets: [], recentLogs: [] },
+    });
+    updateDashboardFn.mockResolvedValue({ ok: true, data: dashboard() });
+    const u = userEvent.setup();
+
+    renderDetail();
+    await waitFor(() => expect(loadPanelDataFn).toHaveBeenCalledTimes(1));
+
+    await u.click(screen.getByRole('button', { name: 'Remove' }));
+    await u.click(screen.getByRole('button', { name: 'Remove panel' }));
+
+    await waitFor(() => expect(updateDashboardFn).toHaveBeenCalledTimes(1));
+    const call = updateDashboardFn.mock.calls[0]?.[0] as {
+      data: { patch: { layout: { panels: unknown[] } } };
+    };
+    expect(call.data.patch.layout.panels).toHaveLength(0);
+  });
 });
