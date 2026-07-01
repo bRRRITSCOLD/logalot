@@ -12,7 +12,7 @@ interface InviteRow {
   email: string;
   role: string;
   status: string;
-  invited_by: string | null;
+  created_by: string | null;
   expires_at: Date;
   consumed_at: Date | null;
   created_at: Date;
@@ -38,7 +38,7 @@ interface FindValidRow {
 
 // COLUMNS is the public projection — never includes token_hash (ADR-0012, R-INV-2).
 const COLUMNS =
-  'id, tenant_id, email, role, status, created_by AS invited_by, expires_at, consumed_at, created_at, updated_at';
+  'id, tenant_id, email, role, status, created_by, expires_at, consumed_at, created_at, updated_at';
 
 function toInvite(row: InviteRow): Invite {
   return {
@@ -47,7 +47,7 @@ function toInvite(row: InviteRow): Invite {
     email: row.email,
     role: row.role,
     status: row.status as Invite['status'],
-    invitedBy: row.invited_by,
+    createdBy: row.created_by,
     expiresAt: row.expires_at,
     consumedAt: row.consumed_at,
     createdAt: row.created_at,

@@ -17,6 +17,7 @@ import {
   updateTenantRequestSchema,
   updateUserRequestSchema,
   upsertRetentionRequestSchema,
+  uuidSchema,
 } from '@logalot/contracts';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
@@ -31,8 +32,11 @@ import { makeRequireOperation } from './rbac-guard';
 import { parse } from './validation';
 
 // Path-param schemas are a transport concern (not shared DTOs), so they live here.
-// `:id` is a UUID for tenants/users, but an opaque key id for api-keys.
-const uuidParamSchema = z.object({ id: z.string().uuid() });
+// `:id` is a UUID for tenants/users, but an opaque key id for api-keys. Use the
+// shared permissive `uuidSchema` (8-4-4-4-12 hex) — NOT Zod's `z.string().uuid()`,
+// which enforces an RFC-4122 version nibble and so rejects the structured/all-zero
+// ids the dev seeds and Postgres' `uuid` type accept (see contracts/ids.ts).
+const uuidParamSchema = z.object({ id: uuidSchema });
 const apiKeyIdParamSchema = z.object({ id: z.string().min(1) });
 
 // Bootstrap-admin provisioning body. Not part of @logalot/contracts' strict

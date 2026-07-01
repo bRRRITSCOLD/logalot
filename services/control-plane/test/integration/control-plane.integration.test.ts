@@ -127,6 +127,21 @@ describe('control-plane integration', () => {
     }
   });
 
+  // Regression: GET /v1/tenants/:id validated `:id` with raw `z.string().uuid()`,
+  // which (Zod 4) rejects the structured/all-zero dev-seed ids Postgres accepts —
+  // so the admin page's Workspace card got a 400 "request validation failed" for a
+  // perfectly valid tenant id. The path param must use the permissive shared
+  // `uuidSchema`. OPS_TENANT_ID is exactly such a structured id.
+  it('TenantRoutes_GetByStructuredSeedId_DoesNotRejectAsInvalidUuid', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: `/v1/tenants/${OPS_TENANT_ID}`,
+      headers: auth(opsToken),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ id: OPS_TENANT_ID });
+  });
+
   it('scopes a tenant_admin to its own tenant for user listings', async () => {
     const res = await app.inject({ method: 'GET', url: '/v1/users', headers: auth(adminAToken) });
     expect(res.statusCode).toBe(200);

@@ -32,9 +32,17 @@ export class ControlPlaneError extends Error {
 async function cpFetch(path: string, init: RequestInit): Promise<unknown> {
   let res: Response;
   try {
+    // Only declare a JSON content-type when we actually send a body. A bodyless
+    // POST/DELETE (e.g. invite/api-key revoke) that still advertised
+    // application/json is rejected by the control-plane's Fastify JSON parser
+    // ("Body cannot be empty when content-type is set to 'application/json'").
+    const hasBody = init.body !== undefined && init.body !== null;
     res = await fetch(`${baseUrl()}${path}`, {
       ...init,
-      headers: { 'content-type': 'application/json', ...init.headers },
+      headers: {
+        ...(hasBody ? { 'content-type': 'application/json' } : {}),
+        ...init.headers,
+      },
     });
   } catch {
     // Network/connection failure — control-plane unreachable.
