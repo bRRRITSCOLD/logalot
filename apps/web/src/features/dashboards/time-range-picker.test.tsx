@@ -43,6 +43,45 @@ describe('TimeRangePicker', () => {
     expect(Date.parse(emitted.to) - Date.parse(emitted.from)).toBe(60 * 60 * 1000);
   });
 
+  it('prefills the absolute drafts with the local (non-UTC-suffixed) value when opened', async () => {
+    const u = userEvent.setup();
+    setup();
+
+    await u.click(screen.getByRole('button', { name: /–/ }));
+    const from = await screen.findByLabelText('From time');
+    const to = await screen.findByLabelText('To time');
+
+    // A `datetime-local` input sanitizes any value carrying a timezone (e.g.
+    // a trailing `Z`) to the empty string in real browsers, so this asserts
+    // the drafts are non-empty, bare local strings — not the raw RFC3339 `Z`
+    // value, and not empty (which is what a real browser would render if the
+    // raw RFC3339 string were passed straight through).
+    const toLocal = (v: string) => {
+      const d = new Date(Date.parse(v));
+      const pad = (n: number) => String(n).padStart(2, '0');
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    };
+
+    expect(from).toHaveValue(toLocal('2026-06-27T11:00:00.000Z'));
+    expect(to).toHaveValue(toLocal('2026-06-27T12:00:00.000Z'));
+    expect((from as HTMLInputElement).value).not.toMatch(/Z$/);
+    expect((to as HTMLInputElement).value).not.toMatch(/Z$/);
+  });
+
+  it('highlights the matching preset button when the value equals a preset range', async () => {
+    const u = userEvent.setup();
+    const to = Date.now();
+    const from = to - 60 * 60 * 1000;
+    setup(range({ from: new Date(from).toISOString(), to: new Date(to).toISOString() }));
+
+    await u.click(screen.getByRole('button', { name: /–/ }));
+    const oneHour = await screen.findByRole('button', { name: '1h' });
+    const fiveMin = await screen.findByRole('button', { name: '5m' });
+
+    expect(oneHour.className).toMatch(/bg-brand-solid/);
+    expect(fiveMin.className).not.toMatch(/bg-brand-solid/);
+  });
+
   it('the absolute picker rejects from >= to', async () => {
     const u = userEvent.setup();
     const { onChange } = setup();

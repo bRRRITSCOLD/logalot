@@ -62,6 +62,36 @@ function formatRange({ from, to }: TimeRange): string {
   return `${format(from)} – ${format(to)}`;
 }
 
+/**
+ * Convert an RFC3339 instant to the bare local `YYYY-MM-DDTHH:mm` string a
+ * `datetime-local` input requires. Per the HTML spec, a `datetime-local`
+ * control sanitizes any value carrying a timezone offset (e.g. a trailing
+ * `Z`) to the empty string, so the absolute-range drafts must be seeded with
+ * this local, timezone-free form (the reverse of `toRfc3339`, which treats a
+ * bare local string as local time via `new Date(v)`).
+ */
+function toLocalDateTimeInput(value: string): string {
+  const ms = Date.parse(value);
+  if (!Number.isFinite(ms)) return '';
+  const d = new Date(ms);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/**
+ * The preset active for the current value, if any: `to` is (approximately)
+ * now and `to - from` matches a preset duration. Absolute ranges typically
+ * won't match, which is expected — presets are inherently relative.
+ */
+function activePresetFor(value: TimeRange, now: number = Date.now()): Preset | null {
+  const fromMs = Date.parse(value.from);
+  const toMs = Date.parse(value.to);
+  if (!Number.isFinite(fromMs) || !Number.isFinite(toMs)) return null;
+  if (Math.abs(now - toMs) > 60_000) return null;
+  const duration = toMs - fromMs;
+  return TIME_RANGE_PRESETS.find((preset) => Math.abs(preset.ms - duration) < 1_000) ?? null;
+}
+
 export function TimeRangePicker({ value, onChange }: TimeRangePickerProps) {
   const [open, setOpen] = React.useState(false);
   const [fromDraft, setFromDraft] = React.useState('');
@@ -71,8 +101,8 @@ export function TimeRangePicker({ value, onChange }: TimeRangePickerProps) {
   const onOpenChange = (next: boolean) => {
     setOpen(next);
     if (next) {
-      setFromDraft(value.from);
-      setToDraft(value.to);
+      setFromDraft(toLocalDateTimeInput(value.from));
+      setToDraft(toLocalDateTimeInput(value.to));
       setError(null);
     }
   };
@@ -103,6 +133,7 @@ export function TimeRangePicker({ value, onChange }: TimeRangePickerProps) {
   };
 
   const cold = isColdRange(value.from);
+  const activePreset = activePresetFor(value);
 
   return (
     <BasePopover.Root open={open} onOpenChange={onOpenChange}>
@@ -133,7 +164,7 @@ export function TimeRangePicker({ value, onChange }: TimeRangePickerProps) {
                   <Button
                     key={preset.label}
                     type="button"
-                    variant="secondary"
+                    variant={activePreset?.label === preset.label ? 'primary' : 'secondary'}
                     size="sm"
                     onClick={() => applyPreset(preset)}
                   >
