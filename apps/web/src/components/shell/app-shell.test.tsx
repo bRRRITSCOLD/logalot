@@ -58,6 +58,10 @@ describe('AppShell', () => {
       'href',
       expect.stringContaining('/explorer'),
     );
+    expect(screen.getAllByRole('link', { name: 'Dashboards' })[0]).toHaveAttribute(
+      'href',
+      '/dashboards',
+    );
     expect(screen.getAllByRole('link', { name: 'Alerts' })[0]).toHaveAttribute('href', '/alerts');
     expect(screen.getAllByRole('link', { name: 'Admin' })[0]).toHaveAttribute('href', '/admin');
     // No nav item is a disabled placeholder anymore.

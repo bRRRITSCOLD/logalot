@@ -1,6 +1,7 @@
-// Public API of the dashboards feature surface (types + helpers only — no
-// components yet; see the plan's barrel chain, T4/T5/T8/T9 add those serially).
+// Public API of the dashboards feature surface (types + helpers, plus the list
+// surface component; see the plan's barrel chain, T4/T5/T8/T9 add those serially).
 
+export { DashboardList, type DashboardListProps } from './dashboard-list';
 export {
   buildPanelDataParams,
   gapFillBuckets,
