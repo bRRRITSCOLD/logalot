@@ -279,6 +279,36 @@ describe('completeGoogleSignin', () => {
     expect(calledWith).not.toHaveProperty('inviteToken');
   });
 
+  it('ignores a client-supplied inviteToken in the request body when no lg_invite_token cookie is present', async () => {
+    // Guards against reusing the BFF -> control-plane wire schema as the
+    // client -> BFF input validator: even if a caller's payload carried an
+    // `inviteToken` (bypassing the request-schema boundary -- e.g. in a test
+    // harness that stubs out server-fn validation), the handler must never
+    // forward it. The relay body is rebuilt field-by-field from `data`
+    // (never spread), so `inviteToken` can only ever come from the cookie.
+    const access = fakeJwt({ ...baseClaims, exp: FAR_FUTURE });
+    mockCpOidcCallback.mockResolvedValue(tokenPair(access));
+    cookies({ [OIDC_STATE_COOKIE]: 's' }); // no lg_invite_token cookie
+
+    const maliciousData = {
+      tenantSlug: 'acme-corp',
+      code: 'code',
+      state: 's',
+      inviteToken: 'lginv_attacker-tenant_deadbeef',
+      // biome-ignore lint/suspicious/noExplicitAny: simulating a payload that smuggles a field the client-facing schema does not declare.
+    } as any;
+
+    await completeGoogleSignin({ data: maliciousData });
+
+    expect(mockCpOidcCallback).toHaveBeenCalledWith({
+      tenantSlug: 'acme-corp',
+      code: 'code',
+      state: 's',
+    });
+    const calledWith = mockCpOidcCallback.mock.calls[0]?.[0];
+    expect(calledWith).not.toHaveProperty('inviteToken');
+  });
+
   it('clears the lg_invite_token cookie on a successful callback', async () => {
     const access = fakeJwt({ ...baseClaims, exp: FAR_FUTURE });
     mockCpOidcCallback.mockResolvedValue(tokenPair(access));

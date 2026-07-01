@@ -124,3 +124,19 @@ export const oidcCallbackRequestSchema = z
   })
   .strict();
 export type OidcCallbackRequest = z.infer<typeof oidcCallbackRequestSchema>;
+
+/**
+ * oidcCallbackClientRequest -- validates the CLIENT -> BFF input for
+ * `completeGoogleSignin` (apps/web/src/server/oidc.ts).  This is a distinct
+ * trust boundary from `oidcCallbackRequestSchema` above (which validates the
+ * BFF -> control-plane wire body): `inviteToken` is a declared, optional key
+ * on that schema, so `.strict()` alone does NOT stop a client from supplying
+ * one -- `.strict()` only rejects *unknown* keys.  Omitting `inviteToken`
+ * here ensures the only way it can end up in the outbound control-plane call
+ * is via the server reading the httpOnly `lg_invite_token` cookie itself
+ * (R-INV-12), never via client-supplied request data.
+ */
+export const oidcCallbackClientRequestSchema = oidcCallbackRequestSchema.omit({
+  inviteToken: true,
+});
+export type OidcCallbackClientRequest = z.infer<typeof oidcCallbackClientRequestSchema>;

@@ -1,6 +1,6 @@
 import {
   oidcAuthorizeRequestSchema,
-  oidcCallbackRequestSchema,
+  oidcCallbackClientRequestSchema,
   parseInviteTenantSlug,
   type TokenPair,
 } from '@logalot/contracts';
@@ -163,19 +163,29 @@ export type CompleteGoogleSigninResult =
  * `startGoogleSignin`) and merges it with the IdP-supplied `code` + `state`
  * query params.  Before relaying to the control-plane, it asserts the
  * URL-returned `state` matches the `lg_oidc_state` cookie — this is the
- * browser-binding / login-CSRF defence required by R4 / T3.  The assembled
- * request is validated with the SHARED `oidcCallbackRequestSchema` before
- * relaying to the control-plane callback endpoint.  On success it writes the
- * session cookies and clears the handshake cookies; on failure it also clears
- * them so a stale flow cannot interfere.
+ * browser-binding / login-CSRF defence required by R4 / T3.  Client input is
+ * validated with `oidcCallbackClientRequestSchema` (see below), which is
+ * distinct from the `OidcCallbackRequest`-typed body ultimately relayed to
+ * the control-plane callback endpoint (that body additionally carries
+ * `inviteToken`, which only this handler may add — see below).  On success
+ * it writes the session cookies and clears the handshake cookies; on failure
+ * it also clears them so a stale flow cannot interfere.
  *
  * If an `/invite/accept` flow stashed a `lg_invite_token` cookie, its plaintext
  * value is read here and merged into the control-plane relay body as
  * `inviteToken` (R-INV-12: body only, never a query param, and never accepted
  * as caller-supplied input — it comes solely from the httpOnly cookie).
+ *
+ * Client input is validated with `oidcCallbackClientRequestSchema`, which
+ * OMITS `inviteToken` — that field only exists on the BFF → control-plane
+ * wire schema (`oidcCallbackRequestSchema`). A `.strict()` schema only
+ * rejects *unknown* keys, so reusing the wire schema here would let a client
+ * pass its own `inviteToken` in the request body whenever the httpOnly
+ * cookie is absent. Using the narrower client schema makes that
+ * structurally impossible: `data` can never contain `inviteToken`.
  */
 export const completeGoogleSignin = createServerFn({ method: 'POST' })
-  .validator(oidcCallbackRequestSchema)
+  .validator(oidcCallbackClientRequestSchema)
   .handler(async ({ data }): Promise<CompleteGoogleSigninResult> => {
     // Read the returnTo that was stashed at authorize time (may be absent).
     const returnTo = getCookie(OIDC_RETURN_COOKIE) ?? null;
@@ -190,11 +200,23 @@ export const completeGoogleSignin = createServerFn({ method: 'POST' })
     }
 
     // Thread the invite token (if any) into the relay body only — it never
-    // travels as a query param and the caller cannot inject one via `data`
-    // (oidcCallbackRequestSchema is `.strict()`, so `data.inviteToken` here
-    // can only have come from this cookie read, not the client call site).
+    // travels as a query param and the caller cannot inject one via `data`:
+    // `data` was validated against `oidcCallbackClientRequestSchema`, which
+    // OMITS the `inviteToken` field entirely (it is not merely `.strict()`
+    // about unknown keys — the key itself does not exist on this schema), so
+    // `data` can never carry a client-supplied `inviteToken` regardless of
+    // what the caller sends. Defense in depth: the relay body below is
+    // rebuilt field-by-field from `data` (never spread) so that even if a
+    // caller somehow smuggled an `inviteToken` property past validation, it
+    // is discarded here rather than forwarded — the ONLY source of
+    // `inviteToken` on `callbackBody` is this httpOnly cookie read.
     const inviteToken = getCookie(INVITE_TOKEN_COOKIE) ?? undefined;
-    const callbackBody = inviteToken ? { ...data, inviteToken } : data;
+    const callbackBody = {
+      tenantSlug: data.tenantSlug,
+      code: data.code,
+      state: data.state,
+      ...(inviteToken ? { inviteToken } : {}),
+    };
 
     try {
       const pair = await cpOidcCallback(callbackBody);
