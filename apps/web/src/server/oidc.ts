@@ -1,11 +1,18 @@
 import {
   oidcAuthorizeRequestSchema,
   oidcCallbackRequestSchema,
+  parseInviteTenantSlug,
   type TokenPair,
 } from '@logalot/contracts';
 
 import { createServerFn } from '@tanstack/react-start';
-import { deleteCookie, getCookie, setCookie } from '@tanstack/react-start/server';
+import {
+  deleteCookie,
+  getCookie,
+  setCookie,
+  setResponseHeader,
+} from '@tanstack/react-start/server';
+import { z } from 'zod';
 import { ControlPlaneError, cpOidcAuthorize, cpOidcCallback } from './control-plane';
 import {
   ACCESS_COOKIE,
@@ -34,11 +41,21 @@ import {
 //
 // All three cookies are session-scoped (no Max-Age) and cleared in every exit path
 // of the callback handler to avoid leakage between flows.
+//
+// A fourth, related cookie is stashed by the `/invite/accept` route (not this
+// file's authorize step, since an invite flow skips it) and consumed here:
+//   lg_invite_token — the plaintext invite token, moved out of the URL into
+//                     this httpOnly cookie the moment `/invite/accept` is hit
+//                     (R-INV-11). `completeGoogleSignin` reads it and relays
+//                     it to the control-plane callback endpoint in the request
+//                     BODY only (R-INV-12) — it is NEVER placed in the
+//                     onward redirect to Google (R-INV-11).
 
 /** Cookie names — never read by client JS (httpOnly). */
 export const OIDC_TENANT_COOKIE = 'lg_oidc_tenant';
 export const OIDC_RETURN_COOKIE = 'lg_oidc_return';
 export const OIDC_STATE_COOKIE = 'lg_oidc_state';
+export const INVITE_TOKEN_COOKIE = 'lg_invite_token';
 
 /** Shared SameSite=Lax attributes for the short-lived OIDC handshake cookies. */
 function oidcCookieAttributes() {
@@ -61,6 +78,10 @@ function clearOidcCookies(): void {
   deleteCookie(OIDC_TENANT_COOKIE, { path: '/' });
   deleteCookie(OIDC_RETURN_COOKIE, { path: '/' });
   deleteCookie(OIDC_STATE_COOKIE, { path: '/' });
+  // Every exit path of completeGoogleSignin calls this, so the invite
+  // handshake cookie is cleared alongside the others on both success and
+  // failure — no separate call site needed.
+  deleteCookie(INVITE_TOKEN_COOKIE, { path: '/' });
 }
 
 function writeSessionCookies(pair: TokenPair): void {
@@ -147,6 +168,11 @@ export type CompleteGoogleSigninResult =
  * relaying to the control-plane callback endpoint.  On success it writes the
  * session cookies and clears the handshake cookies; on failure it also clears
  * them so a stale flow cannot interfere.
+ *
+ * If an `/invite/accept` flow stashed a `lg_invite_token` cookie, its plaintext
+ * value is read here and merged into the control-plane relay body as
+ * `inviteToken` (R-INV-12: body only, never a query param, and never accepted
+ * as caller-supplied input — it comes solely from the httpOnly cookie).
  */
 export const completeGoogleSignin = createServerFn({ method: 'POST' })
   .validator(oidcCallbackRequestSchema)
@@ -163,8 +189,15 @@ export const completeGoogleSignin = createServerFn({ method: 'POST' })
       return { ok: false, message: 'Sign-in failed' };
     }
 
+    // Thread the invite token (if any) into the relay body only — it never
+    // travels as a query param and the caller cannot inject one via `data`
+    // (oidcCallbackRequestSchema is `.strict()`, so `data.inviteToken` here
+    // can only have come from this cookie read, not the client call site).
+    const inviteToken = getCookie(INVITE_TOKEN_COOKIE) ?? undefined;
+    const callbackBody = inviteToken ? { ...data, inviteToken } : data;
+
     try {
-      const pair = await cpOidcCallback(data);
+      const pair = await cpOidcCallback(callbackBody);
       const claims = decodeAccessClaims(pair.accessToken);
       if (!claims) {
         clearOidcCookies();
@@ -195,3 +228,51 @@ export const completeGoogleSignin = createServerFn({ method: 'POST' })
 export const getOidcTenantSlug = createServerFn({ method: 'GET' }).handler(
   (): string | null => getCookie(OIDC_TENANT_COOKIE) ?? null,
 );
+
+// ── Invite-accept handshake ─────────────────────────────────────────────────
+// Consumed by `/invite/accept` (apps/web/src/routes/invite/accept.tsx). That
+// route is the ONLY writer of `lg_invite_token`; `completeGoogleSignin` above
+// is the only reader that forwards it onward (to the control-plane, in the
+// body — R-INV-12). Kept in this file because it is part of the same OIDC
+// handshake-cookie family and lifecycle (10-minute TTL, cleared on every exit
+// path of the callback).
+
+export type StashInviteTokenResult = { ok: true } | { ok: false };
+
+/**
+ * Move an invite token out of the URL and into the httpOnly `lg_invite_token`
+ * handshake cookie (R-INV-11). Also sets `Referrer-Policy: no-referrer` on
+ * this response so the token-bearing URL is never leaked via the Referer
+ * header of any onward navigation (R-INV-11).
+ *
+ * The token is validated for SHAPE only (non-secret prefix + tenant public id
+ * parse) — malformed input is rejected and nothing is stashed, so the accept
+ * route fails closed once it finds no usable cookie. The secret component is
+ * never inspected or logged here; it travels opaquely inside the cookie value
+ * until the control-plane consumes it.
+ */
+export const stashInviteToken = createServerFn({ method: 'POST' })
+  .validator(z.object({ token: z.string().min(1).max(512) }))
+  .handler(({ data }): StashInviteTokenResult => {
+    // Set unconditionally, before any validation branch, so the header is
+    // present on this response regardless of how the token turns out.
+    setResponseHeader('Referrer-Policy', 'no-referrer');
+
+    if (!parseInviteTenantSlug(data.token)) {
+      return { ok: false };
+    }
+
+    setCookie(INVITE_TOKEN_COOKIE, data.token, oidcCookieAttributes());
+    return { ok: true };
+  });
+
+/**
+ * Read the NON-SECRET tenant slug embedded in the stashed invite token
+ * (`lg_invite_token`). Used by the accept route, after the token has been
+ * moved out of the URL, to drive `startGoogleSignin({ tenantSlug })` without
+ * ever letting the invitee supply their own tenant/workspace value (R-INV-20).
+ */
+export const getInviteTenantSlug = createServerFn({ method: 'GET' }).handler((): string | null => {
+  const token = getCookie(INVITE_TOKEN_COOKIE);
+  return token ? parseInviteTenantSlug(token) : null;
+});
