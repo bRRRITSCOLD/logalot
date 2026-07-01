@@ -66,6 +66,14 @@ export const SearchIcon = (p: IconProps) => (
   </Icon>
 );
 
+export const DashboardsIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <rect x="3" y="3" width="18" height="6" rx="1" />
+    <rect x="3" y="13" width="8" height="8" rx="1" />
+    <rect x="14" y="13" width="7" height="8" rx="1" />
+  </Icon>
+);
+
 export const BellIcon = (p: IconProps) => (
   <Icon {...p}>
     <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" />

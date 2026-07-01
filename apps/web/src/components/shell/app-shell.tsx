@@ -8,6 +8,7 @@ import {
   AdminIcon,
   BellIcon,
   CloseIcon,
+  DashboardsIcon,
   LogOutIcon,
   LogsIcon,
   MenuIcon,
@@ -66,6 +67,18 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
       >
         <SearchIcon />
         Search
+      </Link>
+      {/* Dashboards (#193): saved visualizations. Visible to every role — a member
+          sees a correctly reduced view (list/read only; create/delete are
+          gated server-side and mirrored in the UI). */}
+      <Link
+        to="/dashboards"
+        onClick={onNavigate}
+        className={cn(linkBase, idleLink)}
+        activeProps={{ className: cn(linkBase, activeLink) }}
+      >
+        <DashboardsIcon />
+        Dashboards
       </Link>
       {/* Feature pages built in #23. Admin is visible to every role — a member sees
           a correctly reduced view (read-only workspace + retention; no user/key
