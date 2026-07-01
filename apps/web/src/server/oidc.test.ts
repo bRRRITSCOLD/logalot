@@ -26,6 +26,7 @@ vi.mock('@tanstack/react-start/server', () => ({
   getCookie: vi.fn(),
   setCookie: vi.fn(),
   deleteCookie: vi.fn(),
+  setResponseHeader: vi.fn(),
 }));
 
 vi.mock('./control-plane', async (importOriginal) => {
@@ -38,21 +39,30 @@ vi.mock('./control-plane', async (importOriginal) => {
 });
 
 import type { TokenPair } from '@logalot/contracts';
-import { deleteCookie, getCookie, setCookie } from '@tanstack/react-start/server';
+import {
+  deleteCookie,
+  getCookie,
+  setCookie,
+  setResponseHeader,
+} from '@tanstack/react-start/server';
 import { ControlPlaneError, cpOidcAuthorize, cpOidcCallback } from './control-plane';
 import {
   completeGoogleSignin,
+  getInviteTenantSlug,
   getOidcTenantSlug,
+  INVITE_TOKEN_COOKIE,
   OIDC_RETURN_COOKIE,
   OIDC_STATE_COOKIE,
   OIDC_TENANT_COOKIE,
   startGoogleSignin,
+  stashInviteToken,
 } from './oidc';
 import { ACCESS_COOKIE, REFRESH_COOKIE } from './session';
 
 const mockGetCookie = vi.mocked(getCookie);
 const mockSetCookie = vi.mocked(setCookie);
 const mockDeleteCookie = vi.mocked(deleteCookie);
+const mockSetResponseHeader = vi.mocked(setResponseHeader);
 const mockCpOidcAuthorize = vi.mocked(cpOidcAuthorize);
 const mockCpOidcCallback = vi.mocked(cpOidcCallback);
 
@@ -240,6 +250,84 @@ describe('completeGoogleSignin', () => {
     expect(mockDeleteCookie).toHaveBeenCalledWith(OIDC_STATE_COOKIE, expect.any(Object));
   });
 
+  it('merges inviteToken from the lg_invite_token cookie into the control-plane relay body (R-INV-12)', async () => {
+    const access = fakeJwt({ ...baseClaims, exp: FAR_FUTURE });
+    mockCpOidcCallback.mockResolvedValue(tokenPair(access));
+    cookies({
+      [OIDC_STATE_COOKIE]: 's',
+      [INVITE_TOKEN_COOKIE]: 'lginv_acme-corp_deadbeef',
+    });
+
+    await completeGoogleSignin({ data: { tenantSlug: 'acme-corp', code: 'code', state: 's' } });
+
+    expect(mockCpOidcCallback).toHaveBeenCalledWith({
+      tenantSlug: 'acme-corp',
+      code: 'code',
+      state: 's',
+      inviteToken: 'lginv_acme-corp_deadbeef',
+    });
+  });
+
+  it('does not add an inviteToken field when no invite cookie is present', async () => {
+    const access = fakeJwt({ ...baseClaims, exp: FAR_FUTURE });
+    mockCpOidcCallback.mockResolvedValue(tokenPair(access));
+    cookies({ [OIDC_STATE_COOKIE]: 's' });
+
+    await completeGoogleSignin({ data: { tenantSlug: 'acme-corp', code: 'code', state: 's' } });
+
+    const calledWith = mockCpOidcCallback.mock.calls[0]?.[0];
+    expect(calledWith).not.toHaveProperty('inviteToken');
+  });
+
+  it('ignores a client-supplied inviteToken in the request body when no lg_invite_token cookie is present', async () => {
+    // Guards against reusing the BFF -> control-plane wire schema as the
+    // client -> BFF input validator: even if a caller's payload carried an
+    // `inviteToken` (bypassing the request-schema boundary -- e.g. in a test
+    // harness that stubs out server-fn validation), the handler must never
+    // forward it. The relay body is rebuilt field-by-field from `data`
+    // (never spread), so `inviteToken` can only ever come from the cookie.
+    const access = fakeJwt({ ...baseClaims, exp: FAR_FUTURE });
+    mockCpOidcCallback.mockResolvedValue(tokenPair(access));
+    cookies({ [OIDC_STATE_COOKIE]: 's' }); // no lg_invite_token cookie
+
+    const maliciousData = {
+      tenantSlug: 'acme-corp',
+      code: 'code',
+      state: 's',
+      inviteToken: 'lginv_attacker-tenant_deadbeef',
+      // biome-ignore lint/suspicious/noExplicitAny: simulating a payload that smuggles a field the client-facing schema does not declare.
+    } as any;
+
+    await completeGoogleSignin({ data: maliciousData });
+
+    expect(mockCpOidcCallback).toHaveBeenCalledWith({
+      tenantSlug: 'acme-corp',
+      code: 'code',
+      state: 's',
+    });
+    const calledWith = mockCpOidcCallback.mock.calls[0]?.[0];
+    expect(calledWith).not.toHaveProperty('inviteToken');
+  });
+
+  it('clears the lg_invite_token cookie on a successful callback', async () => {
+    const access = fakeJwt({ ...baseClaims, exp: FAR_FUTURE });
+    mockCpOidcCallback.mockResolvedValue(tokenPair(access));
+    cookies({ [OIDC_STATE_COOKIE]: 's', [INVITE_TOKEN_COOKIE]: 'lginv_acme-corp_deadbeef' });
+
+    await completeGoogleSignin({ data: { tenantSlug: 'acme-corp', code: 'code', state: 's' } });
+
+    expect(mockDeleteCookie).toHaveBeenCalledWith(INVITE_TOKEN_COOKIE, expect.any(Object));
+  });
+
+  it('clears the lg_invite_token cookie even when the callback fails', async () => {
+    mockCpOidcCallback.mockRejectedValue(new ControlPlaneError(400, 'bad_request', 'raw'));
+    cookies({ [OIDC_STATE_COOKIE]: 's', [INVITE_TOKEN_COOKIE]: 'lginv_acme-corp_deadbeef' });
+
+    await completeGoogleSignin({ data: { tenantSlug: 'acme-corp', code: 'code', state: 's' } });
+
+    expect(mockDeleteCookie).toHaveBeenCalledWith(INVITE_TOKEN_COOKIE, expect.any(Object));
+  });
+
   it('returns null returnTo when the return cookie is absent', async () => {
     const access = fakeJwt({ ...baseClaims, exp: FAR_FUTURE });
     mockCpOidcCallback.mockResolvedValue(tokenPair(access));
@@ -346,5 +434,52 @@ describe('getOidcTenantSlug', () => {
   it('returns null when the cookie is absent', async () => {
     cookies({});
     expect(await getOidcTenantSlug()).toBeNull();
+  });
+});
+
+// ── stashInviteToken ─────────────────────────────────────────────────────────
+
+describe('stashInviteToken', () => {
+  it('sets the lg_invite_token cookie and Referrer-Policy: no-referrer for a well-formed token', async () => {
+    const result = await stashInviteToken({ data: { token: 'lginv_acme-corp_deadbeef' } });
+
+    expect(result).toEqual({ ok: true });
+    expect(mockSetCookie).toHaveBeenCalledWith(
+      INVITE_TOKEN_COOKIE,
+      'lginv_acme-corp_deadbeef',
+      expect.any(Object),
+    );
+    expect(mockSetResponseHeader).toHaveBeenCalledWith('Referrer-Policy', 'no-referrer');
+  });
+
+  it('sets Referrer-Policy: no-referrer even for a malformed token (R-INV-11)', async () => {
+    const result = await stashInviteToken({ data: { token: 'not-an-invite-token' } });
+
+    expect(result).toEqual({ ok: false });
+    expect(mockSetResponseHeader).toHaveBeenCalledWith('Referrer-Policy', 'no-referrer');
+  });
+
+  it('does not set the cookie for a malformed token — fails closed', async () => {
+    await stashInviteToken({ data: { token: 'not-an-invite-token' } });
+    expect(mockSetCookie).not.toHaveBeenCalled();
+  });
+});
+
+// ── getInviteTenantSlug ──────────────────────────────────────────────────────
+
+describe('getInviteTenantSlug', () => {
+  it('returns the tenant slug parsed from the stashed invite token', async () => {
+    cookies({ [INVITE_TOKEN_COOKIE]: 'lginv_acme-corp_deadbeef' });
+    expect(await getInviteTenantSlug()).toBe('acme-corp');
+  });
+
+  it('returns null when no invite token cookie is present', async () => {
+    cookies({});
+    expect(await getInviteTenantSlug()).toBeNull();
+  });
+
+  it('returns null when the stashed token is malformed', async () => {
+    cookies({ [INVITE_TOKEN_COOKIE]: 'garbage' });
+    expect(await getInviteTenantSlug()).toBeNull();
   });
 });

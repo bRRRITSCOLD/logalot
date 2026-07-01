@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { uuidSchema } from './ids.js';
+import { tenantPublicIdSchema } from './tenant.js';
 
 /**
  * Status values an invite may carry over its lifecycle.
@@ -65,3 +66,35 @@ export const inviteListSchema = z.object({
   invites: z.array(inviteResponseSchema),
 });
 export type InviteList = z.infer<typeof inviteListSchema>;
+
+/**
+ * Wire format of the one-time invite token: `lginv_<tenantPublicId>_<secret>`
+ * (see `services/control-plane/src/domain/invite.ts` for the minting side).
+ * Only the prefix + publicId are NON-SECRET; the trailing segment is the
+ * high-entropy secret and must never be parsed or logged by this helper.
+ */
+const INVITE_TOKEN_PREFIX = 'lginv_';
+
+/**
+ * parseInviteTenantSlug extracts the NON-SECRET tenant public id embedded in
+ * an invite token, without touching the secret component. Used by the web BFF
+ * to route the invitee's Google sign-in to the correct tenant (R-INV-20)
+ * before the token's secret is ever exchanged with the control-plane.
+ *
+ * Returns `null` for any malformed input — callers must fail closed rather
+ * than guess a tenant.
+ */
+export function parseInviteTenantSlug(token: string): string | null {
+  if (!token.startsWith(INVITE_TOKEN_PREFIX)) {
+    return null;
+  }
+  const rest = token.slice(INVITE_TOKEN_PREFIX.length);
+  const sepIdx = rest.indexOf('_');
+  // sepIdx <= 0 rejects an empty publicId; === rest.length - 1 rejects an
+  // empty secret (both malformed, since the mint side always emits both).
+  if (sepIdx <= 0 || sepIdx === rest.length - 1) {
+    return null;
+  }
+  const candidate = rest.slice(0, sepIdx);
+  return tenantPublicIdSchema.safeParse(candidate).success ? candidate : null;
+}

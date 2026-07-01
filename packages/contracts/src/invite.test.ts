@@ -4,6 +4,7 @@ import {
   inviteCreatedResponseSchema,
   inviteListSchema,
   inviteResponseSchema,
+  parseInviteTenantSlug,
 } from './invite.js';
 
 const validInviteResponse = {
@@ -210,5 +211,44 @@ describe('inviteListSchema', () => {
       invites: [{ ...validInviteResponse, status: 'invalid-status' }],
     });
     expect(result.success).toBe(false);
+  });
+});
+
+describe('parseInviteTenantSlug', () => {
+  it('extracts the tenant public id from a well-formed token', () => {
+    expect(parseInviteTenantSlug('lginv_acme-corp_deadbeefcafebabe')).toBe('acme-corp');
+  });
+
+  it('returns null for a token missing the lginv_ prefix', () => {
+    expect(parseInviteTenantSlug('acme-corp_deadbeef')).toBeNull();
+  });
+
+  it('returns null for a token with no secret segment', () => {
+    expect(parseInviteTenantSlug('lginv_acme-corp')).toBeNull();
+  });
+
+  it('returns null for a token with an empty publicId', () => {
+    expect(parseInviteTenantSlug('lginv__deadbeef')).toBeNull();
+  });
+
+  it('returns null for a token with an empty secret', () => {
+    expect(parseInviteTenantSlug('lginv_acme-corp_')).toBeNull();
+  });
+
+  it('returns null when the extracted publicId fails tenantPublicIdSchema', () => {
+    // '!' is not a valid tenant public id character.
+    expect(parseInviteTenantSlug('lginv_bad!slug_deadbeef')).toBeNull();
+  });
+
+  it('preserves underscores inside the secret (does not truncate at the first "_")', () => {
+    expect(parseInviteTenantSlug('lginv_acme-corp_dead_beef_cafe')).toBe('acme-corp');
+  });
+
+  it('returns null for a completely empty string', () => {
+    expect(parseInviteTenantSlug('')).toBeNull();
+  });
+
+  it('returns null when tenantSlug component fails the length bound (single char)', () => {
+    expect(parseInviteTenantSlug('lginv_a_deadbeef')).toBeNull();
   });
 });

@@ -170,6 +170,11 @@ export function cpOidcAuthorize(body: OidcAuthorizeRequest): Promise<OidcAuthori
 /**
  * Relay the OIDC callback (code + state from the IdP) to the control-plane for
  * validation and token exchange.  Returns the issued token pair on success.
+ *
+ * `body.inviteToken` (optional) is forwarded verbatim when the caller
+ * (`completeGoogleSignin`) merged it in from the `lg_invite_token` handshake
+ * cookie — this is the ONLY place the invite token reaches the control-plane,
+ * and it always travels in this JSON body, never as a query param (R-INV-12).
  */
 export function cpOidcCallback(body: OidcCallbackRequest): Promise<TokenPair> {
   // Provider-keyed path (see cpOidcAuthorize) — tenantSlug travels in the body.
