@@ -3,6 +3,8 @@ import { ErrorState, LoadingState } from '../../components/states';
 import { AdminDashboard, type AdminExecutors } from '../../features/admin';
 import { useSession } from '../../hooks/use-session';
 import {
+  cpCreateInvite,
+  cpRevokeInvite,
   createApiKeyFn,
   createUserFn,
   deleteUserFn,
@@ -39,6 +41,8 @@ function AdminPage() {
     updateUser: (id, patch) => updateUserFn({ data: { id, patch } }),
     deleteUser: (id) => deleteUserFn({ data: { id } }),
     updateRetention: (body) => updateRetentionFn({ data: body }),
+    createInvite: (body) => cpCreateInvite({ data: body }),
+    revokeInvite: (id) => cpRevokeInvite({ data: { id } }),
   };
 
   return (

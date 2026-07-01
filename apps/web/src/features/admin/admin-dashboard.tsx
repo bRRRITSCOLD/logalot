@@ -1,6 +1,7 @@
 import { Alert, Card, CardContent, CardHeader, CardTitle } from '../../components/ui';
 import type { AdminData, AdminOutcome } from '../../server/admin';
 import { ApiKeysSection, type ApiKeysSectionProps } from './api-keys-section';
+import { InvitesSection, type InvitesSectionProps } from './invites-section';
 import { RetentionCard, type RetentionCardProps } from './retention-card';
 import { TenantInfoCard } from './tenant-info-card';
 import { UsersSection, type UsersSectionProps } from './users-section';
@@ -14,6 +15,8 @@ export interface AdminExecutors {
   updateUser: UsersSectionProps['update'];
   deleteUser: UsersSectionProps['remove'];
   updateRetention: RetentionCardProps['update'];
+  createInvite: InvitesSectionProps['create'];
+  revokeInvite: InvitesSectionProps['revoke'];
 }
 
 export interface AdminDashboardProps {
@@ -83,6 +86,19 @@ export function AdminDashboard({ data, executors, onChanged }: AdminDashboardPro
           />
         ) : (
           <SectionError title="API keys" outcome={data.apiKeys} />
+        )
+      ) : null}
+
+      {data.invites ? (
+        data.invites.ok ? (
+          <InvitesSection
+            invites={data.invites.data}
+            create={executors.createInvite}
+            revoke={executors.revokeInvite}
+            onChanged={onChanged}
+          />
+        ) : (
+          <SectionError title="Invites" outcome={data.invites} />
         )
       ) : null}
     </div>

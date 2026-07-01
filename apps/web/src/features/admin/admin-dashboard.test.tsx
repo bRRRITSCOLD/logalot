@@ -29,6 +29,8 @@ const executors: AdminExecutors = {
   updateUser: vi.fn(),
   deleteUser: vi.fn(),
   updateRetention: vi.fn(),
+  createInvite: vi.fn(),
+  revokeInvite: vi.fn(),
 };
 
 function memberData(): AdminData {
@@ -66,6 +68,7 @@ describe('AdminDashboard — RBAC-reduced composition (no cross-section data lea
     // privileged sections were never fetched server-side → not rendered at all
     expect(screen.queryByText('Users')).not.toBeInTheDocument();
     expect(screen.queryByText('API keys')).not.toBeInTheDocument();
+    expect(screen.queryByText('Invites')).not.toBeInTheDocument();
   });
 
   it('a member sees retention read-only (no edit affordance)', () => {
@@ -86,5 +89,6 @@ describe('AdminDashboard — RBAC-reduced composition (no cross-section data lea
     expect(screen.getByText('Retention')).toBeInTheDocument();
     expect(screen.getByText('Users')).toBeInTheDocument();
     expect(screen.getByText('API keys')).toBeInTheDocument();
+    expect(screen.getByText('Invites')).toBeInTheDocument();
   });
 });
