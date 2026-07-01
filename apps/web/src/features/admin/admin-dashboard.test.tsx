@@ -39,6 +39,7 @@ function memberData(): AdminData {
     retention: ok(retention),
     users: null,
     apiKeys: null,
+    invites: null,
   };
 }
 
@@ -49,6 +50,7 @@ function adminData(): AdminData {
     retention: ok(retention),
     users: ok([]),
     apiKeys: ok([]),
+    invites: ok([]),
   };
 }
 
