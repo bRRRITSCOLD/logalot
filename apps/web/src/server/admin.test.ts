@@ -2,10 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import {
   createApiKeyUpstream,
+  createInviteUpstream,
   getRetentionUpstream,
   listAlertRulesUpstream,
+  listInvitesUpstream,
   loadAdminData,
   mapAdminError,
+  revokeInviteUpstream,
   updateRetentionUpstream,
 } from './admin';
 import { ControlPlaneError } from './control-plane';
@@ -20,7 +23,8 @@ function jwt(role: 'tenant_admin' | 'member' | 'platform_operator', tenantId = T
 }
 
 function jsonResponse(status: number, body: unknown): Response {
-  return new Response(body === undefined ? '' : JSON.stringify(body), {
+  // A 204 must not carry a body (Response throws if given one), so pass null.
+  return new Response(body === undefined ? null : JSON.stringify(body), {
     status,
     headers: { 'content-type': 'application/json' },
   });
@@ -28,10 +32,11 @@ function jsonResponse(status: number, body: unknown): Response {
 
 /** A fetch stub that routes by URL pathname; an unexpected path throws (proving it wasn't called). */
 function routedFetch(routes: Record<string, { status: number; body?: unknown }>) {
-  return vi.fn(async (input: string | URL): Promise<Response> => {
+  return vi.fn(async (input: string | URL, init?: RequestInit): Promise<Response> => {
     const path = new URL(String(input)).pathname;
     const r = routes[path];
     if (!r) throw new Error(`unexpected upstream path: ${path}`);
+    void init;
     return jsonResponse(r.status, r.body);
   });
 }
@@ -67,6 +72,19 @@ const alertRule = {
   lastEvaluatedAt: null,
   lastTriggeredAt: null,
   createdBy: null,
+  createdAt: '2026-01-01T00:00:00Z',
+  updatedAt: '2026-01-01T00:00:00Z',
+};
+
+const invite = {
+  id: UID,
+  tenantId: TENANT,
+  email: 'newbie@acme.test',
+  role: 'member',
+  status: 'pending',
+  expiresAt: '2026-02-01T00:00:00Z',
+  createdBy: UID,
+  consumedAt: null,
   createdAt: '2026-01-01T00:00:00Z',
   updatedAt: '2026-01-01T00:00:00Z',
 };
@@ -118,6 +136,24 @@ describe('upstream BFF — fail closed on no session', () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
     const out = await createApiKeyUpstream(undefined, { name: 'k', scopes: ['ingest:write'] });
+    expect(out.ok).toBe(false);
+    if (!out.ok) expect(out.error.kind).toBe('unauthorized');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('listInvitesUpstream returns unauthorized WITHOUT touching the network', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const out = await listInvitesUpstream(undefined);
+    expect(out.ok).toBe(false);
+    if (!out.ok) expect(out.error.kind).toBe('unauthorized');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('createInviteUpstream (a mutation) fails closed WITHOUT touching the network', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const out = await createInviteUpstream(undefined, { email: 'x@acme.test', role: 'member' });
     expect(out.ok).toBe(false);
     if (!out.ok) expect(out.error.kind).toBe('unauthorized');
     expect(fetchMock).not.toHaveBeenCalled();
@@ -183,6 +219,75 @@ describe('upstream BFF — request + response', () => {
     expect(out.ok).toBe(false);
     if (!out.ok) expect(out.error.kind).toBe('forbidden');
   });
+
+  it('listInvitesUpstream hits GET /v1/invites with the Bearer and unwraps {invites}', async () => {
+    const fetchMock = routedFetch({ '/v1/invites': { status: 200, body: { invites: [invite] } } });
+    vi.stubGlobal('fetch', fetchMock);
+    const out = await listInvitesUpstream(jwt('tenant_admin'));
+    expect(out.ok).toBe(true);
+    if (out.ok) expect(out.data[0]?.email).toBe('newbie@acme.test');
+    const [url, init] = fetchMock.mock.calls[0] ?? [];
+    expect(String(url)).toContain('/v1/invites');
+    expect(String(url)).not.toContain(TENANT);
+    expect((init as RequestInit | undefined)?.headers).toMatchObject({
+      authorization: `Bearer ${jwt('tenant_admin')}`,
+    });
+  });
+
+  it('createInviteUpstream POSTs /v1/invites with no tenant id and returns the one-time inviteUrl', async () => {
+    const created = { ...invite, inviteUrl: 'https://app.test/invite/abc123token' };
+    const fetchMock = routedFetch({ '/v1/invites': { status: 201, body: created } });
+    vi.stubGlobal('fetch', fetchMock);
+    const out = await createInviteUpstream(jwt('tenant_admin'), {
+      email: 'newbie@acme.test',
+      role: 'member',
+    });
+    expect(out.ok).toBe(true);
+    if (out.ok) expect(out.data.inviteUrl).toBe('https://app.test/invite/abc123token');
+    const [url, init] = fetchMock.mock.calls[0] ?? [];
+    expect(String(url)).toContain('/v1/invites');
+    expect(String(url)).not.toContain(TENANT);
+    const req = init as RequestInit | undefined;
+    expect(req?.body).not.toContain(TENANT);
+    expect((req?.headers as Record<string, string> | undefined)?.authorization).toBe(
+      `Bearer ${jwt('tenant_admin')}`,
+    );
+  });
+
+  it('revokeInviteUpstream POSTs /v1/invites/:id/revoke with the Bearer', async () => {
+    const fetchMock = routedFetch({
+      [`/v1/invites/${UID}/revoke`]: { status: 204 },
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const out = await revokeInviteUpstream(jwt('tenant_admin'), UID);
+    expect(out.ok).toBe(true);
+    const [url] = fetchMock.mock.calls[0] ?? [];
+    expect(String(url)).toContain(`/v1/invites/${UID}/revoke`);
+  });
+
+  it('listInvitesUpstream surfaces a 401 as unauthorized and a 403 as forbidden', async () => {
+    vi.stubGlobal(
+      'fetch',
+      routedFetch({
+        '/v1/invites': { status: 401, body: { error: 'unauthorized', message: 'expired' } },
+      }),
+    );
+    const out = await listInvitesUpstream(jwt('member'));
+    expect(out.ok).toBe(false);
+    if (!out.ok) expect(out.error.kind).toBe('unauthorized');
+  });
+
+  it('createInviteUpstream surfaces a 403 as a clean forbidden outcome (member cannot invite)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      routedFetch({
+        '/v1/invites': { status: 403, body: { error: 'forbidden', message: 'nope' } },
+      }),
+    );
+    const out = await createInviteUpstream(jwt('member'), { email: 'x@acme.test', role: 'member' });
+    expect(out.ok).toBe(false);
+    if (!out.ok) expect(out.error.kind).toBe('forbidden');
+  });
 });
 
 describe('loadAdminData — server-side role gating (tenant isolation / no data leak)', () => {
@@ -191,11 +296,11 @@ describe('loadAdminData — server-side role gating (tenant isolation / no data 
     expect(await loadAdminData(undefined)).toBeNull();
   });
 
-  it('NEVER fetches users or api keys for a member (server-gated, not a client hide)', async () => {
+  it('NEVER fetches users, api keys, or invites for a member (server-gated, not a client hide)', async () => {
     const fetchMock = routedFetch({
       [`/v1/tenants/${TENANT}`]: { status: 200, body: tenant },
       '/v1/retention': { status: 200, body: retention },
-      // users / api-keys deliberately NOT routed: a request to them would throw.
+      // users / api-keys / invites deliberately NOT routed: a request would throw.
     });
     vi.stubGlobal('fetch', fetchMock);
 
@@ -204,25 +309,29 @@ describe('loadAdminData — server-side role gating (tenant isolation / no data 
     expect(data?.role).toBe('member');
     expect(data?.users).toBeNull();
     expect(data?.apiKeys).toBeNull();
+    expect(data?.invites).toBeNull();
     expect(data?.tenant.ok).toBe(true);
     // only the two permitted reads went to the network
     const paths = fetchMock.mock.calls.map((c) => new URL(String(c[0])).pathname);
     expect(paths).not.toContain('/v1/users');
     expect(paths).not.toContain('/v1/api-keys');
+    expect(paths).not.toContain('/v1/invites');
   });
 
-  it('fetches users + api keys for a tenant_admin', async () => {
+  it('fetches users + api keys + invites for a tenant_admin', async () => {
     const fetchMock = routedFetch({
       [`/v1/tenants/${TENANT}`]: { status: 200, body: tenant },
       '/v1/retention': { status: 200, body: retention },
       '/v1/users': { status: 200, body: { users: [] } },
       '/v1/api-keys': { status: 200, body: { apiKeys: [] } },
+      '/v1/invites': { status: 200, body: { invites: [] } },
     });
     vi.stubGlobal('fetch', fetchMock);
 
     const data = await loadAdminData(jwt('tenant_admin'));
     expect(data?.users?.ok).toBe(true);
     expect(data?.apiKeys?.ok).toBe(true);
+    expect(data?.invites?.ok).toBe(true);
   });
 
   it("derives the tenant path from the token's OWN claims (no client-supplied tenant id)", async () => {
@@ -231,6 +340,7 @@ describe('loadAdminData — server-side role gating (tenant isolation / no data 
       '/v1/retention': { status: 200, body: retention },
       '/v1/users': { status: 200, body: { users: [] } },
       '/v1/api-keys': { status: 200, body: { apiKeys: [] } },
+      '/v1/invites': { status: 200, body: { invites: [] } },
     });
     vi.stubGlobal('fetch', fetchMock);
     await loadAdminData(jwt('tenant_admin'));

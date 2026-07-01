@@ -7,11 +7,17 @@ import {
   apiKeyResponseSchema,
   type CreateAlertRuleRequest,
   type CreateApiKeyRequest,
+  type CreateInviteRequest,
   type CreateUserRequest,
   can,
   createAlertRuleRequestSchema,
   createApiKeyRequestSchema,
+  createInviteRequestSchema,
   createUserRequestSchema,
+  type InviteCreatedResponse,
+  type InviteResponse,
+  inviteCreatedResponseSchema,
+  inviteListSchema,
   type RetentionResponse,
   type Role,
   retentionResponseSchema,
@@ -107,6 +113,7 @@ async function run<T>(
 const alertRuleListSchema = z.object({ alertRules: z.array(alertRuleResponseSchema) });
 const apiKeyListSchema = z.object({ apiKeys: z.array(apiKeyResponseSchema) });
 const userListSchema = z.object({ users: z.array(userResponseSchema) });
+// invites use the shared inviteListSchema ({ invites: [...] }) directly.
 // 204 No Content (revoke/delete) — the proxy returns an empty body.
 const noContentSchema = z.undefined();
 
@@ -175,6 +182,40 @@ export function revokeApiKeyUpstream(
 ): Promise<AdminOutcome<void>> {
   return run(token, async (t) => {
     await cpAuthedSend(t, 'DELETE', `/v1/api-keys/${id}`, noContentSchema);
+  });
+}
+
+// Tenancy for /v1/invites is carried by the Bearer token ONLY — no tenant id
+// is ever sent in the path or body (mirrors the api-key/user relays above and
+// the PR #139 convention: provider/admin paths + tenant-in-token).
+
+export function listInvitesUpstream(
+  token: string | undefined,
+): Promise<AdminOutcome<InviteResponse[]>> {
+  return run(token, async (t) => {
+    const { invites } = await cpAuthedFetch(t, '/v1/invites', inviteListSchema);
+    return invites;
+  });
+}
+
+export function createInviteUpstream(
+  token: string | undefined,
+  body: CreateInviteRequest,
+): Promise<AdminOutcome<InviteCreatedResponse>> {
+  // The response carries the one-time `inviteUrl` (embeds the plaintext token).
+  // It is returned to the server fn / UI for a single display and NEVER logged
+  // here (R-INV-12).
+  return run(token, (t) =>
+    cpAuthedSend(t, 'POST', '/v1/invites', inviteCreatedResponseSchema, body),
+  );
+}
+
+export function revokeInviteUpstream(
+  token: string | undefined,
+  id: string,
+): Promise<AdminOutcome<void>> {
+  return run(token, async (t) => {
+    await cpAuthedSend(t, 'POST', `/v1/invites/${id}/revoke`, noContentSchema);
   });
 }
 
@@ -254,6 +295,8 @@ export interface AdminData {
   users: AdminOutcome<UserResponse[]> | null;
   /** null ⇒ the role may not list api keys, so they were NEVER fetched (server-gated). */
   apiKeys: AdminOutcome<ApiKeyResponse[]> | null;
+  /** null ⇒ the role may not list invites, so they were NEVER fetched (server-gated). */
+  invites: AdminOutcome<InviteResponse[]> | null;
 }
 
 /**
@@ -276,14 +319,15 @@ export async function loadAdminData(token: string | undefined): Promise<AdminDat
   // data-minimization optimization — don't issue a fetch the server would 403, and
   // don't ship that data to a client that shouldn't see it. A future reader should
   // neither trust this as a security control nor "fix" it by removing it.
-  const [tenant, retention, users, apiKeys] = await Promise.all([
+  const [tenant, retention, users, apiKeys, invites] = await Promise.all([
     getTenantUpstream(token, tenantId),
     getRetentionUpstream(token),
     can(role, 'user:list') ? listUsersUpstream(token) : Promise.resolve(null),
     can(role, 'apikey:list') ? listApiKeysUpstream(token) : Promise.resolve(null),
+    can(role, 'invite:list') ? listInvitesUpstream(token) : Promise.resolve(null),
   ]);
 
-  return { role, tenant, retention, users, apiKeys };
+  return { role, tenant, retention, users, apiKeys, invites };
 }
 
 // ── Server functions (client-callable RPC; the thin createServerFn wrappers) ──
@@ -347,6 +391,25 @@ export const revokeApiKeyFn = createServerFn({ method: 'POST' })
   .handler(
     async ({ data }): Promise<AdminOutcome<void>> =>
       ensureSession(await revokeApiKeyUpstream(getCookie(ACCESS_COOKIE), data.id)),
+  );
+
+export const cpListInvites = createServerFn({ method: 'GET' }).handler(
+  async (): Promise<AdminOutcome<InviteResponse[]>> =>
+    ensureSession(await listInvitesUpstream(getCookie(ACCESS_COOKIE))),
+);
+
+export const cpCreateInvite = createServerFn({ method: 'POST' })
+  .validator(createInviteRequestSchema)
+  .handler(
+    async ({ data }): Promise<AdminOutcome<InviteCreatedResponse>> =>
+      ensureSession(await createInviteUpstream(getCookie(ACCESS_COOKIE), data)),
+  );
+
+export const cpRevokeInvite = createServerFn({ method: 'POST' })
+  .validator(idInput)
+  .handler(
+    async ({ data }): Promise<AdminOutcome<void>> =>
+      ensureSession(await revokeInviteUpstream(getCookie(ACCESS_COOKIE), data.id)),
   );
 
 export const createUserFn = createServerFn({ method: 'POST' })
