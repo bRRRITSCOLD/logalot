@@ -29,6 +29,17 @@ const (
 	NotifierEnv    = "ALERT_NOTIFIER"      // "logsink" (default) | "sns"
 	SNSTopicARNEnv = "ALERT_SNS_TOPIC_ARN" // required when NOTIFIER=sns
 	AWSEndpointEnv = "AWS_ENDPOINT_URL"    // floci endpoint, e.g. http://localhost:4566
+
+	// SMTP config for the real "email" channel send (issue #187, retiring the SNS
+	// email-stub). Same var names as the invites context's control-plane adapter
+	// (services/control-plane/src/config/env.ts) so both point at the same MailHog
+	// instance locally. Email dispatch is enabled whenever SMTPHostEnv is set,
+	// independent of NotifierEnv — email no longer routes through SNS at all.
+	SMTPHostEnv = "SMTP_HOST"
+	SMTPPortEnv = "SMTP_PORT"
+	SMTPUserEnv = "SMTP_USER"
+	SMTPPassEnv = "SMTP_PASS" // secret — read from env only, never logged.
+	SMTPFromEnv = "SMTP_FROM"
 )
 
 // Config is the validated evaluator configuration.
@@ -40,6 +51,16 @@ type Config struct {
 	Notifier             string
 	SNSTopicARN          string
 	AWSEndpoint          string
+
+	// SMTP is set (SMTPHost != "") when the email channel should really be sent.
+	// When unset, email channels are silently skipped by the notifier decorator
+	// (backward-compatible default — no behavior change for deployments that
+	// haven't configured SMTP yet).
+	SMTPHost string
+	SMTPPort int
+	SMTPUser string
+	SMTPPass string
+	SMTPFrom string
 }
 
 // Load reads + validates config from the process environment.
@@ -93,6 +114,27 @@ func Load() (Config, error) {
 		}
 	default:
 		return Config{}, fmt.Errorf("config: unknown %s=%q (want logsink|sns)", NotifierEnv, c.Notifier)
+	}
+
+	c.SMTPHost = os.Getenv(SMTPHostEnv)
+	c.SMTPUser = os.Getenv(SMTPUserEnv)
+	c.SMTPPass = os.Getenv(SMTPPassEnv)
+	c.SMTPFrom = os.Getenv(SMTPFromEnv)
+	if c.SMTPHost != "" {
+		// Fail closed: a partially-configured SMTP block must not silently start
+		// with no real email delivery (the whole point of #187).
+		if c.SMTPFrom == "" {
+			return Config{}, fmt.Errorf("config: %s is required when %s is set", SMTPFromEnv, SMTPHostEnv)
+		}
+		v := os.Getenv(SMTPPortEnv)
+		if v == "" {
+			return Config{}, fmt.Errorf("config: %s is required when %s is set", SMTPPortEnv, SMTPHostEnv)
+		}
+		port, err := strconv.Atoi(v)
+		if err != nil || port <= 0 {
+			return Config{}, fmt.Errorf("config: %s must be a positive int, got %q", SMTPPortEnv, v)
+		}
+		c.SMTPPort = port
 	}
 
 	return c, nil

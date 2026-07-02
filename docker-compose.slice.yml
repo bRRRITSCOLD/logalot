@@ -137,8 +137,16 @@ services:
       LOGALOT_EVALUATOR_DATABASE_URL: postgres://logalot_evaluator:logalot_evaluator@postgres:5432/${POSTGRES_DB}?sslmode=disable
       ALERT_NOTIFIER: logsink
       ALERT_EVAL_INTERVAL: 10s
+      # Real "email" channel send (#187), independent of ALERT_NOTIFIER — points at
+      # the same MailHog catcher the invites/control-plane context uses (ADR-0013
+      # local-parity). Verify at http://localhost:8025.
+      SMTP_HOST: mailhog
+      SMTP_PORT: "1025"
+      SMTP_FROM: alerts@logalot.local
     networks:
       - logalot
     depends_on:
       postgres:
+        condition: service_healthy
+      mailhog:
         condition: service_healthy

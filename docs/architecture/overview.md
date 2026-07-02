@@ -87,7 +87,7 @@ graph TB
 
     logalot[(Logalot<br/>Multi-tenant logging platform)]
 
-    notify[Notification sinks<br/>Webhook / email-stub]
+    notify[Notification sinks<br/>Webhook (SNS) / Email (SMTP)]
 
     shipper -->|POST /v1/ingest<br/>API key auth| logalot
     eng -->|search, live tail,<br/>dashboards, alerts| logalot
@@ -156,8 +156,9 @@ graph TB
 
     control --> pg
     alerts -->|run saved queries| query
-    alerts -->|dispatch| sns
-    sns --> ext[Webhook / email-stub]
+    alerts -->|dispatch webhook| sns
+    sns --> webhook_ext[Webhook subscriber]
+    alerts -->|dispatch email SMTP| mailhog_ext[SMTP relay / MailHog]
 
     processor -.->|retention: drop<br/>30d partitions| pg
 ```

@@ -56,7 +56,10 @@ export function hasInlineQuery(query: RuleQuery | undefined): boolean {
   );
 }
 
-/** A notification target. v1: webhook | email (email is a stub in floci). */
+/**
+ * A notification target. v1: webhook (SNS -> HTTPS fan-out) | email (real SMTP
+ * send in the alert-evaluator, retiring the old floci email-stub — issue #187).
+ */
 export const notifyChannelSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('webhook'), url: z.string().url().max(2000) }).strict(),
   z.object({ type: z.literal('email'), to: z.string().email().max(320) }).strict(),

@@ -59,6 +59,14 @@ func run(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	if cfg.SMTPHost != "" {
+		// Real "email" channel send (#187) layered on top of whatever notifier was
+		// selected above — webhook fan-out (via SNS or logsink) is unaffected.
+		sender := notify.NewSMTPEmailSender(notify.SMTPConfig{
+			Host: cfg.SMTPHost, Port: cfg.SMTPPort, User: cfg.SMTPUser, Pass: cfg.SMTPPass, From: cfg.SMTPFrom,
+		})
+		notifier = notify.NewEmailNotifier(notifier, sender, log)
+	}
 
 	ev := app.New(rules, counter, notifier,
 		app.WithLogger(log),
@@ -67,7 +75,7 @@ func run(log *slog.Logger) error {
 	)
 
 	log.Info("alert-evaluator: starting", "interval", cfg.Interval.String(),
-		"batch_size", cfg.BatchSize, "notifier", cfg.Notifier)
+		"batch_size", cfg.BatchSize, "notifier", cfg.Notifier, "email_enabled", cfg.SMTPHost != "")
 
 	if err := ev.Run(ctx); err != nil && ctx.Err() == nil {
 		return err
