@@ -72,6 +72,30 @@ func TestLoad_SMTPFullyConfiguredSucceeds(t *testing.T) {
 	}
 }
 
+func TestLoad_SMTPUserWithoutPassFailsClosed(t *testing.T) {
+	baseEnv(t)
+	t.Setenv(SMTPHostEnv, "mailhog")
+	t.Setenv(SMTPFromEnv, "alerts@logalot.local")
+	t.Setenv(SMTPPortEnv, "1025")
+	t.Setenv(SMTPUserEnv, "someuser")
+	t.Setenv(SMTPPassEnv, "")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected error: SMTP_USER set without SMTP_PASS")
+	}
+}
+
+func TestLoad_SMTPPassWithoutUserFailsClosed(t *testing.T) {
+	baseEnv(t)
+	t.Setenv(SMTPHostEnv, "mailhog")
+	t.Setenv(SMTPFromEnv, "alerts@logalot.local")
+	t.Setenv(SMTPPortEnv, "1025")
+	t.Setenv(SMTPUserEnv, "")
+	t.Setenv(SMTPPassEnv, "somepass")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected error: SMTP_PASS set without SMTP_USER")
+	}
+}
+
 func TestLoad_UnknownNotifierFailsClosed(t *testing.T) {
 	baseEnv(t)
 	t.Setenv(NotifierEnv, "carrier-pigeon")

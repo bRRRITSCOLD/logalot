@@ -135,6 +135,14 @@ func Load() (Config, error) {
 			return Config{}, fmt.Errorf("config: %s must be a positive int, got %q", SMTPPortEnv, v)
 		}
 		c.SMTPPort = port
+
+		// Fail closed: SMTP_USER without SMTP_PASS (or vice versa) would
+		// otherwise silently reach smtp.PlainAuth with an empty credential,
+		// deferring the failure to send time (auth rejected by the relay)
+		// instead of a clear config error at startup.
+		if (c.SMTPUser == "") != (c.SMTPPass == "") {
+			return Config{}, fmt.Errorf("config: %s and %s must both be set or both be empty", SMTPUserEnv, SMTPPassEnv)
+		}
 	}
 
 	return c, nil

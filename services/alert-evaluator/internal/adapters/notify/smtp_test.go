@@ -6,6 +6,7 @@ import (
 	"net/smtp"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSMTPEmailSender_SendBuildsMessageAndDialsConfiguredHost(t *testing.T) {
@@ -40,6 +41,46 @@ func TestSMTPEmailSender_SendBuildsMessageAndDialsConfiguredHost(t *testing.T) {
 	}
 	if !strings.Contains(msg, "body text") {
 		t.Fatalf("message missing body: %s", msg)
+	}
+	if !strings.Contains(msg, "Date: ") {
+		t.Fatalf("message missing Date header: %s", msg)
+	}
+	if !strings.Contains(msg, "Message-ID: <") {
+		t.Fatalf("message missing Message-ID header: %s", msg)
+	}
+}
+
+// TestSMTPEmailSender_SendReturnsOnCtxCancelWithoutWaitingForSend proves a
+// hung/slow relay cannot block the caller past ctx's deadline — the whole
+// point of the timeout fix: one stuck send must not stall the outbox relay's
+// single-goroutine dispatch loop (see app/evaluator.go dispatchPending).
+func TestSMTPEmailSender_SendReturnsOnCtxCancelWithoutWaitingForSend(t *testing.T) {
+	sendStarted := make(chan struct{})
+	sendMayReturn := make(chan struct{})
+	sender := NewSMTPEmailSender(SMTPConfig{Host: "mailhog", Port: 1025, From: "a@b.com"})
+	sender.send = func(_ string, _ smtp.Auth, _ string, _ []string, _ []byte) error {
+		close(sendStarted)
+		<-sendMayReturn // simulate a hung relay that never returns on its own
+		return nil
+	}
+	defer close(sendMayReturn) // let the leaked goroutine finish so the test doesn't hang the run
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- sender.Send(ctx, "x@y.com", "s", "b") }()
+
+	<-sendStarted
+	cancel()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected error when ctx is canceled mid-send")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Send did not return promptly after ctx cancel; it blocked on the hung relay")
 	}
 }
 
