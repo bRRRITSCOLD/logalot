@@ -41,8 +41,17 @@ with the rule's tenant armed. This is proven by the integration test.
 
 - `logsink` (default): records + logs each notification — auditable, no external
   dependency; also the test double.
-- `sns`: publishes to floci/AWS **SNS**, which fans out to **SQS / webhook /
-  email-stub** subscriptions. Point `AWS_ENDPOINT_URL` at floci (`:4566`).
+- `sns`: publishes to floci/AWS **SNS**, which fans out to **SQS / webhook**
+  subscriptions. Point `AWS_ENDPOINT_URL` at floci (`:4566`).
+
+Either base notifier can be wrapped with **`EmailNotifier`** (issue #187), which
+sends a real email over **SMTP** for every channel of type `email` — retiring the
+old SNS email-stub. It is enabled independently of `ALERT_NOTIFIER` whenever
+`SMTP_HOST` is set: the base notifier still runs unchanged (so `webhook` channels
+are unaffected), and `email` channels are additionally delivered via
+`SMTPEmailSender` (the same adapter pattern as the invites context's SMTP sender in
+`control-plane`). Locally it points at the shared **MailHog** container
+(`docker-compose.yml`); verify delivery at `http://localhost:8025`.
 
 ## Configuration
 
@@ -55,6 +64,10 @@ with the rule's tenant armed. This is proven by the integration test.
 | `ALERT_NOTIFIER` | no | `logsink` | `logsink` \| `sns` |
 | `ALERT_SNS_TOPIC_ARN` | if `sns` | — | destination topic |
 | `AWS_ENDPOINT_URL` | no | — | floci endpoint for SNS |
+| `SMTP_HOST` | no | — | setting this enables real `email`-channel send |
+| `SMTP_PORT` | if `SMTP_HOST` | — | e.g. `1025` for MailHog |
+| `SMTP_FROM` | if `SMTP_HOST` | — | fixed envelope/header From address |
+| `SMTP_USER` / `SMTP_PASS` | no | — | omit for unauthenticated relays (MailHog) |
 
 ## Tests
 

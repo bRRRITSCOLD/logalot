@@ -21,10 +21,15 @@ type SNSPublisher interface {
 }
 
 // SNS dispatches alert notifications by PUBLISHING them to an SNS topic. The topic
-// fans out to its subscriptions: an SQS queue (proven in the integration test), an
-// HTTPS webhook endpoint, and an email subscription (email-stub). The rule's own
-// notify_channels travel in the JSON body and message attributes so a subscriber
-// can route per-channel; SNS owns the actual fan-out, keeping this adapter thin.
+// fans out to its subscriptions: an SQS queue (proven in the integration test) and
+// an HTTPS webhook endpoint. The rule's own notify_channels travel in the JSON
+// body and message attributes so a subscriber can route per-channel; SNS owns the
+// webhook fan-out, keeping this adapter thin.
+//
+// The "email" channel is NOT delivered via an SNS subscription (that was a stub —
+// floci has no SES/email fan-out). Real email delivery is a separate concern:
+// wrap this Notifier in notify.EmailNotifier, which sends over SMTP via an
+// EmailSender in addition to whatever this adapter publishes.
 //
 // In floci, the SNS client is pointed at http://localhost:4566 (model.md /
 // .env.example AWS_ENDPOINT_URL). The same code runs unchanged against real SNS.

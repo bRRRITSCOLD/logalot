@@ -242,6 +242,13 @@ services:
         postgres://logalot_evaluator:${LOGALOT_EVALUATOR_PASSWORD:-logalot_evaluator}@postgres:5432/${POSTGRES_DB}?sslmode=disable
       ALERT_NOTIFIER: ${ALERT_NOTIFIER:-logsink}
       ALERT_EVAL_INTERVAL: ${ALERT_EVAL_INTERVAL:-10s}
+      # Real "email" channel send (#187) — unset (default) leaves email disabled,
+      # matching pre-#187 behavior until an operator configures a real relay.
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_FROM: ${SMTP_FROM:-}
     networks:
       - logalot
     mem_limit: 96m

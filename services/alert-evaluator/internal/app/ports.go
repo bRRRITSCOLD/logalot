@@ -103,8 +103,7 @@ func (q RuleQuery) IsEmpty() bool {
 }
 
 // Channel is one notification target on a rule (alert_rules.notify_channels). v1
-// supports webhook + email-stub; the Notifier adapter decides how each is routed
-// (e.g. floci SNS fan-out).
+// supports webhook (floci SNS fan-out) + email (real SMTP send via EmailSender).
 type Channel struct {
 	Type string `json:"type"`          // "webhook" | "email"
 	URL  string `json:"url,omitempty"` // webhook target
@@ -190,8 +189,18 @@ type RuleStore interface {
 }
 
 // Notifier dispatches a notification to its channels. Implementations: a log-sink
-// (default / test double) and a floci SNS/SQS adapter. Behind this port so the
-// evaluator core never knows about AWS.
+// (default / test double), a floci SNS/SQS adapter (webhook fan-out), and a
+// decorator that adds real email delivery. Behind this port so the evaluator
+// core never knows about AWS or SMTP.
 type Notifier interface {
 	Notify(ctx context.Context, n Notification) error
+}
+
+// EmailSender delivers a single email over SMTP. It is the real send path for the
+// "email" channel (retiring the SNS email-stub) — deliberately the same adapter
+// pattern as the invites context's EmailSender port (services/control-plane), just
+// narrowed to Go's stdlib net/smtp instead of nodemailer. Behind this port so the
+// evaluator core (and its decorator, EmailNotifier) never knows about net/smtp.
+type EmailSender interface {
+	Send(ctx context.Context, to, subject, body string) error
 }

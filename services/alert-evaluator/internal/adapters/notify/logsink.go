@@ -1,5 +1,7 @@
 // Package notify holds the Notifier adapters. LogSink is the default and the test
-// double; SNS is the floci SNS/SQS dispatch path (webhook + email-stub fan-out).
+// double; SNS is the floci SNS/SQS dispatch path (webhook fan-out); EmailNotifier
+// decorates either with a real SMTP send for the "email" channel; SMTPEmailSender
+// is the EmailSender adapter behind it.
 package notify
 
 import (
