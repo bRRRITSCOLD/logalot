@@ -35,8 +35,8 @@ services:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
     networks:
       - coldq
     healthcheck:
@@ -87,7 +87,7 @@ services:
     volumes:
       - ./infra/hive/conf/core-site.xml:/opt/hive/conf/core-site.xml:ro
     ports:
-      - "9083:9083"
+      - "127.0.0.1:9083:9083"
     networks:
       - coldq
     healthcheck:
@@ -106,7 +106,7 @@ services:
       hms:
         condition: service_healthy
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     volumes:
       - ./infra/trino/etc:/etc/trino:ro
     networks:
