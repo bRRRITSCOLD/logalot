@@ -24,7 +24,7 @@ services:
       args:
         SERVICE: ingest-service
     container_name: logalot-ingest-service
-    restart: unless-stopped
+    restart: "no"
     environment:
       # In-network DSN: the logalot_app role over the `postgres` service host.
       LOGALOT_APP_DATABASE_URL: postgres://logalot_app:logalot_app@postgres:5432/${POSTGRES_DB}?sslmode=disable
@@ -62,7 +62,7 @@ services:
       args:
         SERVICE: processor
     container_name: logalot-processor
-    restart: unless-stopped
+    restart: "no"
     environment:
       LOGALOT_APP_DATABASE_URL: postgres://logalot_app:logalot_app@postgres:5432/${POSTGRES_DB}?sslmode=disable
       RABBITMQ_HOST: rabbitmq
@@ -90,7 +90,7 @@ services:
       args:
         SERVICE: query-service
     container_name: logalot-query-service
-    restart: unless-stopped
+    restart: "no"
     environment:
       LOGALOT_APP_DATABASE_URL: postgres://logalot_app:logalot_app@postgres:5432/${POSTGRES_DB}?sslmode=disable
       REDIS_HOST: redis
@@ -131,7 +131,7 @@ services:
       args:
         SERVICE: alert-evaluator
     container_name: logalot-alert-evaluator
-    restart: unless-stopped
+    restart: "no"
     environment:
       LOGALOT_APP_DATABASE_URL: postgres://logalot_app:logalot_app@postgres:5432/${POSTGRES_DB}?sslmode=disable
       LOGALOT_EVALUATOR_DATABASE_URL: postgres://logalot_evaluator:logalot_evaluator@postgres:5432/${POSTGRES_DB}?sslmode=disable

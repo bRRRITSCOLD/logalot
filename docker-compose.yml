@@ -10,7 +10,7 @@ services:
   postgres:
     image: postgres:16-alpine
     container_name: logalot-postgres
-    restart: unless-stopped
+    restart: "no"
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -31,7 +31,7 @@ services:
   mongodb:
     image: mongo:7
     container_name: logalot-mongodb
-    restart: unless-stopped
+    restart: "no"
     environment:
       MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME}
       MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD}
@@ -53,7 +53,7 @@ services:
   redis:
     image: redis:7-alpine
     container_name: logalot-redis
-    restart: unless-stopped
+    restart: "no"
     # Password is exposed to the container so the healthcheck can AUTH; the
     # server itself is configured via --requirepass below.
     environment:
@@ -75,7 +75,7 @@ services:
   rabbitmq:
     image: rabbitmq:3-management-alpine
     container_name: logalot-rabbitmq
-    restart: unless-stopped
+    restart: "no"
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
@@ -97,7 +97,7 @@ services:
     # Pinned for reproducibility (verified running 1.5.28). Override via .env FLOCI_VERSION.
     image: floci/floci:${FLOCI_VERSION:-1.5.28}
     container_name: logalot-floci
-    restart: unless-stopped
+    restart: "no"
     environment:
       # Containers resolve floci-issued AWS URLs to this hostname on the network.
       FLOCI_HOSTNAME: ${FLOCI_HOSTNAME:-floci}
@@ -128,7 +128,7 @@ services:
     # web UI on :8025 to inspect rendered invite emails without a real send.
     image: mailhog/mailhog:v1.0.1
     container_name: logalot-mailhog
-    restart: unless-stopped
+    restart: "no"
     ports:
       - "127.0.0.1:${MAILHOG_SMTP_PORT:-1025}:1025"
       - "127.0.0.1:${MAILHOG_UI_PORT:-8025}:8025"
