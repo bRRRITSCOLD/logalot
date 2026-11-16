@@ -7,8 +7,8 @@ design.
 
 ## Monorepo layout
 
-Logalot is a polyglot monorepo. Go services share a Go workspace (`go.work`);
-Node services and the frontend share a pnpm workspace (`pnpm-workspace.yaml`).
+Logalot is a polyglot monorepo. Go services share a Go workspace - `go.work`;
+Node services and the frontend share a pnpm workspace - `pnpm-workspace.yaml`.
 
 ```
 pkg/kernel/        shared Go module (TenantContext + ports, issue #4)
